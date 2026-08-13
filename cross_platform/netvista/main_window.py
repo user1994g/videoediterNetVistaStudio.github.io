@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import tempfile
+import platform
 from copy import deepcopy
 from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QThread, QTimer, QUrl, Qt, Signal
-from PySide6.QtGui import QAction, QCloseEvent, QDragEnterEvent, QDropEvent, QKeySequence
+from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QKeySequence
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
@@ -19,6 +20,8 @@ from .ffmpeg_engine import (RESOLUTION_PRESETS, ExportOptions, ExportProcess, FF
 from .model import MediaAsset, Project, TimelineClip
 from .theme import APP_STYLE
 from .timeline import TimelineWidget
+from .updater import AvailableUpdate, check_for_update, download_update
+from . import __version__
 
 
 class TaskThread(QThread):
@@ -54,6 +57,7 @@ class MainWindow(QMainWindow):
         self.preview_path: str | None = None
         self.preview_thread: TaskThread | None = None
         self.export_thread: TaskThread | None = None
+        self.update_thread: TaskThread | None = None
         self.current_page = "Media"
         self.selected_clip_id: str | None = None
         self.setWindowTitle("NetVista Studio — Windows / Linux Beta")
@@ -111,10 +115,13 @@ class MainWindow(QMainWindow):
         self.title_edit.setMaximumWidth(260)
         self.title_edit.editingFinished.connect(self.title_changed)
         row.addWidget(self.title_edit)
-        for title, callback in [("Open", self.open_project), ("Save your work", self.save_project)]:
+        for title, callback in [("Open", self.open_project), ("Update", self.check_for_updates),
+                                ("Save your work", self.save_project)]:
             button = QPushButton(title)
             button.clicked.connect(callback)
             row.addWidget(button)
+            if title == "Update":
+                self.update_button = button
         return frame
 
     def _media_panel(self) -> QWidget:
@@ -322,6 +329,68 @@ class MainWindow(QMainWindow):
     def mark_dirty(self) -> None:
         self.project_dirty = True
         self.setWindowTitle(f"NetVista Studio — {self.project.title} *")
+
+    def check_for_updates(self) -> None:
+        if self.update_thread and self.update_thread.isRunning():
+            return
+        self.update_button.setEnabled(False)
+        self.status("Checking GitHub for a NetVista Studio update…")
+        self.update_thread = TaskThread(check_for_update, __version__, platform.system())
+        self.update_thread.progress.connect(lambda _value, text: self.status(text))
+        self.update_thread.completed.connect(self.update_check_finished)
+        self.update_thread.failed.connect(self.update_failed)
+        self.update_thread.start()
+
+    def update_check_finished(self, update: AvailableUpdate | None) -> None:
+        self.update_button.setEnabled(True)
+        if update is None:
+            self.status(f"NetVista Studio {__version__} is up to date.")
+            QMessageBox.information(self, "You have the newest beta",
+                                    f"NetVista Studio {__version__} is the newest version currently published on GitHub.")
+            return
+        self.status(f"NetVista Studio {update.tag} is available.")
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("NetVista Studio update")
+        box.setText("A newer NetVista Studio beta is available")
+        box.setInformativeText(f"Installed: {__version__}\nAvailable: {update.tag}\n\n"
+                               "Save your project before installing. The verified package will be downloaded to Downloads; "
+                               "you choose when to quit and replace the current app.")
+        download_button = box.addButton("Download update", QMessageBox.ButtonRole.AcceptRole)
+        notes_button = box.addButton("View release notes", QMessageBox.ButtonRole.ActionRole)
+        box.addButton("Later", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is download_button:
+            # Let the completed check thread finish before replacing the
+            # retained worker with the package-download worker.
+            QTimer.singleShot(0, lambda: self.begin_update_download(update))
+        elif box.clickedButton() is notes_button and update.page_url:
+            QDesktopServices.openUrl(QUrl(update.page_url))
+
+    def begin_update_download(self, update: AvailableUpdate) -> None:
+        self.update_button.setEnabled(False)
+        self.status(f"Downloading {update.asset.name} to Downloads…")
+        self.update_thread = TaskThread(download_update, update)
+        self.update_thread.progress.connect(
+            lambda value, text: self.status(f"{text} · {int(value * 100)}%"))
+        self.update_thread.completed.connect(self.update_download_finished)
+        self.update_thread.failed.connect(self.update_failed)
+        self.update_thread.start()
+
+    def update_download_finished(self, path: str) -> None:
+        self.update_button.setEnabled(True)
+        package = Path(path)
+        self.status(f"Update downloaded and verified: {package.name}")
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(package.parent)))
+        QMessageBox.information(self, "Update ready in Downloads",
+                                f"{package.name} passed its size and SHA-256 safety checks.\n\n"
+                                "Save your work, quit NetVista Studio, unpack the download, and replace the old app.")
+
+    def update_failed(self, message: str) -> None:
+        self.update_button.setEnabled(True)
+        self.status(f"Update failed: {message}")
+        QMessageBox.warning(self, "Could not update NetVista Studio",
+                            f"Check your internet connection and press Update again.\n\n{message}")
 
     def title_changed(self) -> None:
         self.project.title = self.title_edit.text().strip() or "Untitled Project"
