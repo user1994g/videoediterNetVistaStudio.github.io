@@ -23,6 +23,7 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/netvista_studio_swift_cache xcrun swiftc \
     UltraKey.swift \
     ShareServer.swift \
     SharePanel.swift \
+    AppUpdateService.swift \
     ProfessionalTimelineView.swift \
     NetVistaStudio.swift \
     EffectsStudio.swift \

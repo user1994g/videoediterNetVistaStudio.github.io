@@ -16,6 +16,13 @@ The current macOS beta is ad-hoc signed and therefore triggers a Gatekeeper warn
 
 Double-click `NetVista Studio.app` in Finder.
 
+## Updates
+
+- Press **Update** in the top bar to check the public NetVista Studio GitHub releases without signing in.
+- Beta and full releases are compared using their complete release tag, so Beta 2 correctly replaces Beta 1 and a final release correctly replaces any beta.
+- The app selects the package for the current operating system, downloads it to **Downloads**, and checks the published file size and SHA-256 digest before offering it to the user.
+- Updates never overwrite the running editor or an open project. Save your work, quit the old version, unpack the verified download, and replace the old app when ready.
+
 ## Editing
 
 - Import one or many video and audio files through the native file picker, or drag files from Finder directly onto the timeline.
@@ -59,6 +66,6 @@ Double-click `NetVista Studio.app` in Finder.
 
 ## Build it again
 
-Run `sh build_app.sh` from this folder. The native sources include `NetVistaStudio.swift`, `ProfessionalTimelineView.swift`, `CubeLUT.swift`, `EffectsStudio.swift`, `SceneEditor.swift`, `NativeTimelineExportEngine.swift`, `ExportWorkspace.swift`, `ShareServer.swift`, and `SharePanel.swift`.
+Run `sh build_app.sh` from this folder. The native sources include `NetVistaStudio.swift`, `ProfessionalTimelineView.swift`, `CubeLUT.swift`, `EffectsStudio.swift`, `SceneEditor.swift`, `NativeTimelineExportEngine.swift`, `ExportWorkspace.swift`, `ShareServer.swift`, `SharePanel.swift`, and `AppUpdateService.swift`.
 
 For Windows and Linux source/build instructions, see [`cross_platform/README.md`](cross_platform/README.md). GitHub Actions builds downloadable native packages for both operating systems.

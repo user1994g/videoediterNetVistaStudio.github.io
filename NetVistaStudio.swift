@@ -604,6 +604,9 @@ final class EditorController: NSViewController {
     private var shareWindow: NSWindow?
     private var sharePanelController: SharePanelViewController?
     private var shareServer: LocalShareServer?
+    private let appUpdateService = AppUpdateService()
+    private weak var updateButton: NSButton?
+    private var updateRequestActive = false
     private var exportWorkspaceController: ExportWorkspaceViewController?
     private var activeExportJob: TimelineExportJob?
     private var sceneEditorWindow: SceneEditorWindowController?
@@ -662,6 +665,7 @@ final class EditorController: NSViewController {
         bar.addArrangedSubview(button("↷", #selector(redoEdit)))
         bar.addArrangedSubview(button("Open", #selector(openProjectPicker)))
         let share = button("Share", #selector(openShareStudio)); share.contentTintColor = NSColor(hex: "43D7C2"); bar.addArrangedSubview(share)
+        let update = button("Update", #selector(checkForUpdates)); update.toolTip = "Check GitHub for a newer NetVista Studio beta"; bar.addArrangedSubview(update); updateButton = update
         let save = button("Save your work", #selector(saveProject)); save.contentTintColor = .systemBlue; bar.addArrangedSubview(save)
         bar.edgeInsets = NSEdgeInsets(top: 0, left: 16, bottom: 0, right: 16)
         return bar
@@ -2946,6 +2950,85 @@ final class EditorController: NSViewController {
     /// still allowing projects and exports to be stored anywhere on the Mac.
     private func setDownloadsAsInitialDirectory(for panel: NSSavePanel) {
         panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+    }
+
+    @objc private func checkForUpdates() {
+        guard !updateRequestActive else { return }
+        updateRequestActive = true
+        updateButton?.isEnabled = false
+        status("Checking GitHub for a NetVista Studio update…")
+        appUpdateService.checkForUpdate { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.updateRequestActive = false
+                self.updateButton?.isEnabled = true
+                switch result {
+                case .success(nil):
+                    self.status("NetVista Studio \(self.appUpdateService.currentTag) is up to date.")
+                    let alert = NSAlert()
+                    alert.messageText = "You have the newest beta"
+                    alert.informativeText = "NetVista Studio \(self.appUpdateService.currentTag) is the newest version currently published on GitHub."
+                    alert.addButton(withTitle: "Done")
+                    alert.runModal()
+                case .success(.some(let update)):
+                    self.presentAvailableUpdate(update)
+                case .failure(let error):
+                    self.status("Update check failed: \(error.localizedDescription)")
+                    let alert = NSAlert(error: error)
+                    alert.messageText = "Could not check for updates"
+                    alert.informativeText = "Check your internet connection and try the Update button again.\n\n\(error.localizedDescription)"
+                    alert.runModal()
+                }
+            }
+        }
+    }
+
+    private func presentAvailableUpdate(_ update: NetVistaAvailableUpdate) {
+        status("NetVista Studio \(update.release.tag) is available.")
+        let alert = NSAlert()
+        alert.messageText = "A newer NetVista Studio beta is available"
+        alert.informativeText = "Installed: \(appUpdateService.currentTag)\nAvailable: \(update.release.tag)\n\nThis is beta software. Save your project before installing an update. The app will download the verified macOS package to Downloads; you choose when to quit and replace the current app."
+        alert.addButton(withTitle: "Download update")
+        alert.addButton(withTitle: "View release notes")
+        alert.addButton(withTitle: "Later")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            downloadUpdate(update)
+        case .alertSecondButtonReturn:
+            NSWorkspace.shared.open(update.release.pageURL)
+        default:
+            break
+        }
+    }
+
+    private func downloadUpdate(_ update: NetVistaAvailableUpdate) {
+        guard !updateRequestActive else { return }
+        updateRequestActive = true
+        updateButton?.isEnabled = false
+        status("Downloading \(update.asset.name) to Downloads…")
+        appUpdateService.download(update) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.updateRequestActive = false
+                self.updateButton?.isEnabled = true
+                switch result {
+                case .success(let url):
+                    self.status("Update downloaded and verified: \(url.lastPathComponent)")
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                    let alert = NSAlert()
+                    alert.messageText = "Update ready in Downloads"
+                    alert.informativeText = "\(url.lastPathComponent) passed its size and SHA-256 safety checks. Save your work, quit NetVista Studio, open the ZIP, and move the new app into Applications."
+                    alert.addButton(withTitle: "Done")
+                    alert.runModal()
+                case .failure(let error):
+                    self.status("Update download failed: \(error.localizedDescription)")
+                    let alert = NSAlert(error: error)
+                    alert.messageText = "Could not download the update"
+                    alert.informativeText = error.localizedDescription
+                    alert.runModal()
+                }
+            }
+        }
     }
 
     private func status(_ text: String) { statusLabel.stringValue = text }
