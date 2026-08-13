@@ -10,6 +10,8 @@
   <string>local.netvista.studio</string>
   <key>CFBundleName</key>
   <string>NetVista Studio</string>
+  <key>CFBundleIconFile</key>
+  <string>NetVistaStudio.icns</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

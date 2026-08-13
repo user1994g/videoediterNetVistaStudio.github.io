@@ -6,6 +6,7 @@ python -m venv .build-env
 & .\.build-env\Scripts\python.exe -m unittest discover -s tests -v
 & .\.build-env\Scripts\pyinstaller.exe --noconfirm --clean --windowed --onedir `
   --name NetVistaStudio --collect-all imageio_ffmpeg `
+  --icon assets\NetVistaStudio.ico --add-data "assets\NetVistaStudio.png;assets" `
   --exclude-module PySide6.QtQml --exclude-module PySide6.QtQuick `
   --exclude-module PySide6.QtPdf --exclude-module PySide6.QtVirtualKeyboard `
   --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets `

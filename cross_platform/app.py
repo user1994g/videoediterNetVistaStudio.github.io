@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, QTimer, Qt
 from PySide6.QtGui import QIcon
@@ -10,6 +11,12 @@ from netvista import __version__
 from netvista.main_window import MainWindow
 
 
+def resource_path(name: str) -> Path:
+    """Return a development or PyInstaller-bundled asset path."""
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return bundle_root / "assets" / name
+
+
 def main() -> int:
     QCoreApplication.setOrganizationName("NetVista Studio")
     QCoreApplication.setApplicationName("NetVista Studio")
@@ -17,6 +24,7 @@ def main() -> int:
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setWindowIcon(QIcon(str(resource_path("NetVistaStudio.png"))))
     window = MainWindow()
     window.show()
     if "--smoke-test" in sys.argv:

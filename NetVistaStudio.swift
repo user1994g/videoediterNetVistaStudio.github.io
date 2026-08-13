@@ -3511,6 +3511,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var editor: EditorController?
     private var pendingOpenURLs: [URL] = []
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let iconURL = Bundle.main.url(forResource: "NetVistaStudio", withExtension: "icns"),
+           let icon = NSImage(contentsOf: iconURL) {
+            NSApp.applicationIconImage = icon
+        }
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 790), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "NetVista Studio"; window.minSize = NSSize(width: 1000, height: 650)
         let controller = EditorController(); editor = controller; window.contentViewController = controller
