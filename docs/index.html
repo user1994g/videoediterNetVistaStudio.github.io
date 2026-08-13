@@ -10,7 +10,8 @@
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://video.netvistastudio.com/">
   <link rel="canonical" href="https://video.netvistastudio.com/">
-  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="icon" type="image/png" href="https://netvistastudio.com/assets/images/photos/netvistastudio-logo.png">
+  <link rel="apple-touch-icon" href="https://netvistastudio.com/assets/images/brand/apple-touch-icon.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&amp;family=DM+Sans:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
@@ -21,20 +22,17 @@
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
 
-  <header class="site-header">
-    <nav class="nav shell" aria-label="Main navigation">
-      <a class="wordmark" href="https://netvistastudio.com/" aria-label="NetVista Studio home">netvistastudio</a>
-      <span class="product-tag">Editor beta</span>
-      <button class="menu-button" type="button" aria-expanded="false" aria-controls="nav-links">Menu</button>
-      <div class="nav-links" id="nav-links">
+  <header class="site-header" id="site-header">
+      <a class="brand" href="https://netvistastudio.com/" aria-label="NetVista Studio home"><span>netvistastudio</span></a>
+      <button class="nav-toggle" id="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">Browse <span>⌄</span></button>
+      <nav class="primary-nav" id="primary-nav" aria-label="Main navigation">
         <a href="https://netvistastudio.com/">Home</a>
         <a href="https://netvistastudio.com/#films">Films</a>
         <a href="https://netvistastudio.com/#coming-soon">Coming Soon</a>
         <a href="https://netvistastudio.com/applications/">Applications</a>
-        <a class="nav-current" href="#top" aria-current="page">Editor</a>
-      </div>
-      <a class="pill-download download-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/download/v1.1.0-beta.1/NetVista-Studio-1.1-Beta.zip"><span>↓</span> Get the beta</a>
-    </nav>
+        <a class="is-active" href="#top" aria-current="page">Editor</a>
+      </nav>
+      <div class="header-actions"><a class="header-app-button download-link" href="#download"><span>↓</span><span>Get the beta</span></a></div>
   </header>
 
   <main id="main">
@@ -49,8 +47,8 @@
           </div>
           <p class="hero-summary">A native editing room for the people making the next netvistastudio story. Cut, colour, mix, animate, build 3D scenes, and export without leaving the timeline.</p>
           <div class="button-row">
-            <a class="button button-white download-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/download/v1.1.0-beta.1/NetVista-Studio-1.1-Beta.zip"><span aria-hidden="true">↓</span> Download beta</a>
-            <a class="button button-dark" href="#details"><span aria-hidden="true">ⓘ</span> Details</a>
+            <a class="button button-primary download-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/download/v1.1.0-beta.1/NetVista-Studio-1.1-Beta.zip"><span aria-hidden="true">↓</span> Download beta</a>
+            <a class="button button-secondary" href="#details"><span aria-hidden="true">ⓘ</span> Details</a>
           </div>
         </div>
 
@@ -157,8 +155,8 @@
           <p>This is an early beta, not a finished production release. Features may be incomplete and bugs may occur, so keep backups of important projects and media.</p>
           <div class="requirements"><span>Apple silicon</span><span>macOS 11+</span><span>1.1 MB download</span></div>
           <div class="button-row">
-            <a class="button button-white download-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/download/v1.1.0-beta.1/NetVista-Studio-1.1-Beta.zip"><span>↓</span> Download for Mac</a>
-            <a class="button button-dark releases-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/tag/v1.1.0-beta.1" target="_blank" rel="noreferrer">Release notes</a>
+            <a class="button button-primary download-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/download/v1.1.0-beta.1/NetVista-Studio-1.1-Beta.zip"><span>↓</span> Download for Mac</a>
+            <a class="button button-secondary releases-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/tag/v1.1.0-beta.1" target="_blank" rel="noreferrer">Release notes</a>
           </div>
           <aside class="beta-warning"><b>Beta software</b><span>The app is ad-hoc signed and is not Apple-notarized yet. After unzipping, Control-click NetVista Studio and choose <strong>Open</strong> on the first launch.</span></aside>
         </div>
@@ -178,13 +176,11 @@
     </section>
   </main>
 
-  <footer class="footer">
-    <div class="shell footer-grid">
-      <a class="wordmark" href="https://netvistastudio.com/">netvistastudio</a>
-      <p>Independent stories after dark.<br><span>Tools for the people who make them.</span></p>
-      <nav aria-label="Footer navigation"><a href="https://netvistastudio.com/">Home</a><a href="https://netvistastudio.com/#films">Films</a><a href="https://netvistastudio.com/applications/">Applications</a><a class="github-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io" target="_blank" rel="noreferrer">GitHub</a></nav>
-      <small>© <span id="year"></span> netvistastudio</small>
-    </div>
+  <footer class="site-footer">
+    <a class="footer-brand" href="https://netvistastudio.com/">netvistastudio</a>
+    <p>Independent stories after dark.</p>
+    <div class="footer-actions"><a href="https://netvistastudio.com/applications/">Applications</a><a class="github-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io" target="_blank" rel="noreferrer">Editor source</a><a class="download-link" href="#download">Get the beta</a></div>
+    <p class="copyright">© <span data-current-year id="year"></span> netvistastudio</p>
   </footer>
 </body>
 </html>
