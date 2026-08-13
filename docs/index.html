@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080a0f">
+  <meta name="description" content="NetVista Studio is a native macOS video editor with a professional multitrack timeline, colour tools, effects, 3D scenes, and native export.">
+  <meta property="og:title" content="NetVista Studio — Native video editing for macOS">
+  <meta property="og:description" content="A fast, native, non-destructive video editor built for macOS.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://user1994g.github.io/videoediterNetVistaStudio.github.io/">
+  <link rel="canonical" href="https://user1994g.github.io/videoediterNetVistaStudio.github.io/">
+  <title>NetVista Studio — Native video editing for macOS</title>
+  <link rel="stylesheet" href="assets/site.css">
+  <script defer src="assets/site.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <nav class="nav wrap" aria-label="Main navigation">
+      <a class="brand" href="#top" aria-label="NetVista Studio home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i></span>
+        <span>NetVista <b>Studio</b></span>
+      </a>
+      <button class="menu-button" type="button" aria-expanded="false" aria-controls="nav-links">Menu</button>
+      <div class="nav-links" id="nav-links">
+        <a href="#features">Features</a>
+        <a href="#workflow">Workflow</a>
+        <a href="#install">Install</a>
+        <a class="button button-small button-quiet github-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io" target="_blank" rel="noreferrer">View on GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero wrap" id="top">
+      <div class="hero-copy">
+        <p class="eyebrow"><span></span> Native macOS video editor</p>
+        <h1>Your story.<br><em>Your timeline.</em></h1>
+        <p class="hero-lead">Edit, colour, mix, animate, and build 3D scenes in one focused desktop workspace. NetVista Studio keeps your creative work local and your timeline responsive.</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#install">Build the app <span aria-hidden="true">→</span></a>
+          <a class="button button-secondary github-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io" target="_blank" rel="noreferrer">Explore the source</a>
+        </div>
+        <ul class="hero-facts" aria-label="Project facts">
+          <li><strong>100%</strong><span>Native AppKit</span></li>
+          <li><strong>∞</strong><span>Video & audio tracks</span></li>
+          <li><strong>Local</strong><span>Your media stays yours</span></li>
+        </ul>
+      </div>
+
+      <div class="app-stage" aria-label="Stylised preview of the NetVista Studio editing interface">
+        <div class="glow"></div>
+        <div class="app-window">
+          <div class="titlebar">
+            <span class="traffic"><i></i><i></i><i></i></span>
+            <span class="window-title">NetVista Studio</span>
+            <span class="project-pill">My Film</span>
+          </div>
+          <div class="editor-grid">
+            <aside class="media-panel">
+              <div class="panel-title">Media pool <b>+</b></div>
+              <div class="media-card selected"><span class="thumb thumb-one"></span><small>opening-shot.mov</small></div>
+              <div class="media-card"><span class="thumb thumb-two"></span><small>city-night.mov</small></div>
+              <div class="media-card"><span class="wave-mini"></span><small>music.wav</small></div>
+            </aside>
+            <section class="program-panel">
+              <div class="monitor"><div class="monitor-scene"><span></span></div></div>
+              <div class="transport"><b>01:04:18:12</b><span>◀</span><span class="play">▶</span><span>▶</span></div>
+            </section>
+            <aside class="inspector-panel">
+              <div class="panel-title">Inspector</div>
+              <p>Transform</p>
+              <label>Position <span>0.0 &nbsp; 0.0</span></label>
+              <label>Scale <span>100%</span></label>
+              <div class="slider"><i style="width:67%"></i></div>
+              <p>Opacity</p>
+              <div class="slider"><i style="width:91%"></i></div>
+              <p>Blend mode</p>
+              <div class="select">Normal <span>⌄</span></div>
+            </aside>
+            <section class="timeline-panel">
+              <div class="timeline-tools"><b>Timeline 1</b><span>V Select</span><span>Blade</span><span>Snap</span><i></i><span>−</span><span>Fit</span><span>+</span></div>
+              <div class="ruler"><span>01:04:00</span><span>01:05:00</span><span>01:06:00</span><span>01:07:00</span></div>
+              <div class="tracks">
+                <div class="track-name"><b>V2</b><small>Video 2</small></div><div class="track-line"></div>
+                <div class="track-name"><b>V1</b><small>Video 1</small></div><div class="track-line clips"><span class="clip c1">opening-shot.mov</span><span class="clip c2">city-night.mov</span></div>
+                <div class="track-name"><b>A1</b><small>Audio 1</small></div><div class="track-line clips audio"><span class="clip a1">▥▥▥▥▥▥▥▥▥▥▥▥▥▥▥▥</span><span class="clip a2">▥▥▥▥▥▥</span></div>
+                <div class="playhead"><i></i></div>
+              </div>
+            </section>
+          </div>
+        </div>
+        <div class="float-card float-left"><span>⌘</span><p><b>Non-destructive</b><small>Every edit stays flexible</small></p></div>
+        <div class="float-card float-right"><span>30</span><p><b>Real-time preview</b><small>Frame-accurate playback</small></p></div>
+      </div>
+    </section>
+
+    <section class="proof-strip" aria-label="Technology">
+      <div class="wrap proof-inner"><span>Built natively with</span><b>Swift</b><i></i><b>AppKit</b><i></i><b>AVFoundation</b><i></i><b>Core Image</b><i></i><b>SceneKit</b></div>
+    </section>
+
+    <section class="section wrap" id="features">
+      <div class="section-heading">
+        <p class="eyebrow"><span></span> Made for the edit</p>
+        <h2>A serious toolkit,<br><em>without the clutter.</em></h2>
+        <p>Move from the first cut to the final export without leaving your project.</p>
+      </div>
+      <div class="feature-grid">
+        <article class="feature-card feature-wide blue">
+          <div class="feature-icon">⌁</div><p class="tag">Timeline</p>
+          <h3>Layer without limits</h3><p>Place as many video and audio clips as your story needs. Move linked media together or separate picture and sound.</p>
+          <div class="mini-timeline"><i></i><span></span><span></span><b></b><em></em></div>
+        </article>
+        <article class="feature-card violet">
+          <div class="feature-icon">◉</div><p class="tag">Colour</p>
+          <h3>Shape every frame</h3><p>Use lift, gamma, and gain wheels, primary controls, and imported 3D LUTs.</p>
+          <div class="wheels"><i></i><i></i><i></i></div>
+        </article>
+        <article class="feature-card orange">
+          <div class="feature-icon">◇</div><p class="tag">Effects</p>
+          <h3>Animate the details</h3><p>Keyframe transforms, opacity, colour, blur, glow, vignette, and Ultra Key controls.</p>
+          <div class="curve"><i></i><b></b><b></b><b></b></div>
+        </article>
+        <article class="feature-card green">
+          <div class="feature-icon">⬡</div><p class="tag">3D scenes</p>
+          <h3>Bring another dimension</h3><p>Import common 3D formats, light your scene, add video planes, and save editable scene work.</p>
+          <div class="cube" aria-hidden="true"><i></i></div>
+        </article>
+        <article class="feature-card feature-wide red">
+          <div class="feature-icon">↑</div><p class="tag">Delivery</p>
+          <h3>Export on your terms</h3><p>Deliver H.264 or HEVC in MOV or MP4, from 1080p through 8K, with mixed audio and timeline effects.</p>
+          <div class="export-row"><span><b>1080p</b><small>HD</small></span><span><b>4K</b><small>Ultra HD</small></span><span><b>8K</b><small>Master</small></span></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="workflow-section" id="workflow">
+      <div class="wrap workflow-grid">
+        <div class="workflow-copy">
+          <p class="eyebrow"><span></span> One connected workflow</p>
+          <h2>Stay in the flow.</h2>
+          <p>Each workspace is purpose-built, while the same live timeline and program monitor keep your edit in context.</p>
+          <ol class="steps">
+            <li class="active"><b>01</b><div><strong>Bring in your media</strong><span>Import files or drag them directly to a track.</span></div></li>
+            <li><b>02</b><div><strong>Build your timeline</strong><span>Move, trim, split, stack, and synchronise clips.</span></div></li>
+            <li><b>03</b><div><strong>Finish the look</strong><span>Grade colour, animate effects, and mix sound.</span></div></li>
+            <li><b>04</b><div><strong>Save or deliver</strong><span>Keep an editable project or render the final film.</span></div></li>
+          </ol>
+        </div>
+        <div class="workflow-visual">
+          <div class="drop-zone"><span>↓</span><b>Drop media anywhere</b><small>MOV, MP4, M4V, WAV, MP3 and more</small></div>
+          <div class="file-chip fc1"><i></i><b>interview.mov</b><span>04:18</span></div>
+          <div class="file-chip fc2"><i></i><b>soundtrack.wav</b><span>02:42</span></div>
+          <div class="file-chip fc3"><i></i><b>b-roll.mp4</b><span>00:35</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section wrap install" id="install">
+      <div class="install-card">
+        <div>
+          <p class="eyebrow"><span></span> Open source</p>
+          <h2>Build NetVista Studio.</h2>
+          <p>Clone the repository on a Mac with Xcode Command Line Tools, then run the included build script. No web runtime is used by the editor.</p>
+          <div class="requirements"><span>macOS</span><span>Swift</span><span>Xcode tools</span></div>
+        </div>
+        <div class="terminal" aria-label="Build instructions">
+          <div class="terminal-bar"><i></i><i></i><i></i><span>Terminal</span><button class="copy-button" type="button" data-copy="git clone REPOSITORY_URL&#10;cd REPOSITORY_NAME&#10;sh build_app.sh">Copy</button></div>
+          <pre><code><span>$</span> git clone <i class="clone-url">REPOSITORY_URL</i>
+<span>$</span> cd <i class="repo-name">REPOSITORY_NAME</i>
+<span>$</span> sh build_app.sh
+
+<b>Built NetVista Studio.app ✓</b></code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="cta wrap">
+      <div class="cta-card">
+        <div class="orb"></div>
+        <p class="eyebrow"><span></span> Cut something great</p>
+        <h2>Your next edit starts here.</h2>
+        <p>Explore the source, build the native app, and help shape NetVista Studio.</p>
+        <a class="button button-light github-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io" target="_blank" rel="noreferrer">Open the GitHub repository <span>↗</span></a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span><span>NetVista <b>Studio</b></span></a>
+      <p>Native video editing, built in the open.</p>
+      <p>© <span id="year"></span> NetVista Studio</p>
+    </div>
+  </footer>
+</body>
+</html>

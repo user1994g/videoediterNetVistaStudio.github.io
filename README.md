@@ -2,6 +2,10 @@
 
 NetVista Studio is a native macOS desktop video editor built with Swift, Cocoa, AVFoundation, SceneKit, SpriteKit, Core Image, and VideoToolbox. It does not use a website, browser view, HTML interface, or WebKit.
 
+## Project website
+
+The GitHub Pages website lives in [`docs/`](docs/). Push the repository, open **Settings → Pages** on GitHub, and choose **GitHub Actions** as the source. The included workflow publishes the site after changes to `docs/` reach `main` or `master`.
+
 ## Open the app
 
 Double-click `NetVista Studio.app` in Finder.
