@@ -4,6 +4,7 @@ APP="NetVista Studio.app"
 mkdir -p "$APP/Contents/MacOS"
 cp NetVistaStudio-Info.plist "$APP/Contents/Info.plist"
 CLANG_MODULE_CACHE_PATH=/private/tmp/netvista_studio_swift_cache xcrun swiftc \
+    -target arm64-apple-macos11.0 \
     -suppress-warnings \
     -framework Cocoa \
     -framework AVKit \
