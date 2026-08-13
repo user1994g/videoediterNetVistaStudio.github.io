@@ -8,6 +8,7 @@ python -m pip install -r requirements-build.txt
 python -m unittest discover -s tests -v
 pyinstaller --noconfirm --clean --windowed --onedir \
   --name NetVistaStudio --collect-all imageio_ffmpeg \
+  --icon assets/NetVistaStudio.png --add-data "assets/NetVistaStudio.png:assets" \
   --exclude-module PySide6.QtQml --exclude-module PySide6.QtQuick \
   --exclude-module PySide6.QtPdf --exclude-module PySide6.QtVirtualKeyboard \
   --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets \

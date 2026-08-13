@@ -2,7 +2,9 @@
 set -eu
 APP="NetVista Studio.app"
 mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/Resources"
 cp NetVistaStudio-Info.plist "$APP/Contents/Info.plist"
+cp assets/NetVistaStudio.icns "$APP/Contents/Resources/NetVistaStudio.icns"
 CLANG_MODULE_CACHE_PATH=/private/tmp/netvista_studio_swift_cache xcrun swiftc \
     -target arm64-apple-macos11.0 \
     -suppress-warnings \
