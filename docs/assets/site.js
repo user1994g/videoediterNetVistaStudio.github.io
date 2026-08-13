@@ -1,8 +1,12 @@
 (() => {
   const repository = 'videoediterNetVistaStudio.github.io';
   const repositoryURL = 'https://github.com/user1994g/videoediterNetVistaStudio.github.io';
+  const releaseTag = 'v1.1.0-beta.1';
+  const downloadURL = `${repositoryURL}/releases/download/${releaseTag}/NetVista-Studio-1.1-Beta.zip`;
 
   document.querySelectorAll('.github-link').forEach((link) => { link.href = repositoryURL; });
+  document.querySelectorAll('.download-link').forEach((link) => { link.href = downloadURL; });
+  document.querySelectorAll('.releases-link').forEach((link) => { link.href = `${repositoryURL}/releases/tag/${releaseTag}`; });
   document.querySelectorAll('.clone-url').forEach((node) => { node.textContent = `${repositoryURL}.git`; });
   document.querySelectorAll('.repo-name').forEach((node) => { node.textContent = repository; });
   document.querySelector('#year').textContent = new Date().getFullYear();
