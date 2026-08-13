@@ -49,6 +49,23 @@
     if (event.key === 'Escape') closeNavigation();
   });
 
+  const editorHero = document.querySelector('.editor-hero');
+  const editorWindow = editorHero?.querySelector('.editor-window');
+  const fitEditorPreview = () => {
+    if (!editorHero || !editorWindow) return;
+    const naturalWidth = 1040;
+    const naturalHeight = 650;
+    const scale = Math.min(1, Math.max(0.1, editorHero.clientWidth / naturalWidth));
+    editorWindow.style.transform = `scale(${scale})`;
+    editorHero.style.height = `${Math.ceil(naturalHeight * scale + 28)}px`;
+  };
+  fitEditorPreview();
+  if ('ResizeObserver' in window) {
+    new ResizeObserver(fitEditorPreview).observe(editorHero);
+  } else {
+    window.addEventListener('resize', fitEditorPreview, { passive: true });
+  }
+
   const copyButton = document.querySelector('.copy-button');
   copyButton.addEventListener('click', async () => {
     const command = `git clone ${repositoryURL}.git\ncd ${repository}\nsh build_app.sh`;
