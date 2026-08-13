@@ -1,0 +1,148 @@
+name: Release signed and notarized macOS app
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing GitHub release tag to update
+        required: true
+        default: v1.2.0-beta.1
+      asset_name:
+        description: Download filename shown on GitHub
+        required: true
+        default: NetVista-Studio-macOS-1.2-Beta.zip
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Sign, notarize, and publish
+    runs-on: macos-15
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      ASSET_NAME: ${{ inputs.asset_name }}
+      CERTIFICATE_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12 }}
+      CERTIFICATE_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+      APPLE_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      APPLE_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      APPLE_API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Require Apple signing secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in CERTIFICATE_BASE64 CERTIFICATE_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_PRIVATE_KEY; do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} )); then
+            printf 'Missing required Apple release secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Import Developer ID certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          CERTIFICATE_PATH="$RUNNER_TEMP/DeveloperID.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/netvista-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+
+          printf '%s' "$CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' \
+            | head -1)"
+          if [[ -z "$IDENTITY" ]]; then
+            echo 'The uploaded certificate is not a valid Developer ID Application identity.' >&2
+            exit 1
+          fi
+
+          echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "CODESIGN_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Build and sign with hardened runtime
+        run: sh build_app.sh
+
+      - name: Verify Developer ID signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict --verbose=2 'NetVista Studio.app'
+          codesign -dv --verbose=4 'NetVista Studio.app' 2>&1 | grep 'TeamIdentifier='
+
+      - name: Submit to Apple notary service
+        shell: bash
+        run: |
+          set -euo pipefail
+          SUBMISSION_ZIP="$RUNNER_TEMP/NetVista-Studio-notarization.zip"
+          API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$API_KEY_PATH"
+          chmod 600 "$API_KEY_PATH"
+          ditto -c -k --keepParent --sequesterRsrc 'NetVista Studio.app' "$SUBMISSION_ZIP"
+          xcrun notarytool submit "$SUBMISSION_ZIP" \
+            --key "$API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait \
+            --timeout 30m
+
+      - name: Staple and validate Apple ticket
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun stapler staple 'NetVista Studio.app'
+          xcrun stapler validate 'NetVista Studio.app'
+          spctl --assess --type execute --verbose=4 'NetVista Studio.app'
+
+      - name: Package notarized download
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ditto -c -k --keepParent --sequesterRsrc \
+            'NetVista Studio.app' \
+            "dist/$ASSET_NAME"
+          shasum -a 256 "dist/$ASSET_NAME" > "dist/$ASSET_NAME.sha256"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetVista-Studio-macOS-notarized
+          path: |
+            dist/${{ inputs.asset_name }}
+            dist/${{ inputs.asset_name }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Replace macOS asset on GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" \
+            "dist/$ASSET_NAME#NetVista Studio for macOS — signed and notarized" \
+            "dist/$ASSET_NAME.sha256#SHA-256 checksum for the macOS download" \
+            --clobber

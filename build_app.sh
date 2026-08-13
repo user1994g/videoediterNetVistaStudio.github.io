@@ -28,5 +28,27 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/netvista_studio_swift_cache xcrun swiftc \
     ExportWorkspace.swift \
     SceneEditor.swift \
     -o "$APP/Contents/MacOS/NetVistaStudio"
-codesign --force --sign - "$APP"
-echo "Built $APP"
+SIGNING_IDENTITY=${CODESIGN_IDENTITY:--}
+if [ "$SIGNING_IDENTITY" = "-" ]; then
+    codesign --force --sign - "$APP"
+    echo "Built $APP with a local ad-hoc signature"
+elif [ -n "${CODESIGN_KEYCHAIN:-}" ]; then
+    codesign \
+        --force \
+        --options runtime \
+        --timestamp \
+        --keychain "$CODESIGN_KEYCHAIN" \
+        --sign "$SIGNING_IDENTITY" \
+        "$APP"
+    codesign --verify --deep --strict --verbose=2 "$APP"
+    echo "Built $APP with Developer ID: $SIGNING_IDENTITY"
+else
+    codesign \
+        --force \
+        --options runtime \
+        --timestamp \
+        --sign "$SIGNING_IDENTITY" \
+        "$APP"
+    codesign --verify --deep --strict --verbose=2 "$APP"
+    echo "Built $APP with Developer ID: $SIGNING_IDENTITY"
+fi
