@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import QCoreApplication, Qt
+from PySide6.QtCore import QCoreApplication, QTimer, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
@@ -19,6 +19,14 @@ def main() -> int:
     app.setStyle("Fusion")
     window = MainWindow()
     window.show()
+    if "--smoke-test" in sys.argv:
+        # Packaging jobs use this to prove the frozen executable can construct
+        # the complete UI and enter its event loop on the target OS.
+        window.show_page("Export")
+        window.resolution_combo.setCurrentText("16K Ultra HD")
+        if (window.width_spin.value(), window.height_spin.value()) != (15360, 8640):
+            return 2
+        QTimer.singleShot(250, app.quit)
     return app.exec()
 
 
