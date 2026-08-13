@@ -1,6 +1,6 @@
 # NetVista Studio
 
-NetVista Studio is a native macOS desktop video editor built with Swift, Cocoa, AVFoundation, SceneKit, SpriteKit, Core Image, and VideoToolbox. It does not use a website, browser view, HTML interface, or WebKit.
+NetVista Studio is a native desktop video editor. The macOS edition is built with Swift, Cocoa, AVFoundation, SceneKit, SpriteKit, Core Image, and VideoToolbox. A native Qt/FFmpeg Windows and Linux beta lives in [`cross_platform`](cross_platform/README.md). Neither edition is a website or browser wrapper.
 
 ## Project website
 
@@ -43,11 +43,20 @@ Double-click `NetVista Studio.app` in Finder.
 
 - Save complete projects as `.netvistastudio` files and standalone editable 3D scenes as `.netvistascene` files. Save and export dialogs open in Downloads by default while still allowing any other folder.
 - Existing `.swiftediter` projects and `.swiftscene` scenes remain openable for backwards compatibility; new saves use the NetVista Studio formats.
-- The Export page supports 1080p, 4K, and 8K, MP4 or MOV, H.264 or HEVC, 24/25/30/60 fps, AAC audio, hardware capability checks, progress, and cancellation.
+- The Export page supports 720p, 1080p, 1440p, 4K, 8K, 16K and custom frame sizes, MP4 or MOV, H.264 or HEVC, 24/25/30/60 fps, AAC audio, hardware capability checks, progress, and cancellation. The Windows/Linux beta also offers 6K/12K presets, AV1, ProRes and MKV through FFmpeg.
 - Export includes timeline placement, trims, layered video, transforms, keyframes, per-clip colour grades and effects, and mixed audio.
 - Exports and 3D renders use safe staging files so cancellation or encoder failure does not destroy an existing movie at the selected destination.
 - Imported 3D assets are referenced in place; NetVista Studio does not copy, modify, or delete the original model. Keep OBJ material and texture files beside the OBJ when moving the set.
 
+## Share on your local network
+
+- Press **Share** to start a temporary server and pairing code. The Share window shows the Mac's private local IP address, such as `http://192.168.1.118:58045/`.
+- Open that exact address on an iPad, phone, or computer connected to the same Wi-Fi or wired LAN, then enter the six-digit code.
+- Sharing never publishes the project to the internet and does not advertise `localhost` as the device address. Connections outside the Mac's current private subnet are rejected.
+- If the router uses guest/client isolation, devices on the same Wi-Fi name may still be blocked from one another; use the main trusted network instead.
+
 ## Build it again
 
 Run `sh build_app.sh` from this folder. The native sources include `NetVistaStudio.swift`, `ProfessionalTimelineView.swift`, `CubeLUT.swift`, `EffectsStudio.swift`, `SceneEditor.swift`, `NativeTimelineExportEngine.swift`, `ExportWorkspace.swift`, `ShareServer.swift`, and `SharePanel.swift`.
+
+For Windows and Linux source/build instructions, see [`cross_platform/README.md`](cross_platform/README.md). GitHub Actions builds downloadable native packages for both operating systems.

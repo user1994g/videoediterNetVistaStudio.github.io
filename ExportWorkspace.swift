@@ -10,6 +10,10 @@ final class ExportWorkspaceViewController: NSViewController {
     private let containerPopup = NSPopUpButton()
     private let codecPopup = NSPopUpButton()
     private let frameRatePopup = NSPopUpButton()
+    private let customWidthField = NSTextField(string: "1920")
+    private let customHeightField = NSTextField(string: "1080")
+    private lazy var customWidthRow = field("Custom width", customWidthField)
+    private lazy var customHeightRow = field("Custom height", customHeightField)
     private let includeAudioButton = NSButton(checkboxWithTitle: "Include timeline audio", target: nil, action: nil)
     private let streamingButton = NSButton(checkboxWithTitle: "Fast-start playback", target: nil, action: nil)
     private let summaryLabel = NSTextField(wrappingLabelWithString: "")
@@ -64,6 +68,8 @@ final class ExportWorkspaceViewController: NSViewController {
         settings.addArrangedSubview(sectionTitle("EXPORT SETTINGS"))
         configurePopups()
         settings.addArrangedSubview(field("Resolution", resolutionPopup))
+        settings.addArrangedSubview(customWidthRow)
+        settings.addArrangedSubview(customHeightRow)
         settings.addArrangedSubview(field("Format", containerPopup))
         settings.addArrangedSubview(field("Video codec", codecPopup))
         settings.addArrangedSubview(field("Frame rate", frameRatePopup))
@@ -125,6 +131,19 @@ final class ExportWorkspaceViewController: NSViewController {
             popup.target = self
             popup.action = #selector(settingChanged)
         }
+        let numberFormatter = NumberFormatter()
+        numberFormatter.numberStyle = .none
+        numberFormatter.minimum = 64
+        numberFormatter.maximum = 15_360
+        customWidthField.formatter = numberFormatter
+        let heightFormatter = numberFormatter.copy() as! NumberFormatter
+        heightFormatter.maximum = 8_640
+        customHeightField.formatter = heightFormatter
+        for field in [customWidthField, customHeightField] {
+            field.target = self
+            field.action = #selector(settingChanged)
+            field.alignment = .right
+        }
     }
 
     private func card() -> NSStackView {
@@ -169,6 +188,8 @@ final class ExportWorkspaceViewController: NSViewController {
             resolution: resolutions[max(0, min(resolutions.count - 1, resolutionPopup.indexOfSelectedItem))],
             container: containers[max(0, min(containers.count - 1, containerPopup.indexOfSelectedItem))],
             codec: codecs[max(0, min(codecs.count - 1, codecPopup.indexOfSelectedItem))],
+            customWidth: Int(customWidthField.integerValue),
+            customHeight: Int(customHeightField.integerValue),
             frameRate: rates[max(0, min(rates.count - 1, frameRatePopup.indexOfSelectedItem))],
             includeAudio: includeAudioButton.state == .on,
             optimizeForStreaming: streamingButton.state == .on
@@ -180,10 +201,14 @@ final class ExportWorkspaceViewController: NSViewController {
     private func updateSummary() {
         guard isViewLoaded else { return }
         let options = selectedOptions
+        let custom = options.resolution == .custom
+        customWidthRow.isHidden = !custom
+        customHeightRow.isHidden = !custom
         let size = options.renderSize
         summaryLabel.stringValue = "\(Int(size.width)) × \(Int(size.height))\n\(options.frameRate) frames per second\n\(options.container.title) • \(options.codec.title)\n\(options.includeAudio ? "AAC stereo audio" : "Video only")"
-        let requestedCodec: TimelineExportCodec = options.codec == .automatic ? (options.resolution == .ultraHD8K ? .hevc : .h264) : options.codec
-        let supported = NativeTimelineExportEngine.canExport(codec: requestedCodec, resolution: options.resolution, container: options.container)
+        let highResolution = size.width > 3840 || size.height > 2160
+        let requestedCodec: TimelineExportCodec = options.codec == .automatic ? (highResolution ? .hevc : .h264) : options.codec
+        let supported = NativeTimelineExportEngine.canExport(codec: requestedCodec, options: options)
         let hardware = NativeTimelineExportEngine.hasHardwareEncoder(for: requestedCodec)
         if supported {
             capabilityLabel.stringValue = hardware ? "✓ Hardware encoding is available on this Mac." : "✓ Supported using the available system encoder. High resolutions may render slowly."
@@ -204,7 +229,7 @@ final class ExportWorkspaceViewController: NSViewController {
     func beginExport() {
         isExporting = true
         exportButton.isEnabled = false
-        [resolutionPopup, containerPopup, codecPopup, frameRatePopup, includeAudioButton, streamingButton].forEach { $0.isEnabled = false }
+        [resolutionPopup, containerPopup, codecPopup, frameRatePopup, customWidthField, customHeightField, includeAudioButton, streamingButton].forEach { $0.isEnabled = false }
         cancelButton.isHidden = false
         progressBar.doubleValue = 0
         progressLabel.stringValue = "Preparing timeline…"
@@ -218,7 +243,7 @@ final class ExportWorkspaceViewController: NSViewController {
     func finishExport(message: String, succeeded: Bool) {
         isExporting = false
         exportButton.isEnabled = true
-        [resolutionPopup, containerPopup, codecPopup, frameRatePopup, includeAudioButton, streamingButton].forEach { $0.isEnabled = true }
+        [resolutionPopup, containerPopup, codecPopup, frameRatePopup, customWidthField, customHeightField, includeAudioButton, streamingButton].forEach { $0.isEnabled = true }
         cancelButton.isHidden = true
         progressLabel.stringValue = message
         progressLabel.textColor = succeeded ? .systemGreen : .systemOrange
