@@ -9,31 +9,48 @@ import VideoToolbox
 
 /// Frame sizes offered by NetVista Studio's native delivery engine.
 enum TimelineExportResolution: String, CaseIterable, Codable {
+    case hd720
     case hd1080
+    case quadHD
     case ultraHD4K
     case ultraHD8K
+    case ultraHD16K
+    case custom
 
     var title: String {
         switch self {
+        case .hd720: return "720p HD"
         case .hd1080: return "1080p HD"
+        case .quadHD: return "1440p Quad HD"
         case .ultraHD4K: return "4K Ultra HD"
         case .ultraHD8K: return "8K Ultra HD"
+        case .ultraHD16K: return "16K Ultra HD"
+        case .custom: return "Custom size"
         }
     }
 
     var dimensions: CGSize {
         switch self {
+        case .hd720: return CGSize(width: 1280, height: 720)
         case .hd1080: return CGSize(width: 1920, height: 1080)
+        case .quadHD: return CGSize(width: 2560, height: 1440)
         case .ultraHD4K: return CGSize(width: 3840, height: 2160)
         case .ultraHD8K: return CGSize(width: 7680, height: 4320)
+        case .ultraHD16K: return CGSize(width: 15360, height: 8640)
+        case .custom: return CGSize(width: 1920, height: 1080)
         }
     }
 
     var recommendedVideoBitRate: Int {
         switch self {
+        case .hd720: return 8_000_000
         case .hd1080: return 16_000_000
+        case .quadHD: return 28_000_000
         case .ultraHD4K: return 55_000_000
         case .ultraHD8K: return 140_000_000
+        case .ultraHD16K: return 400_000_000
+        case .custom:
+            return 55_000_000
         }
     }
 }
@@ -81,6 +98,8 @@ struct TimelineExportOptions: Codable, Equatable {
     var resolution: TimelineExportResolution = .hd1080
     var container: TimelineExportContainer = .mp4
     var codec: TimelineExportCodec = .automatic
+    var customWidth: Int = 1920
+    var customHeight: Int = 1080
     var frameRate: Int32 = 30
     var videoBitRate: Int? = nil
     var audioBitRate: Int = 256_000
@@ -88,8 +107,21 @@ struct TimelineExportOptions: Codable, Equatable {
     var allowCodecFallback = true
     var optimizeForStreaming = true
 
-    var renderSize: CGSize { resolution.dimensions }
-    var resolvedVideoBitRate: Int { videoBitRate ?? resolution.recommendedVideoBitRate }
+    var renderSize: CGSize {
+        guard resolution == .custom else { return resolution.dimensions }
+        // Video encoders work most reliably with even dimensions. Custom
+        // output is capped at the 16K UHD raster supported by this editor.
+        let width = min(15_360, max(64, customWidth)) & ~1
+        let height = min(8_640, max(64, customHeight)) & ~1
+        return CGSize(width: width, height: height)
+    }
+    var resolvedVideoBitRate: Int {
+        if let videoBitRate { return videoBitRate }
+        guard resolution == .custom else { return resolution.recommendedVideoBitRate }
+        let pixels = renderSize.width * renderSize.height
+        let scale = pixels / (3840.0 * 2160.0)
+        return min(400_000_000, max(8_000_000, Int(55_000_000 * scale)))
+    }
 }
 
 struct TimelineExportProgress: Equatable {
@@ -327,15 +359,19 @@ enum NativeTimelineExportEngine {
         resolution: TimelineExportResolution,
         container: TimelineExportContainer
     ) -> Bool {
+        canExport(codec: codec, options: TimelineExportOptions(resolution: resolution, container: container, codec: codec))
+    }
+
+    static func canExport(codec: TimelineExportCodec, options: TimelineExportOptions) -> Bool {
         guard codec != .automatic, let avCodec = codec.avCodec else { return true }
         guard videoToolboxHasEncoder(for: codec) else { return false }
         let temporaryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("netvista-studio-codec-check-\(UUID().uuidString)")
-            .appendingPathExtension(container.fileExtension)
+            .appendingPathExtension(options.container.fileExtension)
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
-        guard let writer = try? AVAssetWriter(outputURL: temporaryURL, fileType: container.avFileType) else { return false }
+        guard let writer = try? AVAssetWriter(outputURL: temporaryURL, fileType: options.container.avFileType) else { return false }
         return writer.canApply(
-            outputSettings: videoSettings(codec: avCodec, options: TimelineExportOptions(resolution: resolution, container: container, codec: codec)),
+            outputSettings: videoSettings(codec: avCodec, options: options),
             forMediaType: .video
         )
     }
@@ -355,13 +391,14 @@ enum NativeTimelineExportEngine {
         let preferred: [TimelineExportCodec]
         switch options.codec {
         case .automatic:
-            preferred = options.resolution == .ultraHD8K ? [.hevc, .h264] : [.h264, .hevc]
+            let highResolution = options.renderSize.width > 3840 || options.renderSize.height > 2160
+            preferred = highResolution ? [.hevc, .h264] : [.h264, .hevc]
         case .h264:
             preferred = options.allowCodecFallback ? [.h264, .hevc] : [.h264]
         case .hevc:
             preferred = options.allowCodecFallback ? [.hevc, .h264] : [.hevc]
         }
-        for codec in preferred where canExport(codec: codec, resolution: options.resolution, container: options.container) {
+        for codec in preferred where canExport(codec: codec, options: options) {
             if let value = codec.avCodec { return value }
         }
         throw NativeTimelineExportError.codecUnavailable(options.codec, options.resolution)

@@ -1,0 +1,51 @@
+name: Build Windows and Linux apps
+
+on:
+  push:
+    branches: [main, "agent/**"]
+    paths:
+      - "cross_platform/**"
+      - ".github/workflows/build-cross-platform.yml"
+  pull_request:
+    paths:
+      - "cross_platform/**"
+      - ".github/workflows/build-cross-platform.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows app
+            os: windows-latest
+            script: powershell -ExecutionPolicy Bypass -File build_windows.ps1
+            artifact: NetVista-Studio-Windows-Beta
+          - name: Linux app
+            os: ubuntu-24.04
+            script: sh build_linux.sh
+            artifact: NetVista-Studio-Linux-Beta
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: cross_platform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: cross_platform/requirements-build.txt
+      - name: Install Linux multimedia libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libpulse0
+      - name: Build and test
+        run: ${{ matrix.script }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: cross_platform/dist/NetVistaStudio
+          if-no-files-found: error
+          retention-days: 30
