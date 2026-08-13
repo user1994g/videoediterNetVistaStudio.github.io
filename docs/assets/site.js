@@ -1,12 +1,18 @@
 (() => {
   const repository = 'videoediterNetVistaStudio.github.io';
   const repositoryURL = 'https://github.com/user1994g/videoediterNetVistaStudio.github.io';
-  const releaseTag = 'v1.1.0-beta.1';
-  const downloadURL = `${repositoryURL}/releases/download/${releaseTag}/NetVista-Studio-1.1-Beta.zip`;
+  const releaseTag = 'v1.2.0-beta.1';
+  const releaseURL = `${repositoryURL}/releases/tag/${releaseTag}`;
+  const downloads = {
+    mac: `${repositoryURL}/releases/download/${releaseTag}/NetVista-Studio-macOS-1.2-Beta.zip`,
+    windows: `${repositoryURL}/releases/download/${releaseTag}/NetVista-Studio-Windows-1.2-Beta.zip`,
+    linux: `${repositoryURL}/releases/download/${releaseTag}/NetVista-Studio-Linux-1.2-Beta.zip`
+  };
 
   document.querySelectorAll('.github-link').forEach((link) => { link.href = repositoryURL; });
-  document.querySelectorAll('.download-link').forEach((link) => { link.href = downloadURL; });
-  document.querySelectorAll('.releases-link').forEach((link) => { link.href = `${repositoryURL}/releases/tag/${releaseTag}`; });
+  document.querySelectorAll('.download-link').forEach((link) => { link.href = releaseURL; });
+  document.querySelectorAll('.releases-link').forEach((link) => { link.href = releaseURL; });
+  document.querySelectorAll('[data-platform]').forEach((link) => { link.href = downloads[link.dataset.platform]; });
   document.querySelectorAll('.clone-url').forEach((node) => { node.textContent = `${repositoryURL}.git`; });
   document.querySelectorAll('.repo-name').forEach((node) => { node.textContent = repository; });
   document.querySelectorAll('[data-current-year]').forEach((node) => { node.textContent = new Date().getFullYear(); });
@@ -66,9 +72,37 @@
     window.addEventListener('resize', fitEditorPreview, { passive: true });
   }
 
+  const downloadModal = document.querySelector('#download-modal');
+  const downloadDialog = downloadModal.querySelector('.download-dialog');
+  const downloadButtons = document.querySelectorAll('.download-link');
+  let downloadReturnFocus = null;
+  const preferredPlatform = /Win/i.test(navigator.platform + navigator.userAgent) ? 'windows'
+    : /Linux/i.test(navigator.platform + navigator.userAgent) && !/Android/i.test(navigator.userAgent) ? 'linux' : 'mac';
+  const preferredCard = downloadModal.querySelector(`[data-platform="${preferredPlatform}"]`);
+  preferredCard?.classList.add('recommended');
+  preferredCard?.insertAdjacentHTML('afterbegin', '<em class="recommended-label">Recommended</em>');
+  const closeDownload = () => {
+    if (downloadModal.hidden) return;
+    downloadModal.hidden = true;
+    document.body.classList.remove('overlay-open');
+    downloadReturnFocus?.focus();
+  };
+  const openDownload = (event) => {
+    event.preventDefault();
+    downloadReturnFocus = event.currentTarget;
+    downloadModal.hidden = false;
+    document.body.classList.add('overlay-open');
+    downloadDialog.querySelector(`[data-platform="${preferredPlatform}"]`)?.focus();
+  };
+  downloadButtons.forEach((button) => button.addEventListener('click', openDownload));
+  downloadModal.querySelectorAll('[data-close-download]').forEach((button) => button.addEventListener('click', closeDownload));
+  downloadModal.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeDownload();
+  });
+
   const copyButton = document.querySelector('.copy-button');
   copyButton.addEventListener('click', async () => {
-    const command = `git clone ${repositoryURL}.git\ncd ${repository}\nsh build_app.sh`;
+    const command = `git clone ${repositoryURL}.git\ncd ${repository}\n# macOS: sh build_app.sh\n# Windows/Linux: see cross_platform/README.md`;
     try {
       await navigator.clipboard.writeText(command);
       copyButton.textContent = 'Copied';
