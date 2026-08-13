@@ -11,6 +11,21 @@
   document.querySelectorAll('.repo-name').forEach((node) => { node.textContent = repository; });
   document.querySelector('#year').textContent = new Date().getFullYear();
 
+  const reveals = document.querySelectorAll('.reveal');
+  if ('IntersectionObserver' in window && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+          observer.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.08 });
+    reveals.forEach((item) => observer.observe(item));
+  } else {
+    reveals.forEach((item) => item.classList.add('visible'));
+  }
+
   const menuButton = document.querySelector('.menu-button');
   const links = document.querySelector('#nav-links');
   menuButton.addEventListener('click', () => {
