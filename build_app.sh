@@ -1,11 +1,13 @@
 #!/bin/sh
 set -eu
 APP="NetVista Studio.app"
+CACHE_DIR=$(mktemp -d /private/tmp/netvista_studio_swift_cache.XXXXXX)
+trap 'rm -rf "$CACHE_DIR"' EXIT HUP INT TERM
 mkdir -p "$APP/Contents/MacOS"
 mkdir -p "$APP/Contents/Resources"
 cp NetVistaStudio-Info.plist "$APP/Contents/Info.plist"
 cp assets/NetVistaStudio.icns "$APP/Contents/Resources/NetVistaStudio.icns"
-CLANG_MODULE_CACHE_PATH=/private/tmp/netvista_studio_swift_cache xcrun swiftc \
+CLANG_MODULE_CACHE_PATH="$CACHE_DIR" xcrun swiftc \
     -target arm64-apple-macos11.0 \
     -suppress-warnings \
     -framework Cocoa \
@@ -17,13 +19,16 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/netvista_studio_swift_cache xcrun swiftc \
     -framework VideoToolbox \
     -framework Network \
     -framework Security \
-    -framework SystemConfiguration \
     -framework CoreImage \
     CubeLUT.swift \
     UltraKey.swift \
     ShareServer.swift \
     SharePanel.swift \
     AppUpdateService.swift \
+    ModModels.swift \
+    StudioTheme.swift \
+    ModManager.swift \
+    ModsStudio.swift \
     ProfessionalTimelineView.swift \
     NetVistaStudio.swift \
     EffectsStudio.swift \

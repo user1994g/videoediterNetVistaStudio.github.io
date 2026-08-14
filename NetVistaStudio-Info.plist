@@ -15,11 +15,11 @@
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.2.0</string>
+  <string>1.3.0</string>
   <key>CFBundleVersion</key>
-  <string>3</string>
+  <string>4</string>
   <key>NetVistaReleaseTag</key>
-  <string>v1.2.0-beta.1</string>
+  <string>v1.3.0-beta.1</string>
   <key>LSMinimumSystemVersion</key>
   <string>11.0</string>
   <key>NSPrincipalClass</key>
@@ -70,6 +70,22 @@
         <string>swiftscene</string>
       </array>
     </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>NetVista Studio Mod</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>local.netvista.studio.mod</string>
+      </array>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>netvistamod</string>
+      </array>
+    </dict>
   </array>
   <key>UTExportedTypeDeclarations</key>
   <array>
@@ -97,6 +113,19 @@
       <dict>
         <key>public.filename-extension</key>
         <array><string>netvistascene</string></array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>local.netvista.studio.mod</string>
+      <key>UTTypeDescription</key>
+      <string>NetVista Studio Mod</string>
+      <key>UTTypeConformsTo</key>
+      <array><string>public.zip-archive</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array><string>netvistamod</string></array>
       </dict>
     </dict>
   </array>

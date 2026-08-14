@@ -136,7 +136,7 @@ final class SharePanelViewController: NSViewController {
         let title = NSTextField(labelWithString: "Share on Your Local Network")
         title.font = .systemFont(ofSize: 20, weight: .bold)
         title.textColor = .white
-        let subtitle = NSTextField(labelWithString: "Open this NetVista Studio project on an iPad, phone, or another computer.")
+        let subtitle = NSTextField(labelWithString: "Open this project on a device connected to the same Wi-Fi or local network.")
         subtitle.font = .systemFont(ofSize: 11.5)
         subtitle.textColor = Palette.secondaryText
         subtitle.lineBreakMode = .byTruncatingTail
@@ -193,7 +193,7 @@ final class SharePanelViewController: NSViewController {
 
     private func makeConnectionCard() -> NSView {
         let eyebrow = sectionLabel("ADDRESS")
-        let heading = NSTextField(labelWithString: "Open this address on your other device")
+        let heading = NSTextField(labelWithString: "On the same Wi-Fi, open this local IP address")
         heading.font = .systemFont(ofSize: 15, weight: .semibold)
         heading.textColor = .white
 
@@ -373,7 +373,7 @@ final class SharePanelViewController: NSViewController {
             statusDetailLabel.stringValue = "Requesting local-network access and preparing the address…"
         case .ready:
             setPhase(title: "Sharing", color: Palette.success)
-            statusDetailLabel.stringValue = "Keep NetVista Studio open while the other device is connected."
+            statusDetailLabel.stringValue = "This private IP works only for devices on the same Wi-Fi or LAN. Keep NetVista Studio open."
         case .failed:
             setPhase(title: "Couldn’t start", color: Palette.error)
             statusDetailLabel.stringValue = "Check local-network access and try creating a new code."

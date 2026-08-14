@@ -6,11 +6,11 @@ on:
       release_tag:
         description: Existing GitHub release tag to update
         required: true
-        default: v1.2.0-beta.1
+        default: v1.3.0-beta.1
       asset_name:
         description: Download filename shown on GitHub
         required: true
-        default: NetVista-Studio-macOS-1.2-Beta.zip
+        default: NetVista-Studio-macOS-1.3-Beta-1.zip
 
 permissions:
   contents: write
@@ -30,6 +30,10 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          # Release builds must come from the tag they are published under,
+          # never from whatever happens to be on main when this runs.
+          ref: ${{ inputs.release_tag }}
 
       - name: Require Apple signing secrets
         shell: bash
