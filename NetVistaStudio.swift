@@ -1079,7 +1079,7 @@ final class EditorController: NSViewController {
         case .mods:
             break
         case .export:
-            let render = tool("Export", #selector(exportFromCurrentSettings), "Choose a file and export the timeline"); render.contentTintColor = .systemBlue; bar.addArrangedSubview(render)
+            let render = tool("Export", #selector(exportFromCurrentSettings), "Choose a resolution, then export the timeline"); render.contentTintColor = .systemBlue; bar.addArrangedSubview(render)
         }
         bar.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 0, right: 10)
         return bar
@@ -1239,7 +1239,7 @@ final class EditorController: NSViewController {
             dynamicInspector.addArrangedSubview(button("Restore Default Theme", #selector(restoreDefaultTheme)))
         case .export:
             dynamicInspector.addArrangedSubview(NSTextField(wrappingLabelWithString: "The native renderer supports 1080p, 4K and 8K with MP4 or MOV. It includes timeline placement, trims, layers, transform keyframes and mixed audio without requiring FFmpeg."))
-            let export = button("Choose File and Export", #selector(exportFromCurrentSettings)); export.contentTintColor = .systemBlue; dynamicInspector.addArrangedSubview(export)
+            let export = button("Choose Resolution and Export", #selector(exportFromCurrentSettings)); export.contentTintColor = .systemBlue; dynamicInspector.addArrangedSubview(export)
             let cancel = button("Cancel active export", #selector(cancelNativeExport)); cancel.isEnabled = activeExportJob != nil; dynamicInspector.addArrangedSubview(cancel)
         }
     }
@@ -2958,8 +2958,8 @@ final class EditorController: NSViewController {
     }
 
     @objc private func exportFromCurrentSettings() {
-        let options = exportWorkspaceController?.selectedOptions ?? TimelineExportOptions()
-        beginNativeExport(options: options)
+        if exportWorkspaceController == nil { _ = configuredExportWorkspace() }
+        exportWorkspaceController?.requestExport()
     }
 
     private func beginNativeExport(options: TimelineExportOptions) {

@@ -20,7 +20,7 @@ final class ExportWorkspaceViewController: NSViewController {
     private let capabilityLabel = NSTextField(wrappingLabelWithString: "")
     private let progressBar = NSProgressIndicator()
     private let progressLabel = NSTextField(labelWithString: "Ready to export")
-    private let exportButton = NSButton(title: "Choose File and Export", target: nil, action: nil)
+    private let exportButton = NSButton(title: "Choose Resolution and Export", target: nil, action: nil)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
 
     private(set) var isExporting = false
@@ -219,8 +219,33 @@ final class ExportWorkspaceViewController: NSViewController {
         }
     }
 
-    @objc private func startExport() {
+    @objc private func startExport() { requestExport() }
+
+    /// Every export entry point comes through this confirmation. This avoids
+    /// the toolbar and Inspector buttons silently using a previous/default
+    /// raster when the full Export workspace is not visible.
+    func requestExport() {
         guard !isExporting else { return }
+        let chooser = ExportResolutionChooserView(
+            resolution: selectedOptions.resolution,
+            customWidth: Int(customWidthField.integerValue),
+            customHeight: Int(customHeightField.integerValue)
+        )
+        let alert = NSAlert()
+        alert.messageText = "Choose export resolution"
+        alert.informativeText = "Pick the size for the finished movie before choosing where to save it."
+        alert.alertStyle = .informational
+        alert.accessoryView = chooser
+        alert.addButton(withTitle: "Continue to Save")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        if let index = TimelineExportResolution.allCases.firstIndex(of: chooser.resolution) {
+            resolutionPopup.selectItem(at: index)
+        }
+        customWidthField.integerValue = chooser.customWidth
+        customHeightField.integerValue = chooser.customHeight
+        updateSummary()
         onStartExport?(selectedOptions)
     }
 
@@ -249,5 +274,80 @@ final class ExportWorkspaceViewController: NSViewController {
         progressLabel.textColor = succeeded ? .systemGreen : .systemOrange
         if succeeded { progressBar.doubleValue = 1 }
         updateSummary()
+    }
+}
+
+/// Compact native resolution step shown before the save panel. It deliberately
+/// contains only raster choices; format, codec, frame rate and audio remain in
+/// the full Export page so this confirmation stays quick and understandable.
+private final class ExportResolutionChooserView: NSView {
+    private let popup = NSPopUpButton()
+    private let widthField = NSTextField(string: "1920")
+    private let heightField = NSTextField(string: "1080")
+
+    var resolution: TimelineExportResolution {
+        let choices = TimelineExportResolution.allCases
+        return choices[max(0, min(choices.count - 1, popup.indexOfSelectedItem))]
+    }
+    var customWidth: Int { min(15_360, max(64, Int(widthField.integerValue))) }
+    var customHeight: Int { min(8_640, max(64, Int(heightField.integerValue))) }
+
+    init(resolution: TimelineExportResolution, customWidth: Int, customHeight: Int) {
+        super.init(frame: NSRect(x: 0, y: 0, width: 380, height: 108))
+        popup.addItems(withTitles: TimelineExportResolution.allCases.map(\.title))
+        popup.selectItem(at: TimelineExportResolution.allCases.firstIndex(of: resolution) ?? 1)
+        popup.target = self
+        popup.action = #selector(resolutionChanged)
+        widthField.integerValue = customWidth
+        heightField.integerValue = customHeight
+        widthField.alignment = .right
+        heightField.alignment = .right
+
+        let widthFormatter = NumberFormatter()
+        widthFormatter.numberStyle = .none
+        widthFormatter.minimum = 64
+        widthFormatter.maximum = 15_360
+        widthField.formatter = widthFormatter
+        let heightFormatter = widthFormatter.copy() as! NumberFormatter
+        heightFormatter.maximum = 8_640
+        heightField.formatter = heightFormatter
+
+        let form = NSGridView(views: [
+            [label("Resolution"), popup],
+            [label("Custom width"), widthField],
+            [label("Custom height"), heightField]
+        ])
+        form.rowSpacing = 8
+        form.columnSpacing = 12
+        form.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(form)
+        NSLayoutConstraint.activate([
+            form.leadingAnchor.constraint(equalTo: leadingAnchor),
+            form.trailingAnchor.constraint(equalTo: trailingAnchor),
+            form.topAnchor.constraint(equalTo: topAnchor),
+            popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 210),
+            widthField.widthAnchor.constraint(greaterThanOrEqualToConstant: 110),
+            heightField.widthAnchor.constraint(greaterThanOrEqualToConstant: 110)
+        ])
+        resolutionChanged()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    private func label(_ title: String) -> NSTextField {
+        let value = NSTextField(labelWithString: title)
+        value.alignment = .right
+        return value
+    }
+
+    @objc private func resolutionChanged() {
+        let custom = resolution == .custom
+        widthField.isEnabled = custom
+        heightField.isEnabled = custom
+        if !custom {
+            let dimensions = resolution.dimensions
+            widthField.integerValue = Int(dimensions.width)
+            heightField.integerValue = Int(dimensions.height)
+        }
     }
 }
