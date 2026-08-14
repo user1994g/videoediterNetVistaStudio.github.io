@@ -11,14 +11,15 @@ from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QDragEnterEven
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
-                               QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+                               QApplication, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
                                QMessageBox, QProgressBar, QPushButton, QScrollArea, QSlider, QSpinBox,
                                QSplitter, QStackedWidget, QVBoxLayout, QWidget)
 
 from .ffmpeg_engine import (RESOLUTION_PRESETS, ExportOptions, ExportProcess, FFmpegError,
                             probe_media, render_preview)
 from .model import MediaAsset, Project, TimelineClip
-from .theme import APP_STYLE
+from .mods import ModCatalog, ModError, ModManager, ModPackage
+from .theme import build_app_style
 from .timeline import TimelineWidget
 from .updater import AvailableUpdate, check_for_update, download_update
 from . import __version__
@@ -48,7 +49,7 @@ class TaskThread(QThread):
 
 
 class MainWindow(QMainWindow):
-    pages = ["Media", "Cut", "Edit", "Effects", "Color", "Audio", "3D Scene", "Export"]
+    pages = ["Media", "Cut", "Edit", "Effects", "Color", "Audio", "3D Scene", "Mods", "Export"]
 
     def __init__(self) -> None:
         super().__init__()
@@ -60,11 +61,13 @@ class MainWindow(QMainWindow):
         self.update_thread: TaskThread | None = None
         self.current_page = "Media"
         self.selected_clip_id: str | None = None
+        self.mod_manager = ModManager(__version__)
+        self.mod_catalog = self.mod_manager.scan()
         self.setWindowTitle("NetVista Studio — Windows / Linux Beta")
         self.resize(1500, 930)
         self.setMinimumSize(960, 640)
         self.setAcceptDrops(True)
-        self.setStyleSheet(APP_STYLE)
+        self.setStyleSheet(build_app_style(self.mod_manager.active_theme_tokens(self.mod_catalog)))
         self._build_ui()
         self._build_shortcuts()
         self.preview_timer = QTimer(self)
@@ -267,9 +270,63 @@ class MainWindow(QMainWindow):
             add_model = QPushButton("Add 3D model")
             add_model.clicked.connect(self.add_3d_model)
             column.addWidget(add_model)
+        elif page == "Mods":
+            column.addWidget(self._mods_controls())
         elif page == "Export":
             column.addWidget(self._export_controls())
         column.addStretch()
+        return widget
+
+    def _mods_controls(self) -> QWidget:
+        widget = QWidget()
+        column = QVBoxLayout(widget)
+        column.setContentsMargins(0, 0, 0, 0)
+        intro = QLabel("Install data-only .netvistamod packages. Mods v1 can change approved theme colours but cannot run scripts, commands, or app code.")
+        intro.setWordWrap(True)
+        column.addWidget(intro)
+        drop_hint = QLabel("Drop a .netvistamod file or folder anywhere on this window", objectName="panelTitle")
+        drop_hint.setWordWrap(True)
+        drop_hint.setFrameShape(QFrame.Shape.StyledPanel)
+        drop_hint.setContentsMargins(8, 8, 8, 8)
+        column.addWidget(drop_hint)
+
+        self.mod_list = QListWidget()
+        self.mod_list.setMinimumHeight(170)
+        self.mod_list.itemSelectionChanged.connect(self.mod_selection_changed)
+        column.addWidget(self.mod_list, 1)
+
+        self.mod_detail = QLabel("Select an installed mod to see its details.")
+        self.mod_detail.setWordWrap(True)
+        self.mod_detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        column.addWidget(self.mod_detail)
+
+        self.mod_error_label = QLabel("")
+        self.mod_error_label.setWordWrap(True)
+        self.mod_error_label.setStyleSheet("color: #ff7a84;")
+        column.addWidget(self.mod_error_label)
+
+        install_row = QHBoxLayout()
+        install = QPushButton("Install package…", objectName="primary")
+        install.clicked.connect(self.install_mod_dialog)
+        refresh = QPushButton("Refresh")
+        refresh.clicked.connect(lambda: self.refresh_mods(announce=True))
+        install_row.addWidget(install)
+        install_row.addWidget(refresh)
+        column.addLayout(install_row)
+
+        action_row = QHBoxLayout()
+        self.mod_toggle_button = QPushButton("Enable")
+        self.mod_toggle_button.clicked.connect(self.toggle_selected_mod)
+        self.mod_remove_button = QPushButton("Remove", objectName="danger")
+        self.mod_remove_button.clicked.connect(self.remove_selected_mod)
+        action_row.addWidget(self.mod_toggle_button)
+        action_row.addWidget(self.mod_remove_button)
+        column.addLayout(action_row)
+
+        open_folder = QPushButton("Open Mods Folder")
+        open_folder.clicked.connect(self.open_mods_folder)
+        column.addWidget(open_folder)
+        self._populate_mod_list()
         return widget
 
     def _slider(self, parent: QVBoxLayout, label: str, minimum: int, maximum: int, value: int,
@@ -329,6 +386,157 @@ class MainWindow(QMainWindow):
     def mark_dirty(self) -> None:
         self.project_dirty = True
         self.setWindowTitle(f"NetVista Studio — {self.project.title} *")
+
+    def _populate_mod_list(self, selected_id: str | None = None) -> None:
+        if not hasattr(self, "mod_list"):
+            return
+        selected_id = selected_id or self.selected_mod_id()
+        self.mod_list.blockSignals(True)
+        self.mod_list.clear()
+        selected_row = -1
+        for row, package in enumerate(self.mod_catalog.packages):
+            state = "ON" if self.mod_manager.is_enabled(package.identifier) else "OFF"
+            warning = " · incompatible" if not package.compatible else ""
+            item = QListWidgetItem(f"{state}  {package.name}\n     {package.version}{warning}")
+            item.setData(Qt.ItemDataRole.UserRole, package.identifier)
+            item.setToolTip(f"{package.identifier}\n{package.compatibility_message}")
+            self.mod_list.addItem(item)
+            if package.identifier == selected_id:
+                selected_row = row
+        self.mod_list.blockSignals(False)
+        if selected_row >= 0:
+            self.mod_list.setCurrentRow(selected_row)
+        elif self.mod_list.count():
+            self.mod_list.setCurrentRow(0)
+        else:
+            self.mod_selection_changed()
+        if self.mod_catalog.errors:
+            shown = self.mod_catalog.errors[:3]
+            extra = len(self.mod_catalog.errors) - len(shown)
+            suffix = f"\n…and {extra} more" if extra else ""
+            self.mod_error_label.setText("Package errors:\n" + "\n".join(shown) + suffix)
+        else:
+            self.mod_error_label.setText("")
+
+    def selected_mod_id(self) -> str | None:
+        if not hasattr(self, "mod_list"):
+            return None
+        items = self.mod_list.selectedItems()
+        return str(items[0].data(Qt.ItemDataRole.UserRole)) if items else None
+
+    def selected_mod(self) -> ModPackage | None:
+        identifier = self.selected_mod_id()
+        return self.mod_catalog.package(identifier) if identifier else None
+
+    def mod_selection_changed(self) -> None:
+        if not hasattr(self, "mod_detail"):
+            return
+        package = self.selected_mod()
+        if package is None:
+            self.mod_detail.setText("No mods installed. Install a package or copy one into the Mods folder, then press Refresh.")
+            self.mod_toggle_button.setEnabled(False)
+            self.mod_remove_button.setEnabled(False)
+            return
+        enabled = self.mod_manager.is_enabled(package.identifier)
+        state = "Enabled" if enabled else "Disabled"
+        author = f" by {package.author}" if package.author else ""
+        capabilities = ", ".join(package.capabilities) or "metadata only"
+        description = f"\n\n{package.description}" if package.description else ""
+        content = ""
+        if package.content_items:
+            entries = [f"{item.kind}: {item.name}" for item in package.content_items[:8]]
+            if len(package.content_items) > len(entries):
+                entries.append(f"…and {len(package.content_items) - len(entries)} more")
+            content = "\nContent:\n" + "\n".join(entries)
+        self.mod_detail.setText(
+            f"{state} · {package.name} {package.version}{author}\n"
+            f"ID: {package.identifier}\nCapabilities: {capabilities}\n"
+            f"{package.compatibility_message}{description}{content}"
+        )
+        self.mod_toggle_button.setText("Disable" if enabled else "Enable")
+        self.mod_toggle_button.setEnabled(enabled or package.compatible)
+        self.mod_remove_button.setEnabled(True)
+
+    def refresh_mods(self, selected_id: str | None = None, announce: bool = False) -> None:
+        self.mod_catalog = self.mod_manager.scan()
+        self._populate_mod_list(selected_id)
+        self.apply_mod_theme()
+        if announce:
+            self.status(f"Mods refreshed · {len(self.mod_catalog.packages)} valid package(s).")
+
+    def install_mod_dialog(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Install NetVista Studio Mod",
+            str(Path.home() / "Downloads"),
+            "NetVista Studio Mod (*.netvistamod);;All files (*)",
+        )
+        if paths:
+            self.install_mod_paths(paths)
+
+    def install_mod_paths(self, paths: list[str]) -> None:
+        installed: list[ModPackage] = []
+        errors: list[str] = []
+        for path in paths:
+            try:
+                installed.append(self.mod_manager.install(path))
+            except Exception as error:
+                errors.append(f"{Path(path).name}: {error}")
+        selected = installed[-1].identifier if installed else None
+        self.refresh_mods(selected)
+        if installed:
+            names = ", ".join(package.name for package in installed)
+            self.status(f"Installed {names}. New mods stay disabled until you switch them on.")
+        if errors:
+            QMessageBox.warning(
+                self,
+                "Some mods could not be installed",
+                "NetVista Studio rejected unsafe, invalid, or incompatible package data.\n\n" + "\n".join(errors),
+            )
+
+    def toggle_selected_mod(self) -> None:
+        package = self.selected_mod()
+        if package is None:
+            return
+        enabled = not self.mod_manager.is_enabled(package.identifier)
+        try:
+            self.mod_manager.set_enabled(package.identifier, enabled)
+            self.refresh_mods(package.identifier)
+            self.status(f"{package.name} is now {'enabled' if enabled else 'disabled'}.")
+        except ModError as error:
+            QMessageBox.warning(self, "Could not change mod", str(error))
+
+    def remove_selected_mod(self) -> None:
+        package = self.selected_mod()
+        if package is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Remove mod?",
+            f"Remove {package.name} from this computer?\n\nThis deletes its package from the per-user Mods folder.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.mod_manager.remove(package.identifier)
+            self.refresh_mods()
+            self.status(f"Removed {package.name}.")
+        except ModError as error:
+            QMessageBox.warning(self, "Could not remove mod", str(error))
+
+    def open_mods_folder(self) -> None:
+        self.mod_manager.root.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.mod_manager.root)))
+        self.status(f"Opened Mods folder: {self.mod_manager.root}")
+
+    def apply_mod_theme(self) -> None:
+        stylesheet = build_app_style(self.mod_manager.active_theme_tokens(self.mod_catalog))
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(stylesheet)
+        self.setStyleSheet(stylesheet)
 
     def check_for_updates(self) -> None:
         if self.update_thread and self.update_thread.isRunning():
@@ -403,6 +611,8 @@ class MainWindow(QMainWindow):
         self.inspector_stack.setCurrentWidget(self.inspector_pages[page])
         for name, button in self.page_buttons.items():
             button.setChecked(name == page)
+        if page == "Mods":
+            self.refresh_mods()
 
     def refresh_everything(self) -> None:
         self.title_edit.setText(self.project.title)
@@ -669,7 +879,13 @@ class MainWindow(QMainWindow):
 
     def dropEvent(self, event: QDropEvent) -> None:
         paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
-        self._import_paths(paths)
+        mod_paths = [path for path in paths if self.mod_manager.is_package_source(path)]
+        media_paths = [path for path in paths if path not in mod_paths]
+        if mod_paths:
+            self.show_page("Mods")
+            self.install_mod_paths(mod_paths)
+        if media_paths:
+            self._import_paths(media_paths)
         event.acceptProposedAction()
 
     def closeEvent(self, event: QCloseEvent) -> None:

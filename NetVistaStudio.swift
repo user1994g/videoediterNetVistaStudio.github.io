@@ -611,16 +611,24 @@ final class EditorController: NSViewController {
     private var activeExportJob: TimelineExportJob?
     private var sceneEditorWindow: SceneEditorWindowController?
     private var activeSceneID: UUID?
+    private var modsStudioController: ModsStudioViewController?
+    private var modsChangeObserver: NSObjectProtocol?
 
     override func loadView() {
         view = NSView()
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor(hex: "17191E").cgColor
+        StudioTheme.shared.register(view, as: .window)
         buildInterface()
         timelineView.controller = self
         player.actionAtItemEnd = .pause
         player.automaticallyWaitsToMinimizeStalling = true
         installPlayerTimeObserver()
+        modsChangeObserver = NotificationCenter.default.addObserver(forName: .netVistaModsDidChange, object: ModManager.shared, queue: .main) { [weak self] _ in
+            guard let self, self.currentPage == .mods else { return }
+            self.rebuildInspector()
+            self.rebuildWorkspace()
+        }
     }
 
     deinit {
@@ -629,6 +637,7 @@ final class EditorController: NSViewController {
         if let playerTimeObserver { player.removeTimeObserver(playerTimeObserver) }
         if let playerEndObserver { NotificationCenter.default.removeObserver(playerEndObserver) }
         if let playerFailureObserver { NotificationCenter.default.removeObserver(playerFailureObserver) }
+        if let modsChangeObserver { NotificationCenter.default.removeObserver(modsChangeObserver) }
     }
 
     private func buildInterface() {
@@ -660,6 +669,10 @@ final class EditorController: NSViewController {
         accent.font = .systemFont(ofSize: 10, weight: .bold); accent.textColor = NSColor(hex: "F05B5E")
         projectTitle.placeholderString = "Project title"; projectTitle.font = .systemFont(ofSize: 12); projectTitle.textColor = .white; projectTitle.backgroundColor = NSColor(hex: "242A33"); projectTitle.isBordered = false; projectTitle.focusRingType = .none; projectTitle.widthAnchor.constraint(equalToConstant: 220).isActive = true
         bar.addArrangedSubview(brand); bar.addArrangedSubview(accent)
+        StudioTheme.shared.register(bar, as: .topBar)
+        StudioTheme.shared.register(brand, as: .primaryText)
+        StudioTheme.shared.register(accent, as: .accentText)
+        StudioTheme.shared.register(projectTitle, as: .control)
         bar.addArrangedSubview(spacer()); bar.addArrangedSubview(projectTitle)
         bar.addArrangedSubview(button("↶", #selector(undoEdit)))
         bar.addArrangedSubview(button("↷", #selector(redoEdit)))
@@ -677,9 +690,10 @@ final class EditorController: NSViewController {
         rail.addArrangedSubview(spacer())
         for page in StudioPage.allCases {
             let item = NSButton(title: "\(page.icon)  \(page.rawValue)", target: self, action: #selector(changePage(_:)))
-            item.identifier = NSUserInterfaceItemIdentifier(page.rawValue); item.bezelStyle = .texturedRounded; item.alignment = .center; item.font = .systemFont(ofSize: 11, weight: .medium); item.widthAnchor.constraint(equalToConstant: 78).isActive = true
+            item.identifier = NSUserInterfaceItemIdentifier(page.rawValue); item.bezelStyle = .texturedRounded; item.alignment = .center; item.font = .systemFont(ofSize: 11, weight: .medium); item.widthAnchor.constraint(equalToConstant: page == .mods ? 70 : 78).isActive = true
             rail.addArrangedSubview(item); pageButtons[page] = item
         }
+        StudioTheme.shared.register(rail, as: .topBar)
         rail.addArrangedSubview(spacer())
         rail.edgeInsets = NSEdgeInsets(top: 2, left: 10, bottom: 2, right: 10)
         selectPage(.edit)
@@ -688,6 +702,7 @@ final class EditorController: NSViewController {
 
     private func mediaPool() -> NSView {
         let panel = NSStackView(); panel.orientation = .vertical; panel.spacing = 0; panel.wantsLayer = true; panel.layer?.backgroundColor = NSColor(hex: "20232A").cgColor; panel.widthAnchor.constraint(equalToConstant: 250).isActive = true
+        StudioTheme.shared.register(panel, as: .panel)
         let title = NSStackView(); title.orientation = .horizontal; title.alignment = .centerY; title.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 0, right: 10); title.heightAnchor.constraint(equalToConstant: 38).isActive = true
         let label = NSTextField(labelWithString: "MEDIA POOL"); label.font = .systemFont(ofSize: 11, weight: .bold); title.addArrangedSubview(label); title.addArrangedSubview(spacer()); title.addArrangedSubview(button("Add all", #selector(addAllMediaToTimeline))); title.addArrangedSubview(button("Import", #selector(importMedia)))
         panel.addArrangedSubview(title); panel.addArrangedSubview(divider())
@@ -711,6 +726,7 @@ final class EditorController: NSViewController {
 
     private func centerWorkspace() -> NSView {
         let center = NSStackView(); center.orientation = .vertical; center.spacing = 0; center.wantsLayer = true; center.layer?.backgroundColor = NSColor(hex: "181B21").cgColor
+        StudioTheme.shared.register(center, as: .workspace)
         let info = NSStackView(); info.orientation = .horizontal; info.alignment = .centerY; info.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 12); info.heightAnchor.constraint(equalToConstant: 36).isActive = true
         pageLabel.font = .systemFont(ofSize: 11, weight: .bold); pageLabel.textColor = .secondaryLabelColor; info.addArrangedSubview(pageLabel); info.addArrangedSubview(spacer())
         center.addArrangedSubview(info)
@@ -737,8 +753,38 @@ final class EditorController: NSViewController {
         workspaceStack.addArrangedSubview(transportBar())
         if currentPage == .export { workspaceStack.addArrangedSubview(scrollableWorkspacePanel(configuredExportWorkspace())) }
         else if currentPage == .scene3D { workspaceStack.addArrangedSubview(scrollableWorkspacePanel(sceneLaunchWorkspace())) }
-        workspaceStack.addArrangedSubview(timelineBar())
-        workspaceStack.addArrangedSubview(timelineView)
+        else if currentPage == .mods { workspaceStack.addArrangedSubview(configuredModsWorkspace()) }
+        if currentPage != .mods {
+            workspaceStack.addArrangedSubview(timelineBar())
+            workspaceStack.addArrangedSubview(timelineView)
+        }
+    }
+    private func configuredModsWorkspace() -> NSView {
+        if modsStudioController == nil {
+            let controller = ModsStudioViewController(manager: .shared)
+            controller.onStatus = { [weak self] in self?.status($0) }
+            controller.onAction = { [weak self] action in self?.handleModStudioAction(action) }
+            modsStudioController = controller
+        }
+        guard let controller = modsStudioController else { return NSView() }
+        _ = controller.view
+        controller.view.setContentHuggingPriority(.defaultLow, for: .vertical)
+        controller.view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        return controller.view
+    }
+    private func handleModStudioAction(_ action: ModStudioAction) {
+        switch action {
+        case .importMedia: importMedia()
+        case .open3DScene: open3DSceneEditor()
+        case .openModsFolder:
+            do {
+                try FileManager.default.createDirectory(at: ModManager.shared.modsDirectory, withIntermediateDirectories: true)
+                NSWorkspace.shared.activateFileViewerSelecting([ModManager.shared.modsDirectory])
+            } catch { status("Could not open Mods folder: \(error.localizedDescription)") }
+        case .showCatalog(let detail):
+            let alert = NSAlert(); alert.messageText = "Mod Catalog Item"; alert.informativeText = detail; alert.runModal()
+        case .openURL(let url): NSWorkspace.shared.open(url)
+        }
     }
     /// Page-specific controls can be much taller than a laptop window. Keeping
     /// them in one compact native scroller leaves both the real-time viewer and
@@ -1030,6 +1076,8 @@ final class EditorController: NSViewController {
             let volume = tool("Volume", #selector(applyAudioVolume), "Apply the Inspector volume to selected audio"); volume.contentTintColor = .systemGreen; bar.addArrangedSubview(volume)
         case .scene3D:
             let scene = tool("3D", #selector(open3DSceneEditor), "Open the native 3D Scene Editor"); scene.contentTintColor = .systemTeal; bar.addArrangedSubview(scene)
+        case .mods:
+            break
         case .export:
             let render = tool("Export", #selector(exportFromCurrentSettings), "Choose a file and export the timeline"); render.contentTintColor = .systemBlue; bar.addArrangedSubview(render)
         }
@@ -1054,6 +1102,7 @@ final class EditorController: NSViewController {
 
     private func inspector() -> NSView {
         let panel = NSStackView(); panel.orientation = .vertical; panel.alignment = .leading; panel.spacing = 8; panel.wantsLayer = true; panel.layer?.backgroundColor = NSColor(hex: "20232A").cgColor; panel.widthAnchor.constraint(equalToConstant: 270).isActive = true
+        StudioTheme.shared.register(panel, as: .panel)
         let title = NSTextField(labelWithString: "INSPECTOR"); title.font = .systemFont(ofSize: 11, weight: .bold); panel.addArrangedSubview(title)
         panel.addArrangedSubview(divider())
         selectionLabel.font = .systemFont(ofSize: 12, weight: .semibold); selectionLabel.lineBreakMode = .byTruncatingMiddle; selectionLabel.maximumNumberOfLines = 2; panel.addArrangedSubview(selectionLabel)
@@ -1074,8 +1123,8 @@ final class EditorController: NSViewController {
         return panel
     }
 
-    private func statusBar() -> NSView { let bar = NSStackView(); bar.orientation = .horizontal; bar.alignment = .centerY; bar.wantsLayer = true; bar.layer?.backgroundColor = NSColor(hex: "111317").cgColor; bar.heightAnchor.constraint(equalToConstant: 26).isActive = true; statusLabel.font = .systemFont(ofSize: 11); statusLabel.textColor = .secondaryLabelColor; bar.addArrangedSubview(statusLabel); bar.addArrangedSubview(spacer()); bar.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 12); return bar }
-    private func divider() -> NSView { let line = NSView(); line.wantsLayer = true; line.layer?.backgroundColor = NSColor(hex: "363B46").cgColor; line.widthAnchor.constraint(equalToConstant: 1).isActive = true; return line }
+    private func statusBar() -> NSView { let bar = NSStackView(); bar.orientation = .horizontal; bar.alignment = .centerY; bar.wantsLayer = true; bar.layer?.backgroundColor = NSColor(hex: "111317").cgColor; bar.heightAnchor.constraint(equalToConstant: 26).isActive = true; statusLabel.font = .systemFont(ofSize: 11); statusLabel.textColor = .secondaryLabelColor; bar.addArrangedSubview(statusLabel); bar.addArrangedSubview(spacer()); bar.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 12); StudioTheme.shared.register(bar, as: .topBar); StudioTheme.shared.register(statusLabel, as: .secondaryText); return bar }
+    private func divider() -> NSView { let line = NSView(); line.wantsLayer = true; line.layer?.backgroundColor = NSColor(hex: "363B46").cgColor; line.widthAnchor.constraint(equalToConstant: 1).isActive = true; StudioTheme.shared.register(line, as: .separator); return line }
     private func spacer() -> NSView { let v = NSView(); v.setContentHuggingPriority(.defaultLow, for: .horizontal); v.setContentHuggingPriority(.defaultLow, for: .vertical); return v }
     private func button(_ title: String, _ action: Selector) -> NSButton { let b = NSButton(title: title, target: self, action: action); b.bezelStyle = .rounded; b.font = .systemFont(ofSize: 11, weight: .medium); return b }
     private func fieldLabel(_ text: String) -> NSTextField { let l = NSTextField(labelWithString: text); l.font = .systemFont(ofSize: 9, weight: .bold); l.textColor = .secondaryLabelColor; return l }
@@ -1182,11 +1231,22 @@ final class EditorController: NSViewController {
                     dynamicInspector.addArrangedSubview(sceneButton)
                 }
             }
+        case .mods:
+            dynamicInspector.addArrangedSubview(NSTextField(wrappingLabelWithString: "Install .netvistamod packages, review their creator and capabilities, then choose whether to enable them. Installed mods start disabled."))
+            dynamicInspector.addArrangedSubview(fieldLabel("ACTIVE THEME: \(StudioTheme.shared.activeThemeName)"))
+            dynamicInspector.addArrangedSubview(fieldLabel("INSTALLED PACKAGES: \(ModManager.shared.installedMods.count)"))
+            dynamicInspector.addArrangedSubview(button("Open Mods Folder", #selector(openModsFolder)))
+            dynamicInspector.addArrangedSubview(button("Restore Default Theme", #selector(restoreDefaultTheme)))
         case .export:
             dynamicInspector.addArrangedSubview(NSTextField(wrappingLabelWithString: "The native renderer supports 1080p, 4K and 8K with MP4 or MOV. It includes timeline placement, trims, layers, transform keyframes and mixed audio without requiring FFmpeg."))
             let export = button("Choose File and Export", #selector(exportFromCurrentSettings)); export.contentTintColor = .systemBlue; dynamicInspector.addArrangedSubview(export)
             let cancel = button("Cancel active export", #selector(cancelNativeExport)); cancel.isEnabled = activeExportJob != nil; dynamicInspector.addArrangedSubview(cancel)
         }
+    }
+    @objc private func openModsFolder() { handleModStudioAction(.openModsFolder) }
+    @objc private func restoreDefaultTheme() {
+        do { try ModManager.shared.resetTheme(); rebuildInspector(); status("Restored the NetVista default theme.") }
+        catch { status("Could not restore theme: \(error.localizedDescription)") }
     }
     private let transformKeyframeProperties: [AnimatableProperty] = [.positionX, .positionY, .scale, .rotation, .opacity]
     private var activeKeyframeInterpolation: KeyframeInterpolation = .easeInOut
@@ -3032,10 +3092,16 @@ final class EditorController: NSViewController {
     }
 
     private func status(_ text: String) { statusLabel.stringValue = text }
+
+    func installModPackages(_ urls: [URL]) {
+        if currentPage != .mods { selectPage(.mods) }
+        _ = configuredModsWorkspace()
+        modsStudioController?.installPackages(urls)
+    }
 }
 
 enum StudioPage: String, CaseIterable {
-    case media = "Media", cut = "Cut", edit = "Edit", effects = "Effects", color = "Color", audio = "Audio", scene3D = "3D Scene", export = "Export"
+    case media = "Media", cut = "Cut", edit = "Edit", effects = "Effects", color = "Color", audio = "Audio", scene3D = "3D Scene", mods = "Mods", export = "Export"
     var icon: String {
         switch self {
         case .media: return "▦"
@@ -3045,6 +3111,7 @@ enum StudioPage: String, CaseIterable {
         case .color: return "◉"
         case .audio: return "♫"
         case .scene3D: return "◇"
+        case .mods: return "⬡"
         case .export: return "⇧"
         }
     }
@@ -3598,6 +3665,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            let icon = NSImage(contentsOf: iconURL) {
             NSApp.applicationIconImage = icon
         }
+        do { try ModManager.shared.prepare() }
+        catch {
+            let alert = NSAlert(error: error)
+            alert.messageText = "Mods are unavailable"
+            alert.runModal()
+        }
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 790), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "NetVista Studio"; window.minSize = NSSize(width: 1000, height: 650)
         let controller = EditorController(); editor = controller; window.contentViewController = controller
@@ -3615,6 +3688,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 editor.openProject(at: url)
             case "netvistascene", "swiftscene":
                 editor.openScene(at: url)
+            case "netvistamod":
+                editor.installModPackages([url])
             default:
                 editor.addMedia([url], addToTimeline: true)
             }

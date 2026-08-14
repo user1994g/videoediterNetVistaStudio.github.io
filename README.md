@@ -8,7 +8,7 @@ The website is published at [video.netvistastudio.com](https://video.netvistastu
 
 ## Public beta download
 
-Download **NetVista Studio 1.2 Beta 1** from the [GitHub Releases page](https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/tag/v1.2.0-beta.1). Downloads are available for macOS, Windows, and Linux. This is early beta software, so expect bugs or incomplete features and keep backups of important project files.
+Download **NetVista Studio 1.3 Beta 1** from the [GitHub Releases page](https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/tag/v1.3.0-beta.1). Downloads are available for macOS, Windows, and Linux. This is early beta software, so expect bugs or incomplete features and keep backups of important project files.
 
 The current macOS beta is ad-hoc signed and therefore triggers a Gatekeeper warning. The repository includes a secure Developer ID signing and Apple notarization workflow; see [`MACOS_RELEASE.md`](MACOS_RELEASE.md). After the Apple credentials are configured and that workflow publishes a replacement ZIP, macOS users can open the download normally.
 
@@ -43,10 +43,22 @@ Double-click `NetVista Studio.app` in Finder.
 - Import 3D `.cube` LUT files, preview them live, adjust their mix from 0–100%, remove them non-destructively, and apply one grade to one or many selected video clips. Imported LUT data is embedded in the project save so the look survives if the original `.cube` file moves.
 - The Effects page opens a separate resizable native Effects Studio for position, scale, rotation, opacity, blur, sharpen, vignette, monochrome, sepia, glow, vintage, and keyframes.
 - Add transform, opacity, or volume keyframes at the playhead with smooth, linear, or hold interpolation.
-- The 3D Scene page provides a native workspace with objects, materials, lighting, shadows, reflections, camera controls, video planes, and manual green-screen removal.
+- The macOS 3D Scene page provides a native workspace with objects, materials, lighting, shadows, reflections, camera controls, video planes, and live green-screen removal.
 - Import your own OBJ, ABC, PLY, STL, USD, USDA, USDC, USDZ, DAE, or SCN models by button or drag-and-drop, then position, rotate, scale, tint, rename, or remove them like built-in objects.
+- Build an editable map from native terrain/stage presets, choose an environment, and give scene objects Off, Static, Dynamic, or Kinematic physics with mass, gravity, friction, and bounce controls.
+- Animate object transforms and the scene camera with a dedicated scene playhead and smooth, linear, or hold keyframes. The same evaluator drives the live viewport and offline scene render.
+- For imported models that already contain a skeleton, select a discovered bone, pose it, and store bone-rotation keyframes. NetVista Studio does not pretend to auto-rig an unskinned OBJ; creating a new skeleton and painting vertex weights still belongs in a modelling tool.
+- Add a video plane, click it in the scene, and enable Chroma Key to remove its green screen while it remains part of the 3D world.
 - **Save 3D Work…** stores an editable `.netvistascene` without making a movie. Unrendered scenes also stay inside the main project and can be reopened from the saved-scene list.
 - **Render Clip…** is optional. Use it only when you want a timeline-compatible ProRes movie of the 3D scene.
+
+## Mods
+
+- Open the **Mods** page to install a `.netvistamod` package by button or drag-and-drop, open the persistent Mods folder, and enable, disable, update, or remove installed mods.
+- Mods are saved in the operating system's per-user app-data folder, not inside the signed application, so replacing NetVista Studio with an update does not erase them.
+- Mods v1 are data-only and can provide bounded themes, declarative pages, 3D props/maps, and effect presets. They cannot silently run Python, JavaScript, Swift, native libraries, shell scripts, or executables inside the editor.
+- Package paths, sizes, declared capabilities, app compatibility, dependencies, and SHA-256 file hashes are checked before installation. A new mod stays disabled until the user switches it on.
+- See [`MODDING.md`](MODDING.md) for the creator format and a complete package example.
 
 ## Save and export
 
@@ -66,6 +78,6 @@ Double-click `NetVista Studio.app` in Finder.
 
 ## Build it again
 
-Run `sh build_app.sh` from this folder. The native sources include `NetVistaStudio.swift`, `ProfessionalTimelineView.swift`, `CubeLUT.swift`, `EffectsStudio.swift`, `SceneEditor.swift`, `NativeTimelineExportEngine.swift`, `ExportWorkspace.swift`, `ShareServer.swift`, `SharePanel.swift`, and `AppUpdateService.swift`.
+Run `sh build_app.sh` from this folder. The native sources include `NetVistaStudio.swift`, `ProfessionalTimelineView.swift`, `CubeLUT.swift`, `EffectsStudio.swift`, `SceneEditor.swift`, `NativeTimelineExportEngine.swift`, `ExportWorkspace.swift`, `ShareServer.swift`, `SharePanel.swift`, `AppUpdateService.swift`, and the `Mod*.swift`/`ModsStudio.swift`/`StudioTheme.swift` mod system.
 
 For Windows and Linux source/build instructions, see [`cross_platform/README.md`](cross_platform/README.md). GitHub Actions builds downloadable native packages for both operating systems.

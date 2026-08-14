@@ -2,7 +2,6 @@ import Cocoa
 import Network
 import CryptoKit
 import Security
-import SystemConfiguration
 import UniformTypeIdentifiers
 import Darwin
 
@@ -357,6 +356,18 @@ struct ShareHTTPResponse {
 final class LocalShareServer {
     typealias SnapshotProvider = () -> ShareProjectSnapshot?
 
+    private struct LANIPv4Interface: Equatable {
+        let name: String
+        let address: String
+        let addressValue: UInt32
+        let networkValue: UInt32
+        let netmaskValue: UInt32
+
+        func contains(_ candidate: UInt32) -> Bool {
+            (candidate & netmaskValue) == networkValue
+        }
+    }
+
     var onStateChange: ((LocalShareServerState) -> Void)? {
         get { stateLock.lock(); defer { stateLock.unlock() }; return stateCallback }
         set { stateLock.lock(); stateCallback = newValue; let value = cachedState; stateLock.unlock(); if let newValue { DispatchQueue.main.async { newValue(value) } } }
@@ -370,9 +381,11 @@ final class LocalShareServer {
     private let snapshotProvider: SnapshotProvider
     private let advertisesBonjour: Bool
     private var listener: NWListener?
+    private var pathMonitor: NWPathMonitor?
     private var connections: [UUID: NWConnection] = [:]
     private var activeMediaStreams = 0
     private var port: NWEndpoint.Port?
+    private var activeLANInterface: LANIPv4Interface?
     private var allowedHostHeaders = Set<String>()
     private let maximumConnections = 16
     private let maximumMediaStreams = 4
@@ -388,7 +401,7 @@ final class LocalShareServer {
         cachedState.pairedDeviceCount = authority.pairedDeviceCount()
     }
 
-    deinit { listener?.cancel(); connections.values.forEach { $0.cancel() } }
+    deinit { listener?.cancel(); pathMonitor?.cancel(); connections.values.forEach { $0.cancel() } }
 
     func currentState() -> LocalShareServerState {
         stateLock.lock(); defer { stateLock.unlock() }
@@ -405,7 +418,7 @@ final class LocalShareServer {
             guard let self else { return }
             let challenge = authority.issueCode()
             if listener == nil { createListener(challenge: challenge) }
-            else { publishRunning(challenge: challenge) }
+            else { refreshLANState(challenge: challenge) }
         }
     }
 
@@ -413,7 +426,7 @@ final class LocalShareServer {
         queue.async { [weak self] in
             guard let self else { return }
             let challenge = authority.issueCode()
-            listener == nil ? createListener(challenge: challenge) : publishRunning(challenge: challenge)
+            listener == nil ? createListener(challenge: challenge) : refreshLANState(challenge: challenge)
         }
     }
 
@@ -421,7 +434,7 @@ final class LocalShareServer {
         queue.async { [weak self] in
             guard let self else { return }
             authority.forgetAllDevices()
-            publishRunning(challenge: authority.activeChallenge())
+            refreshLANState(challenge: authority.activeChallenge())
         }
     }
 
@@ -429,6 +442,8 @@ final class LocalShareServer {
         queue.async { [weak self] in
             guard let self else { return }
             listener?.cancel(); listener = nil; port = nil
+            pathMonitor?.cancel(); pathMonitor = nil
+            activeLANInterface = nil
             connections.values.forEach { $0.cancel() }
             connections.removeAll(); activeMediaStreams = 0
             authority.clearChallenge(); allowedHostHeaders.removeAll()
@@ -450,12 +465,17 @@ final class LocalShareServer {
                 switch state {
                 case .ready:
                     self.port = listener.port
-                    self.configureAddresses()
-                    self.publishRunning(challenge: self.authority.activeChallenge())
+                    if self.configureAddresses() {
+                        self.publishRunning(challenge: self.authority.activeChallenge())
+                    } else {
+                        self.publishWaitingForLAN()
+                    }
                 case .waiting(let error):
                     self.publishFailure("Sharing is waiting for local-network access: \(error.localizedDescription)", stillRunning: true)
                 case .failed(let error):
                     self.listener = nil; self.port = nil
+                    self.pathMonitor?.cancel(); self.pathMonitor = nil
+                    self.activeLANInterface = nil
                     self.publishFailure("Could not start local sharing: \(error.localizedDescription)", stillRunning: false)
                 case .cancelled:
                     break
@@ -471,28 +491,70 @@ final class LocalShareServer {
                 pairingExpiresAt: challenge.expiresAt,
                 pairedDeviceCount: authority.pairedDeviceCount()
             ))
+            startPathMonitor()
             listener.start(queue: queue)
         } catch {
             publishFailure("Could not create the local server: \(error.localizedDescription)", stillRunning: false)
         }
     }
 
-    private func configureAddresses() {
-        guard let port else { return }
+    @discardableResult
+    private func configureAddresses() -> Bool {
+        guard let port else { return false }
         let portText = String(port.rawValue)
-        let hostName = (SCDynamicStoreCopyLocalHostName(nil) as String?)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let localHost = hostName.flatMap { $0.isEmpty ? nil : "\($0).local" }
-        let address = Self.preferredLANIPv4Address()
-        let primaryHost = address ?? localHost ?? "127.0.0.1"
-        let alternateHost = address != nil ? localHost : nil
-        let primary = URL(string: "http://\(primaryHost):\(portText)/")
-        let alternate = alternateHost.flatMap { URL(string: "http://\($0):\(portText)/") }
-
-        allowedHostHeaders = ["localhost:\(portText)", "127.0.0.1:\(portText)"]
-        for host in [address, localHost].compactMap({ $0 }) {
-            allowedHostHeaders.insert("\(host.lowercased()):\(portText)")
+        guard let interface = Self.preferredLANIPv4Interface() else {
+            activeLANInterface = nil
+            allowedHostHeaders.removeAll()
+            updateCachedAddresses(primary: nil, alternate: nil)
+            return false
         }
-        updateCachedAddresses(primary: primary, alternate: alternate)
+
+        let networkChanged = activeLANInterface.map {
+            $0.addressValue != interface.addressValue || $0.networkValue != interface.networkValue || $0.netmaskValue != interface.netmaskValue
+        } ?? false
+        activeLANInterface = interface
+        if networkChanged {
+            connections.values.forEach { $0.cancel() }
+            connections.removeAll()
+            activeMediaStreams = 0
+        }
+        let primary = URL(string: "http://\(interface.address):\(portText)/")
+        allowedHostHeaders = [
+            interface.address.lowercased(),
+            "\(interface.address.lowercased()):\(portText)",
+            "localhost:\(portText)",
+            "127.0.0.1:\(portText)"
+        ]
+        updateCachedAddresses(primary: primary, alternate: nil)
+        return primary != nil
+    }
+
+    private func refreshLANState(challenge: SharePairingAuthority.Challenge?) {
+        if configureAddresses() { publishRunning(challenge: challenge) }
+        else { publishWaitingForLAN() }
+    }
+
+    private func startPathMonitor() {
+        pathMonitor?.cancel()
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self, weak monitor] _ in
+            guard let self, let monitor, self.pathMonitor === monitor else { return }
+            guard self.listener != nil, self.port != nil else { return }
+            self.refreshLANState(challenge: self.authority.activeChallenge())
+        }
+        pathMonitor = monitor
+        monitor.start(queue: queue)
+    }
+
+    private func publishWaitingForLAN() {
+        let challenge = authority.activeChallenge()
+        publish(LocalShareServerState(
+            phase: .starting,
+            pairingCode: challenge?.code,
+            pairingExpiresAt: challenge?.expiresAt,
+            pairedDeviceCount: authority.pairedDeviceCount(),
+            errorMessage: "Connect this Mac to the same private Wi-Fi or LAN as the other device, then try again. Local sharing never uses localhost or the internet."
+        ))
     }
 
     private func publishRunning(challenge: SharePairingAuthority.Challenge?) {
@@ -536,6 +598,11 @@ final class LocalShareServer {
     }
 
     private func accept(_ connection: NWConnection) {
+        guard connectionIsOnActiveLAN(connection) else {
+            connection.start(queue: queue)
+            send(ShareHTTPResponse.text(403, "This device is not on the same local Wi-Fi or LAN as NetVista Studio."), over: connection, connectionID: nil)
+            return
+        }
         guard connections.count < maximumConnections else {
             connection.start(queue: queue)
             send(ShareHTTPResponse.text(503, "The local server is busy."), over: connection, connectionID: nil)
@@ -862,31 +929,78 @@ final class LocalShareServer {
         return .valid(start, end, true)
     }
 
-    private static func preferredLANIPv4Address() -> String? {
+    private func connectionIsOnActiveLAN(_ connection: NWConnection) -> Bool {
+        guard let interface = activeLANInterface else { return false }
+        guard case .hostPort(let host, _) = connection.endpoint else { return false }
+        let hostText = String(describing: host).split(separator: "%", maxSplits: 1).first.map(String.init) ?? ""
+        if hostText == "127.0.0.1" || hostText == "localhost" { return true }
+        guard let value = Self.ipv4Value(hostText) else { return false }
+        return interface.contains(value)
+    }
+
+    private static func preferredLANIPv4Interface() -> LANIPv4Interface? {
         var head: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&head) == 0, let first = head else { return nil }
         defer { freeifaddrs(head) }
-        var values: [(String, String)] = []
+        var values: [LANIPv4Interface] = []
         var pointer: UnsafeMutablePointer<ifaddrs>? = first
         while let current = pointer {
             let info = current.pointee
-            if let address = info.ifa_addr, address.pointee.sa_family == UInt8(AF_INET) {
+            if let address = info.ifa_addr,
+               let netmask = info.ifa_netmask,
+               address.pointee.sa_family == UInt8(AF_INET),
+               netmask.pointee.sa_family == UInt8(AF_INET) {
                 let flags = Int32(info.ifa_flags)
-                if flags & IFF_UP != 0, flags & IFF_LOOPBACK == 0 {
+                if flags & IFF_UP != 0, flags & IFF_RUNNING != 0, flags & IFF_LOOPBACK == 0 {
                     let name = String(cString: info.ifa_name)
                     var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
                     let length = socklen_t(address.pointee.sa_len)
                     if getnameinfo(address, length, &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
-                        values.append((name, String(cString: host)))
+                        let addressText = String(cString: host)
+                        if let addressValue = ipv4Value(addressText), isPrivateLANAddress(addressValue) {
+                            let maskValue = netmask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+                                UInt32(bigEndian: $0.pointee.sin_addr.s_addr)
+                            }
+                            guard maskValue != 0 else { pointer = info.ifa_next; continue }
+                            values.append(LANIPv4Interface(
+                                name: name,
+                                address: addressText,
+                                addressValue: addressValue,
+                                networkValue: addressValue & maskValue,
+                                netmaskValue: maskValue
+                            ))
+                        }
                     }
                 }
             }
             pointer = info.ifa_next
         }
-        return values.first(where: { $0.0 == "en0" })?.1
-            ?? values.first(where: { $0.0.hasPrefix("en") })?.1
-            ?? values.first(where: { $0.0.hasPrefix("bridge") })?.1
-            ?? values.first?.1
+        return values.sorted { lhs, rhs in
+            let left = interfacePriority(lhs.name), right = interfacePriority(rhs.name)
+            return left == right ? lhs.name < rhs.name : left < right
+        }.first
+    }
+
+    private static func interfacePriority(_ name: String) -> Int {
+        if name == "en0" { return 0 }
+        if name.hasPrefix("en") { return 10 }
+        if name.hasPrefix("bridge") { return 20 }
+        return 100
+    }
+
+    private static func ipv4Value(_ text: String) -> UInt32? {
+        var address = in_addr()
+        guard text.withCString({ inet_pton(AF_INET, $0, &address) }) == 1 else { return nil }
+        return UInt32(bigEndian: address.s_addr)
+    }
+
+    private static func isPrivateLANAddress(_ value: UInt32) -> Bool {
+        let first = UInt8((value >> 24) & 0xff)
+        let second = UInt8((value >> 16) & 0xff)
+        return first == 10
+            || (first == 172 && (16...31).contains(second))
+            || (first == 192 && second == 168)
+            || (first == 169 && second == 254)
     }
 
     private static func reasonPhrase(_ status: Int) -> String {
