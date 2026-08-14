@@ -129,11 +129,11 @@ Pages are rendered by NetVista Studio from a small native block format. They nev
 }
 ```
 
-Supported blocks are `heading`, `text`, `image`, `divider`, `button`, `assetGrid`, and `presetGrid`. Actions are restricted to NetVista Studio commands: `importMedia`, `open3DScene`, `openModsFolder`, `showCatalog`, and an explicitly clicked HTTPS `openURL`.
+Supported blocks are `heading`, `text`, `image`, `divider`, and `button`. Actions are restricted to NetVista Studio commands: `importMedia`, `open3DScene`, `openModsFolder`, `showCatalog`, and an explicitly clicked HTTPS `openURL`.
 
 ## Catalog documents
 
-Files in `scene-props`, `scene-maps`, and `effect-presets` use a common descriptive envelope. `asset` is a relative file from the same package; `parameters` contains finite numeric values accepted by the relevant built-in NetVista feature.
+Files in `scene-props`, `scene-maps`, and `effect-presets` use a common descriptive envelope. In Mods v1 these entries form a checked, viewable catalog; they are not automatically inserted into a scene or applied to a clip yet. `asset` is a relative file from the same package and `parameters` contains finite descriptive numeric values for a future built-in importer.
 
 ```json
 {

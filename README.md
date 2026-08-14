@@ -56,7 +56,7 @@ Double-click `NetVista Studio.app` in Finder.
 
 - Open the **Mods** page to install a `.netvistamod` package by button or drag-and-drop, open the persistent Mods folder, and enable, disable, update, or remove installed mods.
 - Mods are saved in the operating system's per-user app-data folder, not inside the signed application, so replacing NetVista Studio with an update does not erase them.
-- Mods v1 are data-only and can provide bounded themes, declarative pages, 3D props/maps, and effect presets. They cannot silently run Python, JavaScript, Swift, native libraries, shell scripts, or executables inside the editor.
+- Mods v1 are data-only and can apply bounded themes, provide declarative pages, and display checked catalog entries for future 3D props/maps and effect presets. Catalog assets are not inserted into scenes or clips automatically in this beta. Mods cannot silently run Python, JavaScript, Swift, native libraries, shell scripts, or executables inside the editor.
 - Package paths, sizes, declared capabilities, app compatibility, dependencies, and SHA-256 file hashes are checked before installation. A new mod stays disabled until the user switches it on.
 - See [`MODDING.md`](MODDING.md) for the creator format and a complete package example.
 

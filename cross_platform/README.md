@@ -13,7 +13,7 @@ This is the native desktop Windows/Linux edition of NetVista Studio. It uses Qt 
 - Export MP4, MOV or MKV at 24–120 fps using H.264, HEVC, AV1 or ProRes when the bundled FFmpeg build supports the encoder.
 - Output presets from 720p through **16K (15360 × 8640)** plus an even-sized custom width/height option.
 - Press **Update** in the top bar to check public GitHub releases, download the correct Windows or Linux beta to Downloads, and verify its published size and SHA-256 digest before installation.
-- Open **Mods** to install portable `.netvistamod` creator packs by button or drag-and-drop, switch them on or off, remove them, and open the persistent per-user Mods folder. Mods v1 use checked declarative data for themes, pages, catalogs, maps, props, and presets; they do not run creator scripts or native code.
+- Open **Mods** to install portable `.netvistamod` creator packs by button or drag-and-drop, switch them on or off, remove them, and open the persistent per-user Mods folder. Mods v1 use checked declarative data for themes, pages, and viewable creator catalogs; catalog maps, props, and presets are not applied automatically in this beta. Mods never run creator scripts or native code.
 
 16K delivery is real, but it requires an encoder that accepts the raster and a computer with substantial memory, storage and render time. NetVista Studio selects HEVC rather than H.264 for 16K by default.
 

@@ -1,0 +1,8 @@
+.DS_Store
+NetVista Studio.app/
+__pycache__/
+*.pyc
+.pytest_cache/
+cross_platform/.build-env/
+cross_platform/build/
+cross_platform/dist/
