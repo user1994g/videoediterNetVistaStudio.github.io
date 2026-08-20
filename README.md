@@ -8,7 +8,7 @@ The website is published at [video.netvistastudio.com](https://video.netvistastu
 
 ## Public beta download
 
-Download **NetVista Studio 1.3 Beta 1** from the [GitHub Releases page](https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/tag/v1.3.0-beta.1). Downloads are available for macOS, Windows, and Linux. This is early beta software, so expect bugs or incomplete features and keep backups of important project files.
+Download **NetVista Studio 1.4 Beta 1** from the [GitHub Releases page](https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/tag/v1.4.0-beta.1). Downloads are available for macOS, Windows, and Linux. This is early beta software, so expect bugs or incomplete features and keep backups of important project files.
 
 The current macOS beta is ad-hoc signed and therefore triggers a Gatekeeper warning. The repository includes a secure Developer ID signing and Apple notarization workflow; see [`MACOS_RELEASE.md`](MACOS_RELEASE.md). After the Apple credentials are configured and that workflow publishes a replacement ZIP, macOS users can open the download normally.
 
