@@ -6,11 +6,11 @@ on:
       release_tag:
         description: Existing draft GitHub release tag to update
         required: true
-        default: v1.3.0-beta.1
+        default: v1.4.0-beta.1
       version_label:
         description: Filename-safe version label
         required: true
-        default: 1.3-Beta-1
+        default: 1.4-Beta-1
 
 permissions:
   contents: write
@@ -72,8 +72,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          IS_DRAFT="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.draft')"
-          IS_PRERELEASE="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.prerelease')"
+          # GitHub's release-by-tag endpoint returns 404 for draft releases,
+          # so find the matching tag in the authenticated releases list.
+          RELEASE_STATE="$(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '.[] | [.tag_name, (.draft | tostring), (.prerelease | tostring)] | @tsv' |
+              awk -F '\t' -v tag="$RELEASE_TAG" '$1 == tag { print $2 "\t" $3; exit }'
+          )"
+          if [[ -z "$RELEASE_STATE" ]]; then
+            echo "Release $RELEASE_TAG does not exist." >&2
+            exit 1
+          fi
+          IFS=$'\t' read -r IS_DRAFT IS_PRERELEASE <<< "$RELEASE_STATE"
           if [[ "$IS_DRAFT" != true && "$IS_PRERELEASE" != true ]]; then
             echo 'Portable beta assets may only be attached to a draft or prerelease.' >&2
             exit 1
@@ -83,8 +93,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          (cd staging && zip -q -r "../dist/NetVista-Studio-Windows-$VERSION_LABEL.zip" NetVista-Studio-Windows-Beta)
-          (cd staging && zip -q -r "../dist/NetVista-Studio-Linux-$VERSION_LABEL.zip" NetVista-Studio-Linux-Beta)
+          mkdir -p package-windows/NetVistaStudio package-linux/NetVistaStudio
+          cp -a staging/NetVista-Studio-Windows-Beta/. package-windows/NetVistaStudio/
+          cp -a staging/NetVista-Studio-Linux-Beta/. package-linux/NetVistaStudio/
+          (cd package-windows && zip -q -r "../dist/NetVista-Studio-Windows-$VERSION_LABEL.zip" NetVistaStudio)
+          (cd package-linux && zip -q -r "../dist/NetVista-Studio-Linux-$VERSION_LABEL.zip" NetVistaStudio)
           unzip -t "dist/NetVista-Studio-Windows-$VERSION_LABEL.zip" >/dev/null
           unzip -t "dist/NetVista-Studio-Linux-$VERSION_LABEL.zip" >/dev/null
           sha256sum dist/*.zip

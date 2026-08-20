@@ -13,7 +13,7 @@ from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
                                QApplication, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
                                QMessageBox, QProgressBar, QPushButton, QScrollArea, QSlider, QSpinBox,
-                               QSplitter, QStackedWidget, QVBoxLayout, QWidget)
+                               QDialog, QDialogButtonBox, QSplitter, QStackedWidget, QVBoxLayout, QWidget)
 
 from .ffmpeg_engine import (RESOLUTION_PRESETS, ExportOptions, ExportProcess, FFmpegError,
                             probe_media, render_preview)
@@ -361,7 +361,7 @@ class MainWindow(QMainWindow):
         form.addRow(self.audio_check)
         self.export_progress = QProgressBar(); self.export_progress.setRange(0, 100)
         form.addRow(self.export_progress)
-        self.export_button = QPushButton("Choose file and export", objectName="primary")
+        self.export_button = QPushButton("Choose resolution and export", objectName="primary")
         self.export_button.clicked.connect(self.start_export)
         self.cancel_export_button = QPushButton("Cancel export", objectName="danger")
         self.cancel_export_button.clicked.connect(self.cancel_export)
@@ -788,6 +788,8 @@ class MainWindow(QMainWindow):
     def start_export(self) -> None:
         if self.export_thread and self.export_thread.isRunning():
             return
+        if not self.choose_export_resolution():
+            return
         container = self.container_combo.currentText()
         path, _ = QFileDialog.getSaveFileName(self, "Export movie", str(Path.home() / "Downloads" / f"{self.project.title}.{container}"),
                                               f"{container.upper()} (*.{container})")
@@ -811,6 +813,45 @@ class MainWindow(QMainWindow):
         self.export_button.setEnabled(False); self.cancel_export_button.setEnabled(True)
         self.export_thread.start()
         self.status(f"Exporting {options.width} × {options.height}…")
+
+    def choose_export_resolution(self) -> bool:
+        """Always confirm the output raster before opening the save picker."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Choose export resolution")
+        form = QFormLayout(dialog)
+        message = QLabel("Pick the size for the finished movie before choosing where to save it.")
+        message.setWordWrap(True)
+        form.addRow(message)
+
+        resolution = QComboBox()
+        resolution.addItems(list(RESOLUTION_PRESETS) + ["Custom"])
+        resolution.setCurrentText(self.resolution_combo.currentText())
+        width = QSpinBox(); width.setRange(64, 15360); width.setValue(self.width_spin.value())
+        height = QSpinBox(); height.setRange(64, 8640); height.setValue(self.height_spin.value())
+
+        def update_size(title: str) -> None:
+            custom = title == "Custom"
+            width.setEnabled(custom); height.setEnabled(custom)
+            if title in RESOLUTION_PRESETS:
+                preset_width, preset_height = RESOLUTION_PRESETS[title]
+                width.setValue(preset_width); height.setValue(preset_height)
+
+        resolution.currentTextChanged.connect(update_size)
+        update_size(resolution.currentText())
+        form.addRow("Resolution", resolution)
+        form.addRow("Custom width", width)
+        form.addRow("Custom height", height)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Continue to Save")
+        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+
+        self.resolution_combo.setCurrentText(resolution.currentText())
+        self.width_spin.setValue(width.value())
+        self.height_spin.setValue(height.value())
+        return True
 
     def export_progress_changed(self, value: float, text: str) -> None:
         self.export_progress.setValue(int(value * 100)); self.status(f"Exporting · {text}")
