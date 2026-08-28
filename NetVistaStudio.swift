@@ -2958,8 +2958,16 @@ final class EditorController: NSViewController {
     }
 
     @objc private func exportFromCurrentSettings() {
+        // Always bring the Delivery workspace into view before opening the
+        // resolution and save panels. Exports can take a while and previously
+        // the progress UI remained hidden when this action came from the top
+        // toolbar or Inspector, making a healthy render look like it never
+        // started.
+        if currentPage != .export { selectPage(.export) }
         if exportWorkspaceController == nil { _ = configuredExportWorkspace() }
-        exportWorkspaceController?.requestExport()
+        DispatchQueue.main.async { [weak self] in
+            self?.exportWorkspaceController?.requestExport()
+        }
     }
 
     private func beginNativeExport(options: TimelineExportOptions) {
@@ -2970,6 +2978,8 @@ final class EditorController: NSViewController {
         setDownloadsAsInitialDirectory(for: panel)
         panel.nameFieldStringValue = "\(projectTitle.stringValue).\(options.container.fileExtension)"
         panel.allowedContentTypes = [options.container == .mp4 ? .mpeg4Movie : .quickTimeMovie]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
         guard panel.runModal() == .OK, let output = panel.url else { return }
         exportWorkspaceController?.beginExport()
         status("Preparing \(options.resolution.title) export…")
@@ -2988,15 +2998,38 @@ final class EditorController: NSViewController {
                 case .success(let url):
                     self.exportWorkspaceController?.finishExport(message: "Complete — \(url.lastPathComponent)", succeeded: true)
                     self.status("Export complete: \(url.lastPathComponent)")
+                    self.presentExportSuccess(url)
                 case .failure(let error):
                     let message = error.localizedDescription
                     self.exportWorkspaceController?.finishExport(message: message, succeeded: false)
                     self.status(message)
+                    self.presentExportFailure(message)
                 }
                 self.rebuildInspector()
             }
         )
         rebuildInspector()
+    }
+
+    private func presentExportSuccess(_ url: URL) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Export complete"
+        alert.informativeText = "Your movie was saved as \(url.lastPathComponent)."
+        alert.addButton(withTitle: "Show in Finder")
+        alert.addButton(withTitle: "Done")
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+    }
+
+    private func presentExportFailure(_ message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "Export could not finish"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     @objc private func cancelNativeExport() {

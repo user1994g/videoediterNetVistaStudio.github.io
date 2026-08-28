@@ -6,11 +6,11 @@ on:
       release_tag:
         description: Existing draft GitHub release tag to update
         required: true
-        default: v1.4.0-beta.1
+        default: v1.4.0-beta.2
       version_label:
         description: Filename-safe version label
         required: true
-        default: 1.4-Beta-1
+        default: 1.4-Beta-2
 
 permissions:
   contents: write

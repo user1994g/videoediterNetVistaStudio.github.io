@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import threading
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -171,9 +172,12 @@ class ExportProcess:
             progress: Callable[[float, str], None] | None = None) -> str:
         command = build_command(project, options)
         total = max(project.duration(), 1 / options.fps)
-        self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        # Drain diagnostics and progress together. Leaving stderr unread can
+        # fill its pipe and deadlock a long real-world export.
+        self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                         text=True, errors="replace", bufsize=1)
         assert self.process.stdout is not None
+        diagnostic_tail: deque[str] = deque(maxlen=20)
         for line in self.process.stdout:
             if self.cancelled.is_set():
                 self.cancel()
@@ -186,14 +190,13 @@ class ExportProcess:
                         progress(min(0.999, seconds / total), f"{seconds:.1f} of {total:.1f} seconds")
                 except ValueError:
                     pass
-        stderr = self.process.stderr.read() if self.process.stderr else ""
+            elif line.strip():
+                diagnostic_tail.append(line.rstrip())
         status = self.process.wait()
         if self.process.stdout:
             self.process.stdout.close()
-        if self.process.stderr:
-            self.process.stderr.close()
         if status != 0:
-            tail = "\n".join(stderr.strip().splitlines()[-12:])
+            tail = "\n".join(diagnostic_tail)
             raise FFmpegError(tail or f"FFmpeg stopped with status {status}.")
         if progress:
             progress(1.0, "Complete")
