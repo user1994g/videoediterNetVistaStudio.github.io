@@ -172,8 +172,10 @@ class ExportProcess:
             progress: Callable[[float, str], None] | None = None) -> str:
         command = build_command(project, options)
         total = max(project.duration(), 1 / options.fps)
-        # Drain diagnostics and progress together. Leaving stderr unread can
-        # fill its pipe and deadlock a long real-world export.
+        # FFmpeg writes diagnostics to stderr and progress records to stdout.
+        # Keeping both as unread PIPEs can deadlock a long render as soon as
+        # stderr's small OS buffer fills. Merge the streams and drain them
+        # continuously so exports of real-length movies cannot silently stall.
         self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                         text=True, errors="replace", bufsize=1)
         assert self.process.stdout is not None

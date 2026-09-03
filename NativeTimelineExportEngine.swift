@@ -68,12 +68,14 @@ enum TimelineExportCodec: String, CaseIterable, Codable {
     case automatic
     case h264
     case hevc
+    case proRes422
 
     var title: String {
         switch self {
         case .automatic: return "Automatic"
         case .h264: return "H.264"
         case .hevc: return "HEVC (H.265)"
+        case .proRes422: return "Apple ProRes 422"
         }
     }
 
@@ -82,6 +84,7 @@ enum TimelineExportCodec: String, CaseIterable, Codable {
         case .automatic: return nil
         case .h264: return .h264
         case .hevc: return .hevc
+        case .proRes422: return .proRes422
         }
     }
 
@@ -90,6 +93,7 @@ enum TimelineExportCodec: String, CaseIterable, Codable {
         case .automatic: return nil
         case .h264: return kCMVideoCodecType_H264
         case .hevc: return kCMVideoCodecType_HEVC
+        case .proRes422: return kCMVideoCodecType_AppleProRes422
         }
     }
 }
@@ -389,14 +393,24 @@ enum NativeTimelineExportEngine {
 
     private static func resolveCodec(for options: TimelineExportOptions) throws -> AVVideoCodecType {
         let preferred: [TimelineExportCodec]
-        switch options.codec {
-        case .automatic:
+        let is16K = options.renderSize.width > 8_192 || options.renderSize.height > 4_608
+        if is16K {
+            // H.264/HEVC pass AVAssetWriter's shallow settings check at this
+            // raster but fail when the first real 16K frame is appended on
+            // current macOS encoders. ProRes 422 is the tested 16K path.
+            preferred = [.proRes422]
+        } else {
+            switch options.codec {
+            case .automatic:
             let highResolution = options.renderSize.width > 3840 || options.renderSize.height > 2160
-            preferred = highResolution ? [.hevc, .h264] : [.h264, .hevc]
-        case .h264:
-            preferred = options.allowCodecFallback ? [.h264, .hevc] : [.h264]
-        case .hevc:
-            preferred = options.allowCodecFallback ? [.hevc, .h264] : [.hevc]
+                preferred = highResolution ? [.hevc, .h264, .proRes422] : [.h264, .hevc, .proRes422]
+            case .h264:
+                preferred = options.allowCodecFallback ? [.h264, .hevc, .proRes422] : [.h264]
+            case .hevc:
+                preferred = options.allowCodecFallback ? [.hevc, .h264, .proRes422] : [.hevc]
+            case .proRes422:
+                preferred = options.allowCodecFallback ? [.proRes422, .hevc, .h264] : [.proRes422]
+            }
         }
         for codec in preferred where canExport(codec: codec, options: options) {
             if let value = codec.avCodec { return value }
@@ -405,6 +419,13 @@ enum NativeTimelineExportEngine {
     }
 
     fileprivate static func videoSettings(codec: AVVideoCodecType, options: TimelineExportOptions) -> [String: Any] {
+        if codec == .proRes422 {
+            return [
+                AVVideoCodecKey: codec,
+                AVVideoWidthKey: Int(options.renderSize.width),
+                AVVideoHeightKey: Int(options.renderSize.height)
+            ]
+        }
         var compression: [String: Any] = [
             AVVideoAverageBitRateKey: options.resolvedVideoBitRate,
             AVVideoExpectedSourceFrameRateKey: options.frameRate,
@@ -840,28 +861,26 @@ enum NativeTimelineVisualPipeline {
         image = applyingThreeWayColorWheels(to: image, extras: clip.colorExtras)
         image = CubeLUTRuntime.applyOrPassThrough(clip.colorExtras.cubeLUT, to: image)
 
-        let monochrome = min(1, max(0, clip.value(for: .monochromeAmount, at: timelineTime)))
-        if monochrome > 0.0001 {
-            image = image.applyingFilter("CIColorMonochrome", parameters: [
-                "inputColor": CIColor.white,
-                "inputIntensity": monochrome
-            ])
-        }
-        let sepia = min(1, max(0, clip.value(for: .sepiaAmount, at: timelineTime)))
-        if sepia > 0.0001 {
-            image = image.applyingFilter("CISepiaTone", parameters: ["inputIntensity": sepia])
-        }
-        let blur = max(0, clip.value(for: .blurRadius, at: timelineTime))
-        if blur > 0.0001 {
-            image = image.applyingFilter("CIGaussianBlur", parameters: ["inputRadius": blur]).cropped(to: sourceExtent)
-        }
-        let sharpen = max(0, clip.value(for: .sharpenAmount, at: timelineTime))
-        if sharpen > 0.0001 {
-            image = image.applyingFilter("CISharpenLuminance", parameters: ["inputSharpness": sharpen])
-        }
-        let vignette = max(0, clip.value(for: .vignetteIntensity, at: timelineTime))
-        if vignette > 0.0001 {
-            image = image.applyingFilter("CIVignette", parameters: ["inputIntensity": vignette, "inputRadius": 2])
+        for effect in ClipEffects.normalizedOrder(clip.effects.effectOrder) {
+            switch effect {
+            case .monochrome:
+                let amount = min(1, max(0, clip.value(for: .monochromeAmount, at: timelineTime)))
+                if amount > 0.0001 {
+                    image = image.applyingFilter("CIColorMonochrome", parameters: ["inputColor": CIColor.white, "inputIntensity": amount])
+                }
+            case .sepia:
+                let amount = min(1, max(0, clip.value(for: .sepiaAmount, at: timelineTime)))
+                if amount > 0.0001 { image = image.applyingFilter("CISepiaTone", parameters: ["inputIntensity": amount]) }
+            case .blur:
+                let amount = max(0, clip.value(for: .blurRadius, at: timelineTime))
+                if amount > 0.0001 { image = image.applyingFilter("CIGaussianBlur", parameters: ["inputRadius": amount]).cropped(to: sourceExtent) }
+            case .sharpen:
+                let amount = max(0, clip.value(for: .sharpenAmount, at: timelineTime))
+                if amount > 0.0001 { image = image.applyingFilter("CISharpenLuminance", parameters: ["inputSharpness": amount]) }
+            case .vignette:
+                let amount = max(0, clip.value(for: .vignetteIntensity, at: timelineTime))
+                if amount > 0.0001 { image = image.applyingFilter("CIVignette", parameters: ["inputIntensity": amount, "inputRadius": 2]) }
+            }
         }
         return applyCrop(to: image, clip: clip, timelineTime: timelineTime, sourceExtent: sourceExtent)
     }

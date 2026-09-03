@@ -8,7 +8,7 @@ The website is published at [video.netvistastudio.com](https://video.netvistastu
 
 ## Public beta download
 
-Download **NetVista Studio 1.4 Beta 2** from the [GitHub Releases page](https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/tag/v1.4.0-beta.2). Downloads are available for macOS, Windows, and Linux. This is early beta software, so expect bugs or incomplete features and keep backups of important project files.
+Download **NetVista Studio 1.4 Beta 3** from the [GitHub Releases page](https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/tag/v1.4.0-beta.3). Downloads are available for macOS, Windows, and Linux. This is early beta software, so expect bugs or incomplete features and keep backups of important project files.
 
 The current macOS beta is ad-hoc signed and therefore triggers a Gatekeeper warning. The repository includes a secure Developer ID signing and Apple notarization workflow; see [`MACOS_RELEASE.md`](MACOS_RELEASE.md). After the Apple credentials are configured and that workflow publishes a replacement ZIP, macOS users can open the download normally.
 
@@ -19,7 +19,7 @@ Double-click `NetVista Studio.app` in Finder.
 ## Updates
 
 - Press **Update** in the top bar to check the public NetVista Studio GitHub releases without signing in.
-- Beta and full releases are compared using their complete release tag, so Beta 2 correctly replaces Beta 1 and a final release correctly replaces any beta.
+- Beta and full releases are compared using their complete release tag, so Beta 3 correctly replaces Beta 2 and a final release correctly replaces any beta.
 - The app selects the package for the current operating system, downloads it to **Downloads**, and checks the published file size and SHA-256 digest before offering it to the user.
 - Updates never overwrite the running editor or an open project. Save your work, quit the old version, unpack the verified download, and replace the old app when ready.
 

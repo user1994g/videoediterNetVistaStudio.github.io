@@ -18,10 +18,12 @@ final class ExportWorkspaceViewController: NSViewController {
     private let streamingButton = NSButton(checkboxWithTitle: "Fast-start playback", target: nil, action: nil)
     private let summaryLabel = NSTextField(wrappingLabelWithString: "")
     private let capabilityLabel = NSTextField(wrappingLabelWithString: "")
-    private let progressBar = NSProgressIndicator()
-    private let progressLabel = NSTextField(labelWithString: "Ready to export")
-    private let exportButton = NSButton(title: "Choose Resolution and Export", target: nil, action: nil)
-    private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
+    private let exportButton = NSButton(title: "Export Movie…", target: nil, action: nil)
+    private lazy var progressWindowController: ExportProgressWindowController = {
+        let controller = ExportProgressWindowController()
+        controller.onCancel = { [weak self] in self?.onCancelExport?() }
+        return controller
+    }()
 
     private(set) var isExporting = false
 
@@ -90,27 +92,11 @@ final class ExportWorkspaceViewController: NSViewController {
         details.addArrangedSubview(NSView())
         columns.addArrangedSubview(details)
 
-        let progressCard = card()
-        progressCard.addArrangedSubview(sectionTitle("RENDER PROGRESS"))
-        progressBar.isIndeterminate = false
-        progressBar.minValue = 0
-        progressBar.maxValue = 1
-        progressBar.doubleValue = 0
-        progressCard.addArrangedSubview(progressBar)
-        progressLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-        progressLabel.textColor = .secondaryLabelColor
-        progressCard.addArrangedSubview(progressLabel)
-        root.addArrangedSubview(progressCard)
-
         let actions = NSStackView()
         actions.orientation = .horizontal
         actions.alignment = .centerY
         actions.spacing = 8
         actions.addArrangedSubview(NSView())
-        cancelButton.target = self
-        cancelButton.action = #selector(cancelExport)
-        cancelButton.isHidden = true
-        actions.addArrangedSubview(cancelButton)
         exportButton.target = self
         exportButton.action = #selector(startExport)
         exportButton.bezelStyle = .rounded
@@ -129,7 +115,7 @@ final class ExportWorkspaceViewController: NSViewController {
         frameRatePopup.selectItem(at: 2)
         for popup in [resolutionPopup, containerPopup, codecPopup, frameRatePopup] {
             popup.target = self
-            popup.action = #selector(settingChanged)
+            popup.action = #selector(settingChanged(_:))
         }
         let numberFormatter = NumberFormatter()
         numberFormatter.numberStyle = .none
@@ -141,9 +127,13 @@ final class ExportWorkspaceViewController: NSViewController {
         customHeightField.formatter = heightFormatter
         for field in [customWidthField, customHeightField] {
             field.target = self
-            field.action = #selector(settingChanged)
+            field.action = #selector(settingChanged(_:))
             field.alignment = .right
         }
+        includeAudioButton.target = self
+        includeAudioButton.action = #selector(settingChanged(_:))
+        streamingButton.target = self
+        streamingButton.action = #selector(settingChanged(_:))
     }
 
     private func card() -> NSStackView {
@@ -196,21 +186,43 @@ final class ExportWorkspaceViewController: NSViewController {
         )
     }
 
-    @objc private func settingChanged() { updateSummary() }
+    @objc private func settingChanged(_ sender: Any?) {
+        applyResolutionCompatibility()
+        updateSummary()
+    }
+
+    private func applyResolutionCompatibility() {
+        let resolutions = TimelineExportResolution.allCases
+        guard resolutions.indices.contains(resolutionPopup.indexOfSelectedItem) else { return }
+        let is16K = resolutions[resolutionPopup.indexOfSelectedItem] == .ultraHD16K
+        if is16K {
+            containerPopup.selectItem(at: TimelineExportContainer.allCases.firstIndex(of: .mov) ?? 1)
+            codecPopup.selectItem(at: TimelineExportCodec.allCases.firstIndex(of: .proRes422) ?? 0)
+            streamingButton.state = .off
+        }
+        containerPopup.isEnabled = !is16K && !isExporting
+        codecPopup.isEnabled = !is16K && !isExporting
+        streamingButton.isEnabled = !is16K && !isExporting
+    }
 
     private func updateSummary() {
         guard isViewLoaded else { return }
+        applyResolutionCompatibility()
         let options = selectedOptions
         let custom = options.resolution == .custom
         customWidthRow.isHidden = !custom
         customHeightRow.isHidden = !custom
         let size = options.renderSize
         summaryLabel.stringValue = "\(Int(size.width)) × \(Int(size.height))\n\(options.frameRate) frames per second\n\(options.container.title) • \(options.codec.title)\n\(options.includeAudio ? "AAC stereo audio" : "Video only")"
+        let is16K = size.width > 8_192 || size.height > 4_608
         let highResolution = size.width > 3840 || size.height > 2160
-        let requestedCodec: TimelineExportCodec = options.codec == .automatic ? (highResolution ? .hevc : .h264) : options.codec
+        let requestedCodec: TimelineExportCodec = options.codec == .automatic ? (is16K ? .proRes422 : (highResolution ? .hevc : .h264)) : options.codec
         let supported = NativeTimelineExportEngine.canExport(codec: requestedCodec, options: options)
         let hardware = NativeTimelineExportEngine.hasHardwareEncoder(for: requestedCodec)
-        if supported {
+        if is16K && supported {
+            capabilityLabel.stringValue = "✓ 16K safety mode uses Apple ProRes 422 in a MOV container. Expect very large files and a slower render."
+            capabilityLabel.textColor = .systemGreen
+        } else if supported {
             capabilityLabel.stringValue = hardware ? "✓ Hardware encoding is available on this Mac." : "✓ Supported using the available system encoder. High resolutions may render slowly."
             capabilityLabel.textColor = .systemGreen
         } else {
@@ -219,89 +231,109 @@ final class ExportWorkspaceViewController: NSViewController {
         }
     }
 
-    @objc private func startExport() { requestExport() }
+    @objc private func startExport() {
+        requestExport()
+    }
 
-    /// Every export entry point comes through this confirmation. This avoids
-    /// the toolbar and Inspector buttons silently using a previous/default
-    /// raster when the full Export workspace is not visible.
+    /// Every export entry point comes through one complete settings window.
+    /// Nothing important is hidden behind the confirmation, so users never
+    /// need to cancel and start again after noticing the frame-rate control.
     func requestExport() {
         guard !isExporting else { return }
-        let chooser = ExportResolutionChooserView(
-            resolution: selectedOptions.resolution,
-            customWidth: Int(customWidthField.integerValue),
-            customHeight: Int(customHeightField.integerValue)
-        )
+        let chooser = ExportSettingsChooserView(options: selectedOptions)
         let alert = NSAlert()
-        alert.messageText = "Choose export resolution"
-        alert.informativeText = "Pick the size for the finished movie before choosing where to save it."
+        alert.messageText = "Export movie"
+        alert.informativeText = "Choose every delivery setting now. The next window only asks where to save the movie."
         alert.alertStyle = .informational
         alert.accessoryView = chooser
         alert.addButton(withTitle: "Continue to Save")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        if let index = TimelineExportResolution.allCases.firstIndex(of: chooser.resolution) {
-            resolutionPopup.selectItem(at: index)
-        }
-        customWidthField.integerValue = chooser.customWidth
-        customHeightField.integerValue = chooser.customHeight
+        let options = chooser.options
+        apply(options)
         updateSummary()
-        onStartExport?(selectedOptions)
+        onStartExport?(options)
     }
 
-    @objc private func cancelExport() { onCancelExport?() }
+    private func apply(_ options: TimelineExportOptions) {
+        resolutionPopup.selectItem(at: TimelineExportResolution.allCases.firstIndex(of: options.resolution) ?? 1)
+        containerPopup.selectItem(at: TimelineExportContainer.allCases.firstIndex(of: options.container) ?? 0)
+        codecPopup.selectItem(at: TimelineExportCodec.allCases.firstIndex(of: options.codec) ?? 0)
+        let rates: [Int32] = [24, 25, 30, 60]
+        frameRatePopup.selectItem(at: rates.firstIndex(of: options.frameRate) ?? 2)
+        customWidthField.integerValue = options.customWidth
+        customHeightField.integerValue = options.customHeight
+        includeAudioButton.state = options.includeAudio ? .on : .off
+        streamingButton.state = options.optimizeForStreaming ? .on : .off
+        applyResolutionCompatibility()
+    }
 
-    func beginExport() {
+    func beginExport(options: TimelineExportOptions) {
         isExporting = true
         exportButton.isEnabled = false
         [resolutionPopup, containerPopup, codecPopup, frameRatePopup, customWidthField, customHeightField, includeAudioButton, streamingButton].forEach { $0.isEnabled = false }
-        cancelButton.isHidden = false
-        progressBar.doubleValue = 0
-        progressLabel.stringValue = "Preparing timeline…"
+        progressWindowController.show(options: options)
     }
 
     func update(progress: TimelineExportProgress) {
-        progressBar.doubleValue = progress.fractionCompleted
-        progressLabel.stringValue = String(format: "%3d%%  •  %.1f of %.1f seconds", progress.percent, progress.renderedSeconds, progress.totalSeconds)
+        progressWindowController.update(progress)
     }
 
     func finishExport(message: String, succeeded: Bool) {
         isExporting = false
         exportButton.isEnabled = true
         [resolutionPopup, containerPopup, codecPopup, frameRatePopup, customWidthField, customHeightField, includeAudioButton, streamingButton].forEach { $0.isEnabled = true }
-        cancelButton.isHidden = true
-        progressLabel.stringValue = message
-        progressLabel.textColor = succeeded ? .systemGreen : .systemOrange
-        if succeeded { progressBar.doubleValue = 1 }
+        progressWindowController.finish(message: message, succeeded: succeeded)
         updateSummary()
     }
 }
 
-/// Compact native resolution step shown before the save panel. It deliberately
-/// contains only raster choices; format, codec, frame rate and audio remain in
-/// the full Export page so this confirmation stays quick and understandable.
-private final class ExportResolutionChooserView: NSView {
-    private let popup = NSPopUpButton()
+/// The single authoritative settings step shown before the save panel.
+private final class ExportSettingsChooserView: NSView {
+    private let resolutionPopup = NSPopUpButton()
+    private let containerPopup = NSPopUpButton()
+    private let codecPopup = NSPopUpButton()
+    private let frameRatePopup = NSPopUpButton()
     private let widthField = NSTextField(string: "1920")
     private let heightField = NSTextField(string: "1080")
+    private let includeAudioButton = NSButton(checkboxWithTitle: "Include timeline audio", target: nil, action: nil)
+    private let streamingButton = NSButton(checkboxWithTitle: "Fast-start playback", target: nil, action: nil)
+    private let summaryLabel = NSTextField(labelWithString: "")
 
-    var resolution: TimelineExportResolution {
-        let choices = TimelineExportResolution.allCases
-        return choices[max(0, min(choices.count - 1, popup.indexOfSelectedItem))]
+    var options: TimelineExportOptions {
+        let resolutions = TimelineExportResolution.allCases
+        let containers = TimelineExportContainer.allCases
+        let codecs = TimelineExportCodec.allCases
+        let rates: [Int32] = [24, 25, 30, 60]
+        return TimelineExportOptions(
+            resolution: resolutions[max(0, min(resolutions.count - 1, resolutionPopup.indexOfSelectedItem))],
+            container: containers[max(0, min(containers.count - 1, containerPopup.indexOfSelectedItem))],
+            codec: codecs[max(0, min(codecs.count - 1, codecPopup.indexOfSelectedItem))],
+            customWidth: min(15_360, max(64, Int(widthField.integerValue))),
+            customHeight: min(8_640, max(64, Int(heightField.integerValue))),
+            frameRate: rates[max(0, min(rates.count - 1, frameRatePopup.indexOfSelectedItem))],
+            includeAudio: includeAudioButton.state == .on,
+            optimizeForStreaming: streamingButton.state == .on
+        )
     }
-    var customWidth: Int { min(15_360, max(64, Int(widthField.integerValue))) }
-    var customHeight: Int { min(8_640, max(64, Int(heightField.integerValue))) }
 
-    init(resolution: TimelineExportResolution, customWidth: Int, customHeight: Int) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 380, height: 108))
-        popup.addItems(withTitles: TimelineExportResolution.allCases.map(\.title))
-        popup.selectItem(at: TimelineExportResolution.allCases.firstIndex(of: resolution) ?? 1)
-        popup.target = self
-        popup.action = #selector(resolutionChanged)
-        widthField.integerValue = customWidth
-        heightField.integerValue = customHeight
+    init(options: TimelineExportOptions) {
+        super.init(frame: NSRect(x: 0, y: 0, width: 430, height: 276))
+        resolutionPopup.addItems(withTitles: TimelineExportResolution.allCases.map(\.title))
+        containerPopup.addItems(withTitles: TimelineExportContainer.allCases.map(\.title))
+        codecPopup.addItems(withTitles: TimelineExportCodec.allCases.map(\.title))
+        frameRatePopup.addItems(withTitles: ["24 fps", "25 fps", "30 fps", "60 fps"])
+        resolutionPopup.selectItem(at: TimelineExportResolution.allCases.firstIndex(of: options.resolution) ?? 1)
+        containerPopup.selectItem(at: TimelineExportContainer.allCases.firstIndex(of: options.container) ?? 0)
+        codecPopup.selectItem(at: TimelineExportCodec.allCases.firstIndex(of: options.codec) ?? 0)
+        frameRatePopup.selectItem(at: [24, 25, 30, 60].firstIndex(of: options.frameRate) ?? 2)
+        widthField.integerValue = options.customWidth
+        heightField.integerValue = options.customHeight
         widthField.alignment = .right
         heightField.alignment = .right
+        includeAudioButton.state = options.includeAudio ? .on : .off
+        streamingButton.state = options.optimizeForStreaming ? .on : .off
 
         let widthFormatter = NumberFormatter()
         widthFormatter.numberStyle = .none
@@ -312,24 +344,51 @@ private final class ExportResolutionChooserView: NSView {
         heightFormatter.maximum = 8_640
         heightField.formatter = heightFormatter
 
+        for popup in [resolutionPopup, containerPopup, codecPopup, frameRatePopup] {
+            popup.target = self
+            popup.action = #selector(settingChanged(_:))
+        }
+        includeAudioButton.target = self
+        includeAudioButton.action = #selector(settingChanged(_:))
+        streamingButton.target = self
+        streamingButton.action = #selector(settingChanged(_:))
+
         let form = NSGridView(views: [
-            [label("Resolution"), popup],
+            [label("Resolution"), resolutionPopup],
             [label("Custom width"), widthField],
-            [label("Custom height"), heightField]
+            [label("Custom height"), heightField],
+            [label("Frame rate"), frameRatePopup],
+            [label("Format"), containerPopup],
+            [label("Video codec"), codecPopup]
         ])
         form.rowSpacing = 8
         form.columnSpacing = 12
         form.translatesAutoresizingMaskIntoConstraints = false
         addSubview(form)
+        includeAudioButton.translatesAutoresizingMaskIntoConstraints = false
+        streamingButton.translatesAutoresizingMaskIntoConstraints = false
+        summaryLabel.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+        summaryLabel.textColor = .secondaryLabelColor
+        summaryLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(includeAudioButton)
+        addSubview(streamingButton)
+        addSubview(summaryLabel)
         NSLayoutConstraint.activate([
             form.leadingAnchor.constraint(equalTo: leadingAnchor),
             form.trailingAnchor.constraint(equalTo: trailingAnchor),
             form.topAnchor.constraint(equalTo: topAnchor),
-            popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 210),
+            resolutionPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 230),
             widthField.widthAnchor.constraint(greaterThanOrEqualToConstant: 110),
-            heightField.widthAnchor.constraint(greaterThanOrEqualToConstant: 110)
+            heightField.widthAnchor.constraint(greaterThanOrEqualToConstant: 110),
+            includeAudioButton.leadingAnchor.constraint(equalTo: form.leadingAnchor, constant: 116),
+            includeAudioButton.topAnchor.constraint(equalTo: form.bottomAnchor, constant: 9),
+            streamingButton.leadingAnchor.constraint(equalTo: includeAudioButton.trailingAnchor, constant: 16),
+            streamingButton.centerYAnchor.constraint(equalTo: includeAudioButton.centerYAnchor),
+            summaryLabel.leadingAnchor.constraint(equalTo: includeAudioButton.leadingAnchor),
+            summaryLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
+            summaryLabel.topAnchor.constraint(equalTo: includeAudioButton.bottomAnchor, constant: 9)
         ])
-        resolutionChanged()
+        settingChanged(nil)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -340,14 +399,110 @@ private final class ExportResolutionChooserView: NSView {
         return value
     }
 
-    @objc private func resolutionChanged() {
-        let custom = resolution == .custom
+    @objc private func settingChanged(_ sender: Any?) {
+        let resolutions = TimelineExportResolution.allCases
+        let selectedResolution = resolutions[max(0, min(resolutions.count - 1, resolutionPopup.indexOfSelectedItem))]
+        let is16K = selectedResolution == .ultraHD16K
+        if is16K {
+            containerPopup.selectItem(at: TimelineExportContainer.allCases.firstIndex(of: .mov) ?? 1)
+            codecPopup.selectItem(at: TimelineExportCodec.allCases.firstIndex(of: .proRes422) ?? 0)
+            streamingButton.state = .off
+        }
+        containerPopup.isEnabled = !is16K
+        codecPopup.isEnabled = !is16K
+        streamingButton.isEnabled = !is16K
+        let custom = selectedResolution == .custom
         widthField.isEnabled = custom
         heightField.isEnabled = custom
         if !custom {
-            let dimensions = resolution.dimensions
+            let dimensions = selectedResolution.dimensions
             widthField.integerValue = Int(dimensions.width)
             heightField.integerValue = Int(dimensions.height)
         }
+        let selected = options
+        let size = selected.renderSize
+        summaryLabel.stringValue = "Output: \(Int(size.width)) × \(Int(size.height)) · \(selected.frameRate) fps · \(selected.container.title) · \(selected.codec.title)" + (is16K ? "\n16K safety mode uses ProRes for reliable rendering." : "")
+    }
+}
+
+/// Modeless progress panel that stays visible regardless of the selected page.
+private final class ExportProgressWindowController: NSWindowController {
+    var onCancel: (() -> Void)?
+    private let progressBar = NSProgressIndicator()
+    private let progressLabel = NSTextField(labelWithString: "Preparing timeline…")
+    private let detailLabel = NSTextField(labelWithString: "")
+    private let cancelButton = NSButton(title: "Cancel Export", target: nil, action: nil)
+
+    init() {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 190),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = "Exporting Movie"
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+        super.init(window: panel)
+
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.alignment = .width
+        root.spacing = 12
+        root.edgeInsets = NSEdgeInsets(top: 22, left: 24, bottom: 20, right: 24)
+        root.translatesAutoresizingMaskIntoConstraints = false
+        panel.contentView?.addSubview(root)
+
+        let title = NSTextField(labelWithString: "Rendering your finished movie")
+        title.font = .systemFont(ofSize: 17, weight: .semibold)
+        detailLabel.textColor = .secondaryLabelColor
+        progressBar.isIndeterminate = false
+        progressBar.minValue = 0
+        progressBar.maxValue = 1
+        progressLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        progressLabel.textColor = .secondaryLabelColor
+        let actions = NSStackView()
+        actions.orientation = .horizontal
+        actions.addArrangedSubview(NSView())
+        cancelButton.target = self
+        cancelButton.action = #selector(cancelPressed)
+        actions.addArrangedSubview(cancelButton)
+        [title, detailLabel, progressBar, progressLabel, actions].forEach(root.addArrangedSubview)
+        NSLayoutConstraint.activate([
+            root.leadingAnchor.constraint(equalTo: panel.contentView!.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: panel.contentView!.trailingAnchor),
+            root.topAnchor.constraint(equalTo: panel.contentView!.topAnchor),
+            root.bottomAnchor.constraint(equalTo: panel.contentView!.bottomAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func show(options: TimelineExportOptions) {
+        let size = options.renderSize
+        detailLabel.stringValue = "\(Int(size.width)) × \(Int(size.height)) · \(options.frameRate) fps · \(options.container.title)"
+        progressBar.doubleValue = 0
+        progressLabel.stringValue = "Preparing timeline…"
+        cancelButton.isEnabled = true
+        window?.center()
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    func update(_ progress: TimelineExportProgress) {
+        progressBar.doubleValue = progress.fractionCompleted
+        progressLabel.stringValue = String(format: "%3d%%  •  %.1f of %.1f seconds", progress.percent, progress.renderedSeconds, progress.totalSeconds)
+    }
+
+    func finish(message: String, succeeded: Bool) {
+        progressBar.doubleValue = succeeded ? 1 : progressBar.doubleValue
+        progressLabel.stringValue = message
+        window?.orderOut(nil)
+    }
+
+    @objc private func cancelPressed() {
+        cancelButton.isEnabled = false
+        progressLabel.stringValue = "Cancelling export…"
+        onCancel?()
     }
 }

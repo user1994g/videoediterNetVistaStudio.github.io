@@ -4,13 +4,37 @@ import AVFoundation
 import UniformTypeIdentifiers
 import CoreImage
 
+/// The Program Monitor is a picture surface, not a playback button. All
+/// playback and inspection actions live in the dedicated bar below it.
+private final class PassiveProgramPlayerView: AVPlayerView {
+    override var acceptsFirstResponder: Bool { false }
+    override func hitTest(_ point: NSPoint) -> NSView? { bounds.contains(point) ? self : nil }
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseDragged(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) {}
+    override func rightMouseDown(with event: NSEvent) {}
+}
+
 extension NSPasteboard.PasteboardType {
     static let netVistaAsset = NSPasteboard.PasteboardType("local.netvista-studio.media-asset")
 }
 
 enum MediaKind: String, Codable { case video, audio }
 
-enum KeyframeInterpolation: String, Codable, CaseIterable { case hold, linear, easeInOut }
+enum KeyframeInterpolation: String, Codable, CaseIterable {
+    case hold, linear, easeIn, easeOut, easeInOut
+
+    static let editorChoices: [KeyframeInterpolation] = [.easeInOut, .easeIn, .easeOut, .linear, .hold]
+    var title: String {
+        switch self {
+        case .hold: return "Hold"
+        case .linear: return "Linear"
+        case .easeIn: return "Ease In"
+        case .easeOut: return "Ease Out"
+        case .easeInOut: return "Ease In / Out"
+        }
+    }
+}
 
 enum AnimatableProperty: String, Codable, CaseIterable {
     case positionX, positionY, scale, rotation, opacity
@@ -82,6 +106,13 @@ struct ClipAnimation: Codable, Equatable {
         switch previous.interpolation {
         case .hold: return previous.value
         case .linear: return previous.value + (following.value - previous.value) * linear
+        case .easeIn:
+            let eased = linear * linear * linear
+            return previous.value + (following.value - previous.value) * eased
+        case .easeOut:
+            let inverse = 1 - linear
+            let eased = 1 - inverse * inverse * inverse
+            return previous.value + (following.value - previous.value) * eased
         case .easeInOut:
             let eased = linear * linear * (3 - 2 * linear)
             return previous.value + (following.value - previous.value) * eased
@@ -188,6 +219,25 @@ enum ClipBlendMode: String, Codable, CaseIterable {
     }
 }
 
+/// The reorderable image-processing effects in a clip's visual pipeline.
+/// Motion, opacity, crop and Ultra Key remain fixed pipeline stages because
+/// they control geometry/compositing rather than a Core Image look.
+enum VideoEffectKind: String, Codable, CaseIterable, Hashable {
+    case monochrome, sepia, blur, sharpen, vignette
+
+    static let defaultOrder: [VideoEffectKind] = [.monochrome, .sepia, .blur, .sharpen, .vignette]
+
+    var title: String {
+        switch self {
+        case .monochrome: return "Monochrome"
+        case .sepia: return "Sepia"
+        case .blur: return "Gaussian Blur"
+        case .sharpen: return "Sharpen"
+        case .vignette: return "Vignette"
+        }
+    }
+}
+
 struct ClipEffects: Codable, Equatable {
     var blurRadius: Double = 0
     var sharpenAmount: Double = 0
@@ -197,9 +247,10 @@ struct ClipEffects: Codable, Equatable {
     var crop = ClipCrop()
     var ultraKey = UltraKeySettings()
     var blendMode: ClipBlendMode = .normal
+    var effectOrder: [VideoEffectKind] = VideoEffectKind.defaultOrder
 
     private enum CodingKeys: String, CodingKey {
-        case blurRadius, sharpenAmount, vignetteIntensity, monochromeAmount, sepiaAmount, crop, ultraKey, blendMode
+        case blurRadius, sharpenAmount, vignetteIntensity, monochromeAmount, sepiaAmount, crop, ultraKey, blendMode, effectOrder
     }
 
     init() {}
@@ -213,6 +264,14 @@ struct ClipEffects: Codable, Equatable {
         crop = try c.decodeIfPresent(ClipCrop.self, forKey: .crop) ?? .init()
         ultraKey = try c.decodeIfPresent(UltraKeySettings.self, forKey: .ultraKey) ?? .init()
         blendMode = try c.decodeIfPresent(ClipBlendMode.self, forKey: .blendMode) ?? .normal
+        let savedOrder = try c.decodeIfPresent([VideoEffectKind].self, forKey: .effectOrder) ?? []
+        effectOrder = ClipEffects.normalizedOrder(savedOrder)
+    }
+
+    static func normalizedOrder(_ order: [VideoEffectKind]) -> [VideoEffectKind] {
+        var seen = Set<VideoEffectKind>()
+        let unique = order.filter { seen.insert($0).inserted }
+        return unique + VideoEffectKind.defaultOrder.filter { !seen.contains($0) }
     }
 }
 
@@ -348,7 +407,9 @@ struct TimelineClip: Codable, Equatable {
 }
 
 extension TimelineClip {
-    func localTime(at timelineTime: Double) -> Double { max(0, timelineTime - timelineStart) }
+    func localTime(at timelineTime: Double) -> Double {
+        min(max(0, outPoint - inPoint), max(0, timelineTime - timelineStart))
+    }
 
     func baseValue(for property: AnimatableProperty) -> Double {
         switch property {
@@ -508,6 +569,7 @@ private final class FlippedWorkspaceDocumentView: NSView {
 }
 
 final class EditorController: NSViewController {
+    var onShowStudioHome: (() -> Void)?
     private var media: [MediaAsset] = []
     private var timelineClips: [TimelineClip] = []
     private var storedScenes: [StoredScene] = []
@@ -518,7 +580,7 @@ final class EditorController: NSViewController {
     private let mediaList = NSStackView()
     private let timelineView = ProfessionalTimelineView()
     private let workspaceStack = NSStackView()
-    private let previewView = AVPlayerView()
+    private let previewView = PassiveProgramPlayerView()
     private let programGuideOverlay = ProgramGuideOverlayView()
     private let viewerContainer = NSView()
     private let emptyPreviewLabel = NSTextField(labelWithString: "Import a video to start editing")
@@ -552,6 +614,8 @@ final class EditorController: NSViewController {
     private let dynamicInspector = NSStackView()
     private let projectTitle = NSTextField(string: "Untitled Project")
     private let playheadLabel = NSTextField(labelWithString: "00:00:00:00")
+    private let monitorZoomLabel = NSTextField(labelWithString: "Fit")
+    private var monitorZoomScale: CGFloat = 1
     private let projectUndoManager = UndoManager()
     private var pageButtons: [StudioPage: NSButton] = [:]
     private var currentPage: StudioPage = .edit
@@ -601,6 +665,11 @@ final class EditorController: NSViewController {
     private var advancedEffectControl = ClipEffects()
     private var effectsStudioWindow: NSWindow?
     private var effectsStudioController: EffectsStudioViewController?
+    // Colour and Effects are separate floating workspaces. Keep their preview
+    // values separate, then compose them into one renderer snapshot so closing
+    // or applying one studio never silently discards the other studio's work.
+    private var liveColourPreviewValues: [UUID: ColorControlValues] = [:]
+    private var liveEffectsPreviewValues: [UUID: EffectControlValues] = [:]
     private var shareWindow: NSWindow?
     private var sharePanelController: SharePanelViewController?
     private var shareServer: LocalShareServer?
@@ -673,6 +742,9 @@ final class EditorController: NSViewController {
         StudioTheme.shared.register(brand, as: .primaryText)
         StudioTheme.shared.register(accent, as: .accentText)
         StudioTheme.shared.register(projectTitle, as: .control)
+        let home = button("Studio Home", #selector(showStudioHome))
+        home.toolTip = "Return to the NetVista Studio editor chooser"
+        bar.addArrangedSubview(home)
         bar.addArrangedSubview(spacer()); bar.addArrangedSubview(projectTitle)
         bar.addArrangedSubview(button("↶", #selector(undoEdit)))
         bar.addArrangedSubview(button("↷", #selector(redoEdit)))
@@ -683,6 +755,8 @@ final class EditorController: NSViewController {
         bar.edgeInsets = NSEdgeInsets(top: 0, left: 16, bottom: 0, right: 16)
         return bar
     }
+
+    @objc private func showStudioHome() { onShowStudioHome?() }
 
     private func pageDock() -> NSView {
         let rail = NSStackView(); rail.orientation = .horizontal; rail.alignment = .centerY; rail.spacing = 14; rail.wantsLayer = true; rail.layer?.backgroundColor = NSColor(hex: "111317").cgColor
@@ -939,7 +1013,11 @@ final class EditorController: NSViewController {
     }
     private func configuredViewer() -> NSView {
         if viewerContainer.subviews.isEmpty {
-            viewerContainer.wantsLayer = true; viewerContainer.layer?.backgroundColor = NSColor.black.cgColor
+            viewerContainer.wantsLayer = true
+            viewerContainer.layer?.backgroundColor = NSColor(hex: "07090D").cgColor
+            viewerContainer.layer?.borderColor = NSColor(hex: "303744").cgColor
+            viewerContainer.layer?.borderWidth = 1
+            viewerContainer.layer?.masksToBounds = true
             viewerContainer.setContentHuggingPriority(.defaultLow, for: .vertical)
             viewerContainer.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
             let viewerMinimum = viewerContainer.heightAnchor.constraint(greaterThanOrEqualToConstant: 140)
@@ -947,7 +1025,11 @@ final class EditorController: NSViewController {
             let viewerIdeal = viewerContainer.heightAnchor.constraint(equalToConstant: 280)
             viewerIdeal.priority = .init(500)
             NSLayoutConstraint.activate([viewerMinimum, viewerIdeal])
-            previewView.translatesAutoresizingMaskIntoConstraints = false; previewView.controlsStyle = .floating; previewView.videoGravity = .resizeAspect
+            previewView.translatesAutoresizingMaskIntoConstraints = false
+            previewView.wantsLayer = true
+            previewView.controlsStyle = .none
+            previewView.videoGravity = .resizeAspect
+            previewView.toolTip = "Use the playback and viewer controls below the picture."
             programGuideOverlay.translatesAutoresizingMaskIntoConstraints = false
             emptyPreviewLabel.translatesAutoresizingMaskIntoConstraints = false; emptyPreviewLabel.font = .systemFont(ofSize: 14, weight: .medium); emptyPreviewLabel.textColor = NSColor(hex: "9DA6B5"); emptyPreviewLabel.alignment = .center
             viewerContainer.addSubview(previewView); viewerContainer.addSubview(programGuideOverlay); viewerContainer.addSubview(emptyPreviewLabel)
@@ -958,6 +1040,7 @@ final class EditorController: NSViewController {
             ])
         }
         previewView.player = player
+        applyProgramMonitorZoom()
         return viewerContainer
     }
     private func installPlayerTimeObserver() {
@@ -1032,7 +1115,20 @@ final class EditorController: NSViewController {
         let bar = NSStackView(); bar.orientation = .horizontal; bar.alignment = .centerY; bar.spacing = 7; bar.wantsLayer = true; bar.layer?.backgroundColor = NSColor(hex: "15181D").cgColor; bar.heightAnchor.constraint(equalToConstant: 34).isActive = true
         let monitor = NSTextField(labelWithString: "PROGRAM MONITOR"); monitor.font = .systemFont(ofSize: 10, weight: .bold); monitor.textColor = .secondaryLabelColor
         playheadLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium); playheadLabel.textColor = .white
-        bar.addArrangedSubview(monitor); bar.addArrangedSubview(spacer())
+        monitorZoomLabel.font = .monospacedDigitSystemFont(ofSize: 9, weight: .semibold)
+        monitorZoomLabel.textColor = NSColor(hex: "9AA6B8")
+        monitorZoomLabel.alignment = .center
+        monitorZoomLabel.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        let zoomOut = button("−", #selector(zoomProgramMonitorOut)); zoomOut.toolTip = "Zoom out in the Program Monitor"
+        let zoomFit = button("Fit", #selector(fitProgramMonitor)); zoomFit.toolTip = "Fit the complete video frame in the Program Monitor"
+        let zoomIn = button("+", #selector(zoomProgramMonitorIn)); zoomIn.toolTip = "Zoom in for detailed effect work"
+        bar.addArrangedSubview(monitor)
+        bar.addArrangedSubview(divider())
+        bar.addArrangedSubview(zoomOut)
+        bar.addArrangedSubview(monitorZoomLabel)
+        bar.addArrangedSubview(zoomIn)
+        bar.addArrangedSubview(zoomFit)
+        bar.addArrangedSubview(spacer())
         bar.addArrangedSubview(button("‹", #selector(stepBackward)))
         let play = button("Play", #selector(togglePlayback)); play.contentTintColor = .systemBlue; bar.addArrangedSubview(play)
         bar.addArrangedSubview(button("Stop", #selector(stopPlayback)))
@@ -1040,6 +1136,22 @@ final class EditorController: NSViewController {
         bar.addArrangedSubview(spacer()); bar.addArrangedSubview(playheadLabel)
         bar.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
         return bar
+    }
+    @objc private func zoomProgramMonitorOut() {
+        monitorZoomScale = max(0.25, monitorZoomScale / 1.25)
+        applyProgramMonitorZoom()
+    }
+    @objc private func zoomProgramMonitorIn() {
+        monitorZoomScale = min(4, monitorZoomScale * 1.25)
+        applyProgramMonitorZoom()
+    }
+    @objc private func fitProgramMonitor() {
+        monitorZoomScale = 1
+        applyProgramMonitorZoom()
+    }
+    private func applyProgramMonitorZoom() {
+        previewView.layer?.setAffineTransform(CGAffineTransform(scaleX: monitorZoomScale, y: monitorZoomScale))
+        monitorZoomLabel.stringValue = "\(Int((monitorZoomScale * 100).rounded()))%"
     }
     private func timelineBar() -> NSView {
         let bar = NSStackView(); bar.orientation = .horizontal; bar.alignment = .centerY; bar.spacing = 6; bar.wantsLayer = true; bar.layer?.backgroundColor = NSColor(hex: "1C2027").cgColor; bar.heightAnchor.constraint(equalToConstant: 34).isActive = true
@@ -1071,7 +1183,7 @@ final class EditorController: NSViewController {
         case .effects:
             let studio = tool("Effects", #selector(openEffectsStudio), "Open Effect Controls"); studio.contentTintColor = .systemPurple; bar.addArrangedSubview(studio)
         case .color:
-            let studio = tool("Color", #selector(openColorStudio), "Open Color Studio"); studio.contentTintColor = .systemOrange; bar.addArrangedSubview(studio)
+            let studio = tool("Colour", #selector(openColorStudio), "Open Colour Studio"); studio.contentTintColor = .systemOrange; bar.addArrangedSubview(studio)
         case .audio:
             let volume = tool("Volume", #selector(applyAudioVolume), "Apply the Inspector volume to selected audio"); volume.contentTintColor = .systemGreen; bar.addArrangedSubview(volume)
         case .scene3D:
@@ -1079,7 +1191,7 @@ final class EditorController: NSViewController {
         case .mods:
             break
         case .export:
-            let render = tool("Export", #selector(exportFromCurrentSettings), "Choose a resolution, then export the timeline"); render.contentTintColor = .systemBlue; bar.addArrangedSubview(render)
+            let render = tool("Export", #selector(exportFromCurrentSettings), "Choose all movie settings, then export the timeline"); render.contentTintColor = .systemBlue; bar.addArrangedSubview(render)
         }
         bar.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 0, right: 10)
         return bar
@@ -1129,7 +1241,7 @@ final class EditorController: NSViewController {
     private func button(_ title: String, _ action: Selector) -> NSButton { let b = NSButton(title: title, target: self, action: action); b.bezelStyle = .rounded; b.font = .systemFont(ofSize: 11, weight: .medium); return b }
     private func fieldLabel(_ text: String) -> NSTextField { let l = NSTextField(labelWithString: text); l.font = .systemFont(ofSize: 9, weight: .bold); l.textColor = .secondaryLabelColor; return l }
     private func replaceTimeline(_ next: [TimelineClip], action: String, selection requestedSelection: Set<UUID>? = nil, primary requestedPrimary: UUID? = nil, playhead requestedPlayhead: Double? = nil) {
-        TimelineLiveEffectStore.shared.clear()
+        clearAllLivePreviews()
         let previous = timelineClips
         let previousSelection = selectedClipIDs
         let previousPrimary = selectedClipID
@@ -1175,8 +1287,18 @@ final class EditorController: NSViewController {
             emptyPreviewLabel.isHidden = false
         }
     }
-    @objc private func undoEdit() { guard projectUndoManager.canUndo else { status("Nothing to undo."); return }; projectUndoManager.undo(); rebuildInspector(); status("Undid last edit.") }
-    @objc private func redoEdit() { guard projectUndoManager.canRedo else { status("Nothing to redo."); return }; projectUndoManager.redo(); rebuildInspector(); status("Redid last edit.") }
+    @objc private func undoEdit() {
+        guard projectUndoManager.canUndo else { status("Nothing to undo."); return }
+        projectUndoManager.undo(); refreshOpenStudiosAfterHistory(); rebuildInspector(); status("Undid last edit.")
+    }
+    @objc private func redoEdit() {
+        guard projectUndoManager.canRedo else { status("Nothing to redo."); return }
+        projectUndoManager.redo(); refreshOpenStudiosAfterHistory(); rebuildInspector(); status("Redid last edit.")
+    }
+    private func refreshOpenStudiosAfterHistory() {
+        if let video = primarySelectedVideo() { loadEditingControls(from: video) }
+        else { colorStudioController?.load(ColorControlValues(), selectionName: "No timeline video selected", isEnabled: false) }
+    }
 
     private func rebuildInspector() {
         dynamicInspector.arrangedSubviews.forEach { dynamicInspector.removeArrangedSubview($0); $0.removeFromSuperview() }
@@ -1239,7 +1361,7 @@ final class EditorController: NSViewController {
             dynamicInspector.addArrangedSubview(button("Restore Default Theme", #selector(restoreDefaultTheme)))
         case .export:
             dynamicInspector.addArrangedSubview(NSTextField(wrappingLabelWithString: "The native renderer supports 1080p, 4K and 8K with MP4 or MOV. It includes timeline placement, trims, layers, transform keyframes and mixed audio without requiring FFmpeg."))
-            let export = button("Choose Resolution and Export", #selector(exportFromCurrentSettings)); export.contentTintColor = .systemBlue; dynamicInspector.addArrangedSubview(export)
+            let export = button("Export Movie…", #selector(exportFromCurrentSettings)); export.contentTintColor = .systemBlue; dynamicInspector.addArrangedSubview(export)
             let cancel = button("Cancel active export", #selector(cancelNativeExport)); cancel.isEnabled = activeExportJob != nil; dynamicInspector.addArrangedSubview(cancel)
         }
     }
@@ -1493,8 +1615,37 @@ final class EditorController: NSViewController {
         let hours = totalFrames / 108000
         playheadLabel.stringValue = String(format: "%02d:%02d:%02d:%02d", hours, minutes, seconds, frames)
         if let clip = primarySelectedVideo(), time >= clip.timelineStart, time <= clip.timelineStart + clipDuration(clip) {
-            effectsStudioController?.updatePlayhead(localTime: clip.localTime(at: time))
+            effectsStudioController?.updatePlayhead(
+                localTime: clip.localTime(at: time),
+                evaluatedValues: evaluatedEffectValues(for: clip, at: time)
+            )
         }
+    }
+    private func evaluatedEffectValues(for clip: TimelineClip, at timelineTime: Double) -> EffectControlValues {
+        // Effects Studio stores unapplied slider edits in the live preview
+        // store. Reading only the saved clip here made the 30 fps playhead
+        // observer push stale values back into the controls after every drag.
+        let previewClip = TimelineLiveEffectStore.shared.resolved(clip)
+        var values = EffectControlValues(previewClip)
+        values.transform.positionX = previewClip.value(for: .positionX, at: timelineTime)
+        values.transform.positionY = previewClip.value(for: .positionY, at: timelineTime)
+        values.transform.scale = previewClip.value(for: .scale, at: timelineTime)
+        values.transform.rotation = previewClip.value(for: .rotation, at: timelineTime)
+        values.transform.opacity = previewClip.value(for: .opacity, at: timelineTime)
+        values.effects.crop.left = previewClip.value(for: .cropLeft, at: timelineTime)
+        values.effects.crop.right = previewClip.value(for: .cropRight, at: timelineTime)
+        values.effects.crop.top = previewClip.value(for: .cropTop, at: timelineTime)
+        values.effects.crop.bottom = previewClip.value(for: .cropBottom, at: timelineTime)
+        values.effects.ultraKey.tolerance = previewClip.value(for: .ultraKeyTolerance, at: timelineTime)
+        values.effects.ultraKey.soften = previewClip.value(for: .ultraKeySoftness, at: timelineTime)
+        values.effects.ultraKey.choke = previewClip.value(for: .ultraKeyChoke, at: timelineTime)
+        values.effects.ultraKey.spill = previewClip.value(for: .ultraKeySpill, at: timelineTime)
+        values.effects.blurRadius = previewClip.value(for: .blurRadius, at: timelineTime)
+        values.effects.sharpenAmount = previewClip.value(for: .sharpenAmount, at: timelineTime)
+        values.effects.vignetteIntensity = previewClip.value(for: .vignetteIntensity, at: timelineTime)
+        values.effects.monochromeAmount = previewClip.value(for: .monochromeAmount, at: timelineTime)
+        values.effects.sepiaAmount = previewClip.value(for: .sepiaAmount, at: timelineTime)
+        return values
     }
     /// Called only for an intentional ruler/canvas click.  Periodic player updates
     /// use `timelinePlayheadMoved`, so this never creates a seek feedback loop.
@@ -1601,12 +1752,23 @@ final class EditorController: NSViewController {
         emptyPreviewLabel.isHidden = false
         status("Removed \(asset.name) from the Media Pool. The original file remains safely on disk.")
     }
-    func selectAsset(at index: Int) { guard media.indices.contains(index) else { return }; selectedAssetID = media[index].id; selectedClipID = nil; selectedClipIDs.removeAll(); preview(media[index].url); reloadTimeline(); status("Selected \(media[index].name). Drag it onto Video 1 to edit it.") }
+    func selectAsset(at index: Int) {
+        guard media.indices.contains(index) else { return }
+        clearAllLivePreviews()
+        selectedAssetID = media[index].id
+        selectedClipID = nil
+        selectedClipIDs.removeAll()
+        colorStudioController?.load(ColorControlValues(), selectionName: "No timeline video selected", isEnabled: false)
+        effectsStudioController?.load(EffectControlValues(), selectionName: "No timeline video selected", property: activeKeyframeProperty, interpolation: activeKeyframeInterpolation, keyframeText: "Select a timeline video clip to edit effects.", clip: nil, timelineTime: 0)
+        preview(media[index].url)
+        reloadTimeline()
+        status("Selected \(media[index].name). Drag it onto Video 1 to edit it.")
+    }
     func selectTimeline(index: Int, additive: Bool = false, solo: Bool = false) {
         // A floating Effect Controls window may be holding an unapplied live
         // preview. Never let that transient snapshot follow the user to a
         // different timeline selection.
-        TimelineLiveEffectStore.shared.clear()
+        clearAllLivePreviews()
         guard timelineClips.indices.contains(index) else { return }
         let clip = timelineClips[index]
         let linkedIDs = Set(timelineClips.filter { candidate in candidate.groupID != nil && candidate.groupID == clip.groupID }.map(\.id))
@@ -1626,12 +1788,14 @@ final class EditorController: NSViewController {
         // timeline geometry and player before the drag has even started.
         guard nextIDs != selectedClipIDs || nextPrimary != selectedClipID else { return }
 
-        TimelineLiveEffectStore.shared.clear()
+        clearAllLivePreviews()
         selectedClipIDs = nextIDs
         selectedClipID = nextPrimary
         if selectedClipIDs.isEmpty {
             selectedClipID = nil
             updateSelectionLabel()
+            colorStudioController?.load(ColorControlValues(), selectionName: "No timeline video selected", isEnabled: false)
+            effectsStudioController?.load(EffectControlValues(), selectionName: "No timeline video selected", property: activeKeyframeProperty, interpolation: activeKeyframeInterpolation, keyframeText: "Select a timeline video clip to edit effects.", clip: nil, timelineTime: 0)
             if currentPage == .effects || currentPage == .scene3D { rebuildInspector() }
             reloadTimeline()
             status("Timeline selection cleared.")
@@ -2209,6 +2373,24 @@ final class EditorController: NSViewController {
         if let id = selectedClipID, let clip = source.first(where: { $0.id == id && $0.kind == .video }) { return clip }
         return source.first { selectedClipIDs.contains($0.id) && $0.kind == .video }
     }
+    private func colourSelectionDescription(for primary: TimelineClip?) -> String {
+        guard let primary else { return "No timeline video selected" }
+        let selectedVideos = timelineClips.filter { selectedClipIDs.contains($0.id) && $0.kind == .video }
+        var text = selectedVideos.count > 1
+            ? "\(selectedVideos.count) video clips • values from \(primary.name)"
+            : primary.name
+        let animatedCount = primary.animation.channels.filter { channel in
+            guard !channel.keyframes.isEmpty else { return false }
+            switch channel.property {
+            case .brightness, .contrast, .saturation, .gamma, .temperature, .tint, .exposure, .highlights, .shadows, .vibrance, .hue:
+                return true
+            default:
+                return false
+            }
+        }.count
+        if animatedCount > 0 { text += " • \(animatedCount) animated in Effects" }
+        return text
+    }
     @objc private func openShareStudio() {
         let server: LocalShareServer
         if let existing = shareServer {
@@ -2238,11 +2420,14 @@ final class EditorController: NSViewController {
             let controller = ColorStudioViewController()
             controller.onPreview = { [weak self] values in self?.receiveColorStudioPreview(values) }
             controller.onApply = { [weak self] values in self?.receiveColorStudioApply(values) }
-            let window = studioWindow(title: "Color Studio", size: NSSize(width: 940, height: 820), controller: controller)
-            window.minSize = NSSize(width: 760, height: 560)
+            controller.onCancelPreview = { [weak self] in self?.cancelColorPreview() }
+            controller.onRequestSavedValues = { [weak self] in self?.primarySelectedVideo().map(ColorControlValues.init) }
+            let window = studioWindow(title: "NetVista Studio — Colour", size: NSSize(width: 1_120, height: 860), controller: controller)
+            window.minSize = NSSize(width: 820, height: 620)
             colorStudioController = controller; colorStudioWindow = window
         }
-        colorStudioController?.load(clip.map(ColorControlValues.init) ?? ColorControlValues(), selectionName: clip?.name ?? "No video clip selected")
+        colorStudioController?.load(clip.map(ColorControlValues.init) ?? ColorControlValues(), selectionName: colourSelectionDescription(for: clip), isEnabled: clip != nil)
+        if let window = colorStudioWindow { keepStudioWindowVisible(window) }
         colorStudioWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -2253,7 +2438,7 @@ final class EditorController: NSViewController {
             controller.onPreview = { [weak self] values in self?.receiveEffectsStudioPreview(values) }
             controller.onApplyTransform = { [weak self] values in self?.receiveEffectsStudioTransform(values) }
             controller.onApplyEffects = { [weak self] values in self?.receiveEffectsStudioEffects(values) }
-            controller.onApplyAll = { [weak self] values in self?.receiveEffectsStudioApplyAll(values) }
+            controller.onApplyAll = { [weak self] values, removedProperties in self?.receiveEffectsStudioApplyAll(values, removedProperties: removedProperties) }
             controller.onKeyframe = { [weak self] values, property, interpolation in self?.receiveEffectsStudioKeyframe(values, property: property, interpolation: interpolation) }
             controller.onRemoveKeyframe = { [weak self] values, property in self?.receiveEffectsStudioRemoveKeyframe(values, property: property) }
             controller.onClearKeyframes = { [weak self] values, property in self?.receiveEffectsStudioClearKeyframes(values, property: property) }
@@ -2264,35 +2449,67 @@ final class EditorController: NSViewController {
                 self?.programGuideOverlay.showsSafeMargins = safe
                 self?.programGuideOverlay.showsTransformBounds = bounds
             }
+            controller.onMonitorZoomOut = { [weak self] in self?.zoomProgramMonitorOut() }
+            controller.onMonitorZoomIn = { [weak self] in self?.zoomProgramMonitorIn() }
+            controller.onMonitorFit = { [weak self] in self?.fitProgramMonitor() }
             controller.onCancelPreview = { [weak self] in self?.cancelEffectsPreview() }
             controller.onReset = { [weak self] in self?.resetSelectedGrades() }
-            let window = studioWindow(title: "Effect Controls", size: NSSize(width: 1080, height: 800), controller: controller)
-            window.minSize = NSSize(width: 900, height: 600)
+            let window = studioWindow(title: "NetVista Studio — Effects", size: NSSize(width: 1240, height: 840), controller: controller)
+            window.minSize = NSSize(width: 980, height: 640)
             effectsStudioController = controller; effectsStudioWindow = window
         }
         effectsStudioController?.load(clip.map(EffectControlValues.init) ?? EffectControlValues(), selectionName: clip?.name ?? "No video clip selected", property: activeKeyframeProperty, interpolation: activeKeyframeInterpolation, keyframeText: keyframeSummary(), clip: clip, timelineTime: timelineView.currentPlayheadTime)
+        if let window = effectsStudioWindow { keepStudioWindowVisible(window) }
         effectsStudioWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
     private func studioWindow(title: String, size: NSSize, controller: NSViewController) -> NSWindow {
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = title; window.minSize = NSSize(width: 360, height: 480); window.isReleasedWhenClosed = false; window.contentViewController = controller; window.center()
+        let visible = (view.window?.screen ?? NSScreen.main)?.visibleFrame
+        let fitted = NSSize(
+            width: min(size.width, max(760, (visible?.width ?? size.width) - 48)),
+            height: min(size.height, max(560, (visible?.height ?? size.height) - 56))
+        )
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: fitted), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window.title = title; window.minSize = NSSize(width: 360, height: 480); window.isReleasedWhenClosed = false; window.contentViewController = controller
+        keepStudioWindowVisible(window)
+        DispatchQueue.main.async { [weak self, weak window] in if let window { self?.keepStudioWindowVisible(window) } }
         return window
+    }
+    private func keepStudioWindowVisible(_ window: NSWindow) {
+        guard let visible = (view.window?.screen ?? window.screen ?? NSScreen.main)?.visibleFrame else { window.center(); return }
+        var frame = window.frame
+        frame.size.width = min(frame.width, visible.width - 32)
+        frame.size.height = min(frame.height, visible.height - 32)
+        frame.origin.x = min(max(visible.minX + 16, visible.midX - frame.width / 2), visible.maxX - frame.width - 16)
+        frame.origin.y = min(max(visible.minY + 16, visible.midY - frame.height / 2), visible.maxY - frame.height - 16)
+        window.setFrame(frame, display: true)
     }
     private func receiveColorStudioPreview(_ values: ColorControlValues) { setColorControls(values); previewGrade() }
     private func receiveColorStudioApply(_ values: ColorControlValues) { setColorControls(values); applyColorGrade() }
+    private func cancelColorPreview() {
+        liveColourPreviewValues.removeAll()
+        rebuildLivePreviewStore()
+        if !timelineClips.isEmpty { player.pause(); previewTimeline(at: timelineView.currentPlayheadTime) }
+        status("Live colour preview reverted to the saved grade.")
+    }
     private func receiveEffectsStudioPreview(_ values: EffectControlValues) { setEffectControls(values); previewEffects() }
     private func receiveEffectsStudioTransform(_ values: EffectControlValues) { setEffectControls(values); applyTransform() }
     private func receiveEffectsStudioEffects(_ values: EffectControlValues) { setEffectControls(values); applyEffects() }
-    private func receiveEffectsStudioApplyAll(_ values: EffectControlValues) {
+    private func receiveEffectsStudioApplyAll(_ values: EffectControlValues, removedProperties: [AnimatableProperty]) {
         setEffectControls(values)
+        let preservedColourPreview = liveColourPreviewValues
+        let removed = Set(removedProperties)
         let count = mutateSelectedVideoClips(action: "Effect Controls") { clip in
             self.applyTransformControls(to: &clip)
             self.applyEffectControls(to: &clip)
+            if !removed.isEmpty { clip.animation.channels.removeAll { removed.contains($0.property) } }
         }
         guard count > 0 else { return }
+        liveColourPreviewValues = preservedColourPreview.filter { id, _ in timelineClips.contains { $0.id == id } }
+        liveEffectsPreviewValues.removeAll()
+        rebuildLivePreviewStore()
         if let primary = primarySelectedVideo() { loadEditingControls(from: primary) }
-        status("Applied Motion, Opacity and effects to \(count) selected clip\(count == 1 ? "" : "s").")
+        status("Applied Motion, Opacity and effects to \(count) selected clip\(count == 1 ? "" : "s")\(removed.isEmpty ? "." : ", including pending removals.")")
     }
     private func receiveEffectsStudioKeyframe(_ values: EffectControlValues, property: AnimatableProperty, interpolation: KeyframeInterpolation) {
         setEffectControls(values); activeKeyframeProperty = property; activeKeyframeInterpolation = interpolation; addKeyframeAtPlayhead()
@@ -2303,10 +2520,29 @@ final class EditorController: NSViewController {
     private func receiveEffectsStudioClearKeyframes(_ values: EffectControlValues, property: AnimatableProperty) {
         setEffectControls(values); activeKeyframeProperty = property; clearSelectedKeyframes()
     }
+    private func receiveEffectsStudioRemoveEffect(_ values: EffectControlValues, properties: [AnimatableProperty]) {
+        setEffectControls(values)
+        let removed = Set(properties)
+        let count = mutateSelectedVideoClips(action: "Remove Effect") { clip in
+            self.applyTransformControls(to: &clip)
+            self.applyEffectControls(to: &clip)
+            clip.animation.channels.removeAll { removed.contains($0.property) }
+        }
+        guard count > 0 else { return }
+        if let primary = primarySelectedVideo() { loadEditingControls(from: primary) }
+        status("Removed the effect and its keyframes from \(count) selected clip\(count == 1 ? "" : "s").")
+    }
     private func cancelEffectsPreview() {
-        TimelineLiveEffectStore.shared.clear()
-        guard !timelineClips.isEmpty else { return }
-        previewTimeline(at: timelineView.currentPlayheadTime)
+        liveEffectsPreviewValues.removeAll()
+        rebuildLivePreviewStore()
+        if !timelineClips.isEmpty { previewTimeline(at: timelineView.currentPlayheadTime) }
+        if let clip = primarySelectedVideo() {
+            let selectedVideos = timelineClips.filter { selectedClipIDs.contains($0.id) && $0.kind == .video }
+            let name = selectedVideos.count > 1 ? "\(selectedVideos.count) video clips • values from \(clip.name)" : clip.name
+            effectsStudioController?.load(EffectControlValues(clip), selectionName: name, property: activeKeyframeProperty, interpolation: activeKeyframeInterpolation, keyframeText: keyframeSummary(), clip: clip, timelineTime: timelineView.currentPlayheadTime)
+        } else {
+            effectsStudioController?.load(EffectControlValues(), selectionName: "No timeline video selected", property: activeKeyframeProperty, interpolation: activeKeyframeInterpolation, keyframeText: "Select a timeline video clip to edit effects.", clip: nil, timelineTime: 0)
+        }
         status("Live effects preview reverted to the saved clip settings.")
     }
     private func seekEffectsPlayhead(to localTime: Double) {
@@ -2323,7 +2559,11 @@ final class EditorController: NSViewController {
               let frameIndex = timelineClips[clipIndex].animation.channels[channelIndex].keyframes.firstIndex(where: { $0.id == id }) else { return }
         var updated = timelineClips
         let duration = clipDuration(updated[clipIndex])
-        updated[clipIndex].animation.channels[channelIndex].keyframes[frameIndex].time = min(duration, max(0, (localTime * 30).rounded() / 30))
+        let destination = min(duration, max(0, (localTime * 30).rounded() / 30))
+        updated[clipIndex].animation.channels[channelIndex].keyframes[frameIndex].time = destination
+        updated[clipIndex].animation.channels[channelIndex].keyframes.removeAll { frame in
+            frame.id != id && abs(frame.time - destination) <= (1.0 / 60.0)
+        }
         updated[clipIndex].animation.channels[channelIndex].keyframes.sort { $0.time < $1.time }
         activeKeyframeProperty = property
         replaceTimeline(
@@ -2366,10 +2606,58 @@ final class EditorController: NSViewController {
         return count
     }
     private func loadEditingControls(from clip: TimelineClip) {
-        setColorControls(ColorControlValues(clip)); setEffectControls(EffectControlValues(clip))
-        audioVolumeSlider.doubleValue = clip.volume
-        colorStudioController?.load(ColorControlValues(clip), selectionName: clip.name)
-        effectsStudioController?.load(EffectControlValues(clip), selectionName: clip.name, property: activeKeyframeProperty, interpolation: activeKeyframeInterpolation, keyframeText: keyframeSummary(), clip: clip, timelineTime: timelineView.currentPlayheadTime)
+        if let video = clip.kind == .video ? clip : primarySelectedVideo() {
+            setColorControls(ColorControlValues(video))
+            setEffectControls(EffectControlValues(video))
+            let selectedVideos = timelineClips.filter { selectedClipIDs.contains($0.id) && $0.kind == .video }
+            let effectsSelectionName = selectedVideos.count > 1 ? "\(selectedVideos.count) video clips • values from \(video.name)" : video.name
+            colorStudioController?.load(ColorControlValues(video), selectionName: colourSelectionDescription(for: video), isEnabled: true)
+            effectsStudioController?.load(EffectControlValues(video), selectionName: effectsSelectionName, property: activeKeyframeProperty, interpolation: activeKeyframeInterpolation, keyframeText: keyframeSummary(), clip: video, timelineTime: timelineView.currentPlayheadTime)
+        } else {
+            colorStudioController?.load(ColorControlValues(), selectionName: "No timeline video selected", isEnabled: false)
+            effectsStudioController?.load(EffectControlValues(), selectionName: "No timeline video selected", property: activeKeyframeProperty, interpolation: activeKeyframeInterpolation, keyframeText: "Select a timeline video clip to edit effects.", clip: nil, timelineTime: 0)
+        }
+        if clip.kind == .audio { audioVolumeSlider.doubleValue = clip.volume }
+    }
+    private func currentColorControlValues() -> ColorControlValues {
+        var values = ColorControlValues()
+        values.brightness = brightnessSlider.doubleValue; values.contrast = contrastSlider.doubleValue; values.saturation = saturationSlider.doubleValue; values.gamma = gammaSlider.doubleValue; values.temperature = temperatureSlider.doubleValue
+        values.exposure = exposureSlider.doubleValue; values.tint = tintSlider.doubleValue; values.highlights = highlightsSlider.doubleValue; values.shadows = shadowsSlider.doubleValue; values.vibrance = vibranceSlider.doubleValue; values.hue = hueSlider.doubleValue
+        values.lift = liftColorControl; values.midtones = midtoneColorControl; values.gain = gainColorControl; values.cubeLUT = cubeLUTColorControl
+        return values
+    }
+    private func currentEffectControlValues() -> EffectControlValues {
+        var values = EffectControlValues()
+        values.transform.positionX = positionXSlider.doubleValue; values.transform.positionY = positionYSlider.doubleValue; values.transform.scale = scaleSlider.doubleValue; values.transform.rotation = rotationSlider.doubleValue; values.transform.opacity = opacitySlider.doubleValue
+        var effects = advancedEffectControl
+        effects.blurRadius = blurSlider.doubleValue; effects.sharpenAmount = sharpenSlider.doubleValue; effects.vignetteIntensity = vignetteSlider.doubleValue; effects.monochromeAmount = monochromeSlider.doubleValue; effects.sepiaAmount = sepiaSlider.doubleValue
+        values.effects = effects
+        return values
+    }
+    private func apply(_ values: ColorControlValues, to clip: inout TimelineClip) {
+        clip.brightness = values.brightness; clip.contrast = values.contrast; clip.saturation = values.saturation; clip.gamma = values.gamma; clip.temperature = values.temperature
+        clip.colorExtras.exposure = values.exposure; clip.colorExtras.tint = values.tint; clip.colorExtras.highlights = values.highlights; clip.colorExtras.shadows = values.shadows; clip.colorExtras.vibrance = values.vibrance; clip.colorExtras.hue = values.hue
+        clip.colorExtras.lift = values.lift; clip.colorExtras.midtones = values.midtones; clip.colorExtras.gain = values.gain; clip.colorExtras.cubeLUT = values.cubeLUT
+    }
+    private func apply(_ values: EffectControlValues, to clip: inout TimelineClip) {
+        clip.transform = values.transform
+        clip.effects = values.effects
+    }
+    private func clearAllLivePreviews() {
+        liveColourPreviewValues.removeAll()
+        liveEffectsPreviewValues.removeAll()
+        TimelineLiveEffectStore.shared.clear()
+    }
+    private func rebuildLivePreviewStore() {
+        let overrides = timelineClips.compactMap { saved -> TimelineClip? in
+            var preview = saved
+            var changed = false
+            if let colour = liveColourPreviewValues[saved.id] { apply(colour, to: &preview); changed = true }
+            if let effects = liveEffectsPreviewValues[saved.id] { apply(effects, to: &preview); changed = true }
+            return changed ? preview : nil
+        }
+        if overrides.isEmpty { TimelineLiveEffectStore.shared.clear() }
+        else { TimelineLiveEffectStore.shared.replace(with: overrides) }
     }
     private func applyColorControls(to clip: inout TimelineClip) {
         clip.brightness = brightnessSlider.doubleValue; clip.contrast = contrastSlider.doubleValue; clip.saturation = saturationSlider.doubleValue; clip.gamma = gammaSlider.doubleValue; clip.temperature = temperatureSlider.doubleValue
@@ -2423,35 +2711,39 @@ final class EditorController: NSViewController {
         }
     }
     @objc private func applyColorGrade() {
+        let preservedEffectsPreview = liveEffectsPreviewValues
         let count = mutateSelectedVideoClips(action: "Color Grade") { self.applyColorControls(to: &$0) }
         guard count > 0 else { return }
-        if let primary = primarySelectedVideo() { preview(primary.url, grade: primary) }
+        liveColourPreviewValues.removeAll()
+        liveEffectsPreviewValues = preservedEffectsPreview.filter { id, _ in timelineClips.contains { $0.id == id } }
+        rebuildLivePreviewStore()
         status("Applied color grade to \(count) video clip\(count == 1 ? "" : "s").")
     }
     @objc private func previewGrade() {
-        guard var previewClip = primarySelectedVideo() else { status("Select a video clip to preview a grade."); return }
-        applyColorControls(to: &previewClip)
-        preview(previewClip.url, grade: previewClip)
+        let targets = timelineClips.filter { selectedClipIDs.contains($0.id) && $0.kind == .video }
+        guard !targets.isEmpty else { status("Select a timeline video clip to preview a grade."); return }
+        let values = currentColorControlValues()
+        targets.forEach { liveColourPreviewValues[$0.id] = values }
+        rebuildLivePreviewStore()
+        player.pause()
+        previewTimeline(at: timelineView.currentPlayheadTime)
+        status("Live colour preview — Apply Grade to save these controls.")
     }
     @objc private func resetColorGrade() {
         brightnessSlider.doubleValue = 0; contrastSlider.doubleValue = 1; saturationSlider.doubleValue = 1; gammaSlider.doubleValue = 1; temperatureSlider.doubleValue = 6500
         exposureSlider.doubleValue = 0; tintSlider.doubleValue = 0; highlightsSlider.doubleValue = 0; shadowsSlider.doubleValue = 0; vibranceSlider.doubleValue = 0; hueSlider.doubleValue = 0
         liftColorControl = .init(); midtoneColorControl = .init(); gainColorControl = .init()
         cubeLUTColorControl = nil
-        colorStudioController?.resetWheels()
-        colorStudioController?.resetLUT()
+        let selectionName = primarySelectedVideo()?.name ?? "No timeline video selected"
+        colorStudioController?.load(ColorControlValues(), selectionName: selectionName, isEnabled: primarySelectedVideo() != nil)
         applyColorGrade()
     }
     @objc private func previewEffects() {
-        let overrides = timelineClips.compactMap { saved -> TimelineClip? in
-            guard selectedClipIDs.contains(saved.id), saved.kind == .video else { return nil }
-            var previewClip = saved
-            applyEffectControls(to: &previewClip)
-            applyTransformControls(to: &previewClip)
-            return previewClip
-        }
-        guard !overrides.isEmpty else { status("Select a video or rendered 3D clip to preview effects."); return }
-        TimelineLiveEffectStore.shared.replace(with: overrides)
+        let targets = timelineClips.filter { selectedClipIDs.contains($0.id) && $0.kind == .video }
+        guard !targets.isEmpty else { status("Select a video or rendered 3D clip to preview effects."); return }
+        let values = currentEffectControlValues()
+        targets.forEach { liveEffectsPreviewValues[$0.id] = values }
+        rebuildLivePreviewStore()
         player.pause()
         previewTimeline(at: timelineView.currentPlayheadTime)
         status("Live effects preview — Apply to save these controls.")
@@ -2474,7 +2766,16 @@ final class EditorController: NSViewController {
     @objc private func applySoftGlow() { blurSlider.doubleValue = 0.8; vignetteSlider.doubleValue = 0.25; applyEffects() }
     @objc private func applyVintageLook() { sepiaSlider.doubleValue = 0.55; vignetteSlider.doubleValue = 0.48; saturationSlider.doubleValue = 0.82; contrastSlider.doubleValue = 0.92; applyEffects(); applyColorGrade() }
     @objc private func resetSelectedGrades() {
-        let count = mutateSelectedVideoClips(action: "Reset Effects") { clip in clip.effects = .init(); clip.transform = .init(); clip.animation.channels.removeAll() }
+        let effectProperties: Set<AnimatableProperty> = [
+            .positionX, .positionY, .scale, .rotation, .opacity,
+            .cropLeft, .cropRight, .cropTop, .cropBottom,
+            .ultraKeyTolerance, .ultraKeySoftness, .ultraKeyChoke, .ultraKeySpill,
+            .blurRadius, .sharpenAmount, .vignetteIntensity, .monochromeAmount, .sepiaAmount
+        ]
+        let count = mutateSelectedVideoClips(action: "Reset Effects") { clip in
+            clip.effects = .init(); clip.transform = .init()
+            clip.animation.channels.removeAll { effectProperties.contains($0.property) }
+        }
         guard count > 0 else { return }
         if let primary = primarySelectedVideo() { loadEditingControls(from: primary) }
         rebuildInspector()
@@ -2486,7 +2787,7 @@ final class EditorController: NSViewController {
         rebuildInspector()
     }
     @objc private func changeKeyframeInterpolation(_ sender: NSPopUpButton) {
-        let choices: [KeyframeInterpolation] = [.easeInOut, .linear, .hold]
+        let choices = KeyframeInterpolation.editorChoices
         guard choices.indices.contains(sender.indexOfSelectedItem) else { return }
         activeKeyframeInterpolation = choices[sender.indexOfSelectedItem]
     }
@@ -2958,12 +3259,9 @@ final class EditorController: NSViewController {
     }
 
     @objc private func exportFromCurrentSettings() {
-        // Always bring the Delivery workspace into view before opening the
-        // resolution and save panels. Exports can take a while and previously
-        // the progress UI remained hidden when this action came from the top
-        // toolbar or Inspector, making a healthy render look like it never
-        // started.
-        if currentPage != .export { selectPage(.export) }
+        // The complete settings window and floating progress panel work from
+        // every page; exporting should never move the editor away from the
+        // workspace the user is currently viewing.
         if exportWorkspaceController == nil { _ = configuredExportWorkspace() }
         DispatchQueue.main.async { [weak self] in
             self?.exportWorkspaceController?.requestExport()
@@ -2973,6 +3271,16 @@ final class EditorController: NSViewController {
     private func beginNativeExport(options: TimelineExportOptions) {
         guard activeExportJob == nil else { status("An export is already running."); return }
         guard timelineClips.contains(where: { $0.kind == .video }) else { status("Add a video or rendered 3D scene to the timeline before exporting."); return }
+        if let problem = colourLUTExportProblem() {
+            status(problem)
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "A colour LUT must be fixed before export"
+            alert.informativeText = problem
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
         let panel = NSSavePanel()
         panel.title = "Export \(options.resolution.title) \(options.container.title)"
         setDownloadsAsInitialDirectory(for: panel)
@@ -2981,7 +3289,7 @@ final class EditorController: NSViewController {
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
         guard panel.runModal() == .OK, let output = panel.url else { return }
-        exportWorkspaceController?.beginExport()
+        exportWorkspaceController?.beginExport(options: options)
         status("Preparing \(options.resolution.title) export…")
         activeExportJob = NativeTimelineExportEngine.export(
             clips: timelineClips,
@@ -3009,6 +3317,16 @@ final class EditorController: NSViewController {
             }
         )
         rebuildInspector()
+    }
+
+    private func colourLUTExportProblem() -> String? {
+        var validated = Set<UUID>()
+        for clip in timelineClips where clip.kind == .video {
+            guard let settings = clip.colorExtras.cubeLUT, validated.insert(settings.id).inserted else { continue }
+            do { _ = try CubeLUTCache.shared.lut(for: settings) }
+            catch { return "\(clip.name) uses \(settings.fileURL.lastPathComponent), but it cannot be loaded: \(error.localizedDescription)" }
+        }
+        return nil
     }
 
     private func presentExportSuccess(_ url: URL) {
@@ -3134,7 +3452,7 @@ final class EditorController: NSViewController {
 }
 
 enum StudioPage: String, CaseIterable {
-    case media = "Media", cut = "Cut", edit = "Edit", effects = "Effects", color = "Color", audio = "Audio", scene3D = "3D Scene", mods = "Mods", export = "Export"
+    case media = "Media", cut = "Cut", edit = "Edit", effects = "Effects", color = "Colour", audio = "Audio", scene3D = "3D Scene", mods = "Mods", export = "Export"
     var icon: String {
         switch self {
         case .media: return "▦"
@@ -3348,6 +3666,8 @@ final class ColorWheelPanel: NSView, NSTextFieldDelegate {
 final class ColorStudioViewController: NSViewController {
     var onPreview: ((ColorControlValues) -> Void)?
     var onApply: ((ColorControlValues) -> Void)?
+    var onCancelPreview: (() -> Void)?
+    var onRequestSavedValues: (() -> ColorControlValues?)?
 
     private let selectionLabel = NSTextField(labelWithString: "No video clip selected")
     private let brightness = NSSlider(value: 0, minValue: -1, maxValue: 1, target: nil, action: nil)
@@ -3369,9 +3689,23 @@ final class ColorStudioViewController: NSViewController {
     private let lutStrength = NSSlider(value: 1, minValue: 0, maxValue: 1, target: nil, action: nil)
     private let lutPercentLabel = NSTextField(labelWithString: "100%")
     private let removeLUTButton = NSButton(title: "Remove LUT", target: nil, action: nil)
+    private let importLUTButton = NSButton(title: "Import .cube LUT…", target: nil, action: nil)
+    private let bypassButton = NSButton(checkboxWithTitle: "Bypass grade", target: nil, action: nil)
+    private let previewButton = NSButton(title: "Revert Preview", target: nil, action: nil)
+    private let applyButton = NSButton(title: "Apply Grade to Selected", target: nil, action: nil)
+    private let resetButton = NSButton(title: "Reset Controls", target: nil, action: nil)
     private var selectedLUT: ClipLUTSettings?
+    private var hasVideoSelection = false
+    private var currentSelectionName = "No timeline video selected"
+    private var selectionGeneration = 0
+    private var readouts: [ObjectIdentifier: NSTextField] = [:]
 
     var currentValues: ColorControlValues { values() }
+
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        onCancelPreview?()
+    }
 
     override func loadView() {
         view = NSView(); view.appearance = NSAppearance(named: .darkAqua); view.wantsLayer = true; view.layer?.backgroundColor = NSColor(hex: "181C22").cgColor
@@ -3380,24 +3714,27 @@ final class ColorStudioViewController: NSViewController {
         NSLayoutConstraint.activate([root.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16), root.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16), root.topAnchor.constraint(equalTo: view.topAnchor, constant: 16), root.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16)])
 
         let header = NSStackView(); header.orientation = .horizontal; header.alignment = .centerY; header.spacing = 10
-        let title = NSTextField(labelWithString: "COLOR STUDIO"); title.font = .systemFont(ofSize: 16, weight: .bold); title.textColor = .white; header.addArrangedSubview(title)
-        let live = NSTextField(labelWithString: "LIVE PREVIEW"); live.font = .systemFont(ofSize: 9, weight: .bold); live.textColor = NSColor(hex: "FFB75D"); header.addArrangedSubview(live)
-        header.addArrangedSubview(NSView()); root.addArrangedSubview(header); header.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
+        let title = NSTextField(labelWithString: "COLOUR"); title.font = .systemFont(ofSize: 17, weight: .semibold); title.textColor = .white; header.addArrangedSubview(title)
+        let live = NSTextField(labelWithString: "●  LIVE PROGRAM PREVIEW"); live.font = .systemFont(ofSize: 9, weight: .bold); live.textColor = NSColor(hex: "FFB75D"); header.addArrangedSubview(live)
+        header.addArrangedSubview(NSView())
+        bypassButton.target = self; bypassButton.action = #selector(bypassChanged); bypassButton.font = .systemFont(ofSize: 11, weight: .medium)
+        header.addArrangedSubview(bypassButton)
+        root.addArrangedSubview(header); header.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
         selectionLabel.font = .systemFont(ofSize: 11, weight: .medium); selectionLabel.textColor = NSColor(hex: "A7AFBC"); selectionLabel.lineBreakMode = .byTruncatingMiddle; root.addArrangedSubview(selectionLabel)
         selectionLabel.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
-        let hint = NSTextField(wrappingLabelWithString: "Drag each puck toward a color. Use Master for brightness in that tonal range, or type exact RGB/M values. Changes preview immediately; Apply writes the grade to every selected video clip."); hint.font = .systemFont(ofSize: 11); hint.textColor = NSColor(hex: "A7AFBC"); root.addArrangedSubview(hint); hint.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
+        let hint = NSTextField(wrappingLabelWithString: "Changes preview on the timeline immediately. Apply commits the grade to every selected video clip; Bypass gives a temporary before/after comparison."); hint.font = .systemFont(ofSize: 11); hint.textColor = NSColor(hex: "A7AFBC"); root.addArrangedSubview(hint); hint.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
 
         let document = NSStackView(); document.orientation = .vertical; document.alignment = .leading; document.spacing = 10; document.translatesAutoresizingMaskIntoConstraints = false
         addHeading("THREE-WAY COLOR WHEELS", to: document)
         let wheels = NSStackView(); wheels.orientation = .horizontal; wheels.alignment = .top; wheels.spacing = 10; wheels.distribution = .fillEqually
         wheels.addArrangedSubview(liftPanel); wheels.addArrangedSubview(midtonePanel); wheels.addArrangedSubview(gainPanel); document.addArrangedSubview(wheels); wheels.widthAnchor.constraint(equalTo: document.widthAnchor).isActive = true
-        liftPanel.onChange = { [weak self] in self?.preview() }; midtonePanel.onChange = { [weak self] in self?.preview() }; gainPanel.onChange = { [weak self] in self?.preview() }
+        liftPanel.onChange = { [weak self] in self?.controlChanged() }; midtonePanel.onChange = { [weak self] in self?.controlChanged() }; gainPanel.onChange = { [weak self] in self?.controlChanged() }
 
         addHeading("3D LUT (.CUBE)", to: document)
         let lutCard = NSStackView(); lutCard.orientation = .vertical; lutCard.alignment = .leading; lutCard.spacing = 8; lutCard.edgeInsets = NSEdgeInsets(top: 11, left: 12, bottom: 11, right: 12)
         lutCard.wantsLayer = true; lutCard.layer?.backgroundColor = NSColor(hex: "242932").cgColor; lutCard.layer?.borderColor = NSColor.white.withAlphaComponent(0.09).cgColor; lutCard.layer?.borderWidth = 1; lutCard.layer?.cornerRadius = 9
         let lutHeader = NSStackView(); lutHeader.orientation = .horizontal; lutHeader.alignment = .centerY; lutHeader.spacing = 8
-        let importLUTButton = makeButton("Import .cube LUT…", #selector(importCubeLUT)); importLUTButton.contentTintColor = NSColor(hex: "7FA9FF")
+        importLUTButton.target = self; importLUTButton.action = #selector(importCubeLUT); importLUTButton.bezelStyle = .rounded; importLUTButton.font = .systemFont(ofSize: 11, weight: .medium); importLUTButton.contentTintColor = NSColor(hex: "7FA9FF")
         removeLUTButton.target = self; removeLUTButton.action = #selector(removeCubeLUT); removeLUTButton.bezelStyle = .rounded; removeLUTButton.font = .systemFont(ofSize: 11, weight: .medium)
         lutNameLabel.font = .systemFont(ofSize: 12, weight: .semibold); lutNameLabel.textColor = .white; lutNameLabel.lineBreakMode = .byTruncatingMiddle
         lutHeader.addArrangedSubview(lutNameLabel); lutHeader.addArrangedSubview(NSView()); lutHeader.addArrangedSubview(importLUTButton); lutHeader.addArrangedSubview(removeLUTButton)
@@ -3419,7 +3756,7 @@ final class ColorStudioViewController: NSViewController {
         [makeButton("Warm", #selector(warm)), makeButton("Cool", #selector(cool)), makeButton("Cinema", #selector(cinema))].forEach { looks.addArrangedSubview($0) }
         looks.addArrangedSubview(NSView()); document.addArrangedSubview(looks)
 
-        [brightness, contrast, saturation, gamma, temperature, exposure, tint, highlights, shadows, vibrance, hue].forEach { $0.target = self; $0.action = #selector(preview); $0.isContinuous = true }
+        [brightness, contrast, saturation, gamma, temperature, exposure, tint, highlights, shadows, vibrance, hue].forEach { $0.target = self; $0.action = #selector(sliderChanged(_:)); $0.isContinuous = true }
         addHeading("PRIMARY & TONE", to: document)
         let columns = NSStackView(); columns.orientation = .horizontal; columns.alignment = .top; columns.spacing = 18; columns.distribution = .fillEqually
         columns.addArrangedSubview(sliderColumn([("Exposure", exposure), ("Contrast", contrast), ("Brightness", brightness), ("Shadows", shadows), ("Highlights", highlights)]))
@@ -3428,18 +3765,32 @@ final class ColorStudioViewController: NSViewController {
 
         let scroll = scrolling(document); root.addArrangedSubview(scroll); scroll.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
         let actions = NSStackView(); actions.orientation = .horizontal; actions.alignment = .centerY; actions.spacing = 8
-        actions.addArrangedSubview(makeButton("Preview", #selector(preview)))
-        let apply = makeButton("Apply Grade to Selected", #selector(apply)); apply.contentTintColor = .systemOrange; actions.addArrangedSubview(apply)
-        actions.addArrangedSubview(makeButton("Reset All", #selector(reset)))
+        previewButton.target = self; previewButton.action = #selector(revertPreview); previewButton.bezelStyle = .rounded; previewButton.font = .systemFont(ofSize: 11, weight: .medium)
+        applyButton.target = self; applyButton.action = #selector(apply); applyButton.bezelStyle = .rounded; applyButton.font = .systemFont(ofSize: 11, weight: .semibold); applyButton.contentTintColor = .systemOrange
+        resetButton.target = self; resetButton.action = #selector(reset); resetButton.bezelStyle = .rounded; resetButton.font = .systemFont(ofSize: 11, weight: .medium)
+        actions.addArrangedSubview(previewButton)
+        actions.addArrangedSubview(applyButton)
+        actions.addArrangedSubview(resetButton)
         actions.addArrangedSubview(NSView()); root.addArrangedSubview(actions); actions.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
+        syncReadouts()
     }
 
-    func load(_ values: ColorControlValues, selectionName: String) {
+    func load(_ values: ColorControlValues, selectionName: String, isEnabled: Bool = true) {
+        selectionGeneration += 1
+        currentSelectionName = selectionName
+        hasVideoSelection = isEnabled
         selectionLabel.stringValue = "Selected: \(selectionName)"
         brightness.doubleValue = values.brightness; contrast.doubleValue = values.contrast; saturation.doubleValue = values.saturation; gamma.doubleValue = values.gamma; temperature.doubleValue = values.temperature
         exposure.doubleValue = values.exposure; tint.doubleValue = values.tint; highlights.doubleValue = values.highlights; shadows.doubleValue = values.shadows; vibrance.doubleValue = values.vibrance; hue.doubleValue = values.hue
         liftPanel.load(values.lift); midtonePanel.load(values.midtones); gainPanel.load(values.gain)
         selectedLUT = values.cubeLUT; lutStrength.doubleValue = values.cubeLUT?.strength ?? 1; updateLUTDisplay()
+        bypassButton.state = .off
+        let sliders = [brightness, contrast, saturation, gamma, temperature, exposure, tint, highlights, shadows, vibrance, hue, lutStrength]
+        sliders.forEach { $0.isEnabled = isEnabled && ($0 !== lutStrength || selectedLUT != nil) }
+        [importLUTButton, previewButton, applyButton, resetButton, bypassButton].forEach { $0.isEnabled = isEnabled }
+        removeLUTButton.isEnabled = isEnabled && selectedLUT != nil
+        liftPanel.alphaValue = isEnabled ? 1 : 0.48; midtonePanel.alphaValue = liftPanel.alphaValue; gainPanel.alphaValue = liftPanel.alphaValue
+        syncReadouts()
     }
 
     func resetWheels() { liftPanel.load(.init()); midtonePanel.load(.init()); gainPanel.load(.init()) }
@@ -3458,23 +3809,53 @@ final class ColorStudioViewController: NSViewController {
         panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
         panel.allowedContentTypes = [UTType(filenameExtension: "cube") ?? .data]
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let strength = selectedLUT?.strength ?? lutStrength.doubleValue
-            selectedLUT = try ClipLUTSettings(embeddingFileAt: url, strength: strength)
-            lutStrength.doubleValue = selectedLUT?.strength ?? 1
-            updateLUTDisplay(); preview()
-        } catch {
-            NSSound.beep(); lutNameLabel.stringValue = "LUT could not be imported"; lutNameLabel.textColor = .systemRed
-            lutDetailLabel.stringValue = error.localizedDescription
+        let strength = selectedLUT?.strength ?? lutStrength.doubleValue
+        let previousLUT = selectedLUT
+        let importGeneration = selectionGeneration
+        importLUTButton.isEnabled = false; removeLUTButton.isEnabled = false; lutStrength.isEnabled = false
+        lutNameLabel.stringValue = "Importing \(url.lastPathComponent)…"; lutNameLabel.textColor = .white
+        lutDetailLabel.stringValue = "Validating and preparing the 3D colour table off the main thread."
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { () -> ClipLUTSettings in
+                let settings = try ClipLUTSettings(embeddingFileAt: url, strength: strength)
+                _ = try CubeLUTCache.shared.lut(for: settings)
+                return settings
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                // The user may have selected another timeline clip while the LUT
+                // was being parsed. Never let an older async result follow the
+                // controls onto the newly selected clip.
+                guard self.selectionGeneration == importGeneration else { return }
+                switch result {
+                case .success(let settings):
+                    self.selectedLUT = settings
+                    self.lutStrength.doubleValue = settings.strength
+                    self.updateLUTDisplay()
+                    self.controlChanged()
+                case .failure(let error):
+                    self.selectedLUT = previousLUT
+                    self.updateLUTDisplay()
+                    NSSound.beep()
+                    self.lutNameLabel.stringValue = "LUT could not be imported"
+                    self.lutNameLabel.textColor = .systemRed
+                    let retained = previousLUT == nil ? "No LUT was changed." : "The previous LUT remains active."
+                    self.lutDetailLabel.stringValue = "\(error.localizedDescription)  \(retained)"
+                    self.lutDetailLabel.textColor = .systemRed
+                }
+                self.importLUTButton.isEnabled = self.hasVideoSelection
+                self.removeLUTButton.isEnabled = self.hasVideoSelection && self.selectedLUT != nil
+                self.lutStrength.isEnabled = self.hasVideoSelection && self.selectedLUT != nil
+            }
         }
     }
 
-    @objc private func removeCubeLUT() { resetLUT(); preview() }
+    @objc private func removeCubeLUT() { resetLUT(); controlChanged() }
 
     @objc private func lutStrengthChanged() {
         guard var current = selectedLUT else { return }
         current.strength = min(1, max(0, lutStrength.doubleValue)); selectedLUT = current
-        updateLUTDisplay(); preview()
+        updateLUTDisplay(); controlChanged()
     }
 
     private func updateLUTDisplay() {
@@ -3484,6 +3865,7 @@ final class ColorStudioViewController: NSViewController {
         guard let selectedLUT else {
             lutNameLabel.stringValue = "No 3D LUT applied"; lutNameLabel.textColor = .white
             lutDetailLabel.stringValue = "Import a .cube file to add a creative look. LUT data is embedded when you save your project."
+            lutDetailLabel.textColor = NSColor(hex: "A7AFBC")
             return
         }
         do {
@@ -3500,12 +3882,33 @@ final class ColorStudioViewController: NSViewController {
         }
     }
 
-    @objc private func preview() { onPreview?(values()) }
-    @objc private func apply() { onApply?(values()) }
-    @objc private func reset() { load(ColorControlValues(), selectionName: selectionLabel.stringValue.replacingOccurrences(of: "Selected: ", with: "")); onApply?(values()) }
-    @objc private func warm() { temperature.doubleValue = 7800; tint.doubleValue = 12; exposure.doubleValue = 0.08; saturation.doubleValue = 1.08; preview() }
-    @objc private func cool() { temperature.doubleValue = 4600; tint.doubleValue = -8; exposure.doubleValue = -0.03; saturation.doubleValue = 0.96; preview() }
-    @objc private func cinema() { contrast.doubleValue = 1.18; saturation.doubleValue = 0.88; shadows.doubleValue = 0.18; highlights.doubleValue = 0.16; vibrance.doubleValue = 0.14; preview() }
+    @objc private func preview() {
+        guard hasVideoSelection else { return }
+        onPreview?(bypassButton.state == .on ? ColorControlValues() : values())
+    }
+    @objc private func apply() {
+        guard hasVideoSelection else { return }
+        bypassButton.state = .off
+        onApply?(values())
+    }
+    @objc private func revertPreview() {
+        guard hasVideoSelection else { return }
+        if let saved = onRequestSavedValues?() {
+            load(saved, selectionName: currentSelectionName, isEnabled: true)
+        }
+        onCancelPreview?()
+    }
+    @objc private func reset() {
+        guard hasVideoSelection else { return }
+        load(ColorControlValues(), selectionName: currentSelectionName, isEnabled: true)
+        onPreview?(values())
+    }
+    @objc private func bypassChanged() { preview() }
+    @objc private func sliderChanged(_ sender: NSSlider) { controlChanged() }
+    private func controlChanged() { bypassButton.state = .off; syncReadouts(); preview() }
+    @objc private func warm() { temperature.doubleValue = 7800; tint.doubleValue = 12; exposure.doubleValue = 0.08; saturation.doubleValue = 1.08; controlChanged() }
+    @objc private func cool() { temperature.doubleValue = 4600; tint.doubleValue = -8; exposure.doubleValue = -0.03; saturation.doubleValue = 0.96; controlChanged() }
+    @objc private func cinema() { contrast.doubleValue = 1.18; saturation.doubleValue = 0.88; shadows.doubleValue = 0.18; highlights.doubleValue = 0.16; vibrance.doubleValue = 0.14; controlChanged() }
 
     private func sliderColumn(_ controls: [(String, NSSlider)]) -> NSStackView {
         let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
@@ -3519,9 +3922,28 @@ final class ColorStudioViewController: NSViewController {
     private func colorSliderRow(_ title: String, _ slider: NSSlider) -> NSStackView {
         let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 3
         let label = NSTextField(labelWithString: title.uppercased()); label.font = .systemFont(ofSize: 9, weight: .bold); label.textColor = NSColor(hex: "C0C6D0")
-        stack.addArrangedSubview(label); stack.addArrangedSubview(slider)
+        let readout = NSTextField(labelWithString: "—"); readout.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium); readout.textColor = NSColor(hex: "DDE2EA"); readout.alignment = .right
+        let heading = NSStackView(); heading.orientation = .horizontal; heading.alignment = .centerY; heading.addArrangedSubview(label); heading.addArrangedSubview(NSView()); heading.addArrangedSubview(readout)
+        readouts[ObjectIdentifier(slider)] = readout
+        stack.addArrangedSubview(heading); stack.addArrangedSubview(slider)
+        heading.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         slider.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         return stack
+    }
+
+    private func syncReadouts() {
+        func set(_ slider: NSSlider, _ text: String) { readouts[ObjectIdentifier(slider)]?.stringValue = text }
+        set(exposure, String(format: "%+.2f EV", exposure.doubleValue))
+        set(contrast, String(format: "%.2fx", contrast.doubleValue))
+        set(brightness, String(format: "%+.2f", brightness.doubleValue))
+        set(shadows, String(format: "%+.0f%%", shadows.doubleValue * 100))
+        set(highlights, String(format: "%+.0f%%", highlights.doubleValue * 100))
+        set(temperature, String(format: "%.0f K", temperature.doubleValue))
+        set(tint, String(format: "%+.0f", tint.doubleValue))
+        set(saturation, String(format: "%.0f%%", saturation.doubleValue * 100))
+        set(vibrance, String(format: "%+.0f%%", vibrance.doubleValue * 100))
+        set(gamma, String(format: "%.2f", gamma.doubleValue))
+        set(hue, String(format: "%+.0f°", hue.doubleValue))
     }
     private func makeButton(_ title: String, _ action: Selector) -> NSButton { let button = NSButton(title: title, target: self, action: action); button.bezelStyle = .rounded; button.font = .systemFont(ofSize: 11, weight: .medium); return button }
 }
@@ -3566,7 +3988,7 @@ final class LegacyEffectsStudioViewController: NSViewController {
         let transform = makeButton("Apply transform to selected", #selector(applyTransform)); transform.contentTintColor = .systemBlue; stack.addArrangedSubview(transform)
         addHeading("KEYFRAMES", to: stack)
         properties.forEach { propertyPicker.addItem(withTitle: $0.title) }; stack.addArrangedSubview(propertyPicker)
-        [KeyframeInterpolation.easeInOut, .linear, .hold].forEach { curvePicker.addItem(withTitle: $0 == .easeInOut ? "Smooth curve" : $0.rawValue.capitalized) }; stack.addArrangedSubview(curvePicker)
+        KeyframeInterpolation.editorChoices.forEach { curvePicker.addItem(withTitle: $0.title) }; stack.addArrangedSubview(curvePicker)
         let add = makeButton("♦ Add / update at playhead", #selector(addKeyframe)); add.contentTintColor = .systemOrange; stack.addArrangedSubview(add)
         let keyActions = NSStackView(); keyActions.orientation = .horizontal; keyActions.spacing = 6; keyActions.addArrangedSubview(makeButton("Remove here", #selector(removeKeyframe))); keyActions.addArrangedSubview(makeButton("Clear property", #selector(clearKeyframes))); stack.addArrangedSubview(keyActions)
         keyframeLabel.font = .systemFont(ofSize: 10); keyframeLabel.textColor = .secondaryLabelColor; stack.addArrangedSubview(keyframeLabel)
@@ -3582,7 +4004,7 @@ final class LegacyEffectsStudioViewController: NSViewController {
         positionX.doubleValue = values.transform.positionX; positionY.doubleValue = values.transform.positionY; scale.doubleValue = values.transform.scale; rotation.doubleValue = values.transform.rotation; opacity.doubleValue = values.transform.opacity
         blur.doubleValue = values.effects.blurRadius; sharpen.doubleValue = values.effects.sharpenAmount; vignette.doubleValue = values.effects.vignetteIntensity; monochrome.doubleValue = values.effects.monochromeAmount; sepia.doubleValue = values.effects.sepiaAmount
         propertyPicker.selectItem(at: properties.firstIndex(of: property) ?? 0)
-        curvePicker.selectItem(at: [KeyframeInterpolation.easeInOut, .linear, .hold].firstIndex(of: interpolation) ?? 0)
+        curvePicker.selectItem(at: KeyframeInterpolation.editorChoices.firstIndex(of: interpolation) ?? 0)
     }
     private func values() -> EffectControlValues {
         var values = EffectControlValues(); values.transform.positionX = positionX.doubleValue; values.transform.positionY = positionY.doubleValue; values.transform.scale = scale.doubleValue; values.transform.rotation = rotation.doubleValue; values.transform.opacity = opacity.doubleValue
@@ -3590,7 +4012,7 @@ final class LegacyEffectsStudioViewController: NSViewController {
         return values
     }
     private var selectedProperty: AnimatableProperty { properties[properties.indices.contains(propertyPicker.indexOfSelectedItem) ? propertyPicker.indexOfSelectedItem : 0] }
-    private var selectedCurve: KeyframeInterpolation { let choices: [KeyframeInterpolation] = [.easeInOut, .linear, .hold]; return choices[choices.indices.contains(curvePicker.indexOfSelectedItem) ? curvePicker.indexOfSelectedItem : 0] }
+    private var selectedCurve: KeyframeInterpolation { let choices = KeyframeInterpolation.editorChoices; return choices[choices.indices.contains(curvePicker.indexOfSelectedItem) ? curvePicker.indexOfSelectedItem : 0] }
     @objc private func preview() { onPreview?(values()) }
     @objc private func applyTransform() { onApplyTransform?(values()) }
     @objc private func applyEffects() { onApplyEffects?(values()) }
@@ -3650,14 +4072,23 @@ enum ExportService {
                 var chain = "trim\(duration),setpts=PTS-STARTPTS+\(clip.timelineStart)/TB,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,eq=brightness=\(exposureAdjustedBrightness):contrast=\(clip.contrast):saturation=\(clip.saturation):gamma=\(clip.gamma),colortemperature=temperature=\(clip.temperature)"
                 if abs(clip.colorExtras.hue) > 0.001 { chain += ",hue=h=\(clip.colorExtras.hue)" }
                 if abs(clip.colorExtras.vibrance) > 0.001 { chain += ",vibrance=intensity=\(clip.colorExtras.vibrance)" }
-                if clip.effects.monochromeAmount > 0.001 { chain += ",hue=s=\(max(0, 1 - clip.effects.monochromeAmount))" }
-                if clip.effects.sepiaAmount > 0.001 {
-                    let amount = min(1, max(0, clip.effects.sepiaAmount))
-                    chain += ",colorchannelmixer=rr=\(1 - 0.607 * amount):rg=\(0.769 * amount):rb=\(0.189 * amount):gr=\(0.349 * amount):gg=\(1 - 0.314 * amount):gb=\(0.168 * amount):br=\(0.272 * amount):bg=\(0.534 * amount):bb=\(1 - 0.869 * amount)"
+                for effect in ClipEffects.normalizedOrder(clip.effects.effectOrder) {
+                    switch effect {
+                    case .monochrome:
+                        if clip.effects.monochromeAmount > 0.001 { chain += ",hue=s=\(max(0, 1 - clip.effects.monochromeAmount))" }
+                    case .sepia:
+                        if clip.effects.sepiaAmount > 0.001 {
+                            let amount = min(1, max(0, clip.effects.sepiaAmount))
+                            chain += ",colorchannelmixer=rr=\(1 - 0.607 * amount):rg=\(0.769 * amount):rb=\(0.189 * amount):gr=\(0.349 * amount):gg=\(1 - 0.314 * amount):gb=\(0.168 * amount):br=\(0.272 * amount):bg=\(0.534 * amount):bb=\(1 - 0.869 * amount)"
+                        }
+                    case .blur:
+                        if clip.effects.blurRadius > 0.001 { chain += ",gblur=sigma=\(clip.effects.blurRadius)" }
+                    case .sharpen:
+                        if clip.effects.sharpenAmount > 0.001 { chain += ",unsharp=5:5:\(min(4, clip.effects.sharpenAmount))" }
+                    case .vignette:
+                        if clip.effects.vignetteIntensity > 0.001 { chain += ",vignette=angle=\(max(0.25, 1.5 - clip.effects.vignetteIntensity))" }
+                    }
                 }
-                if clip.effects.blurRadius > 0.001 { chain += ",gblur=sigma=\(clip.effects.blurRadius)" }
-                if clip.effects.sharpenAmount > 0.001 { chain += ",unsharp=5:5:\(min(4, clip.effects.sharpenAmount))" }
-                if clip.effects.vignetteIntensity > 0.001 { chain += ",vignette=angle=\(max(0.25, 1.5 - clip.effects.vignetteIntensity))" }
                 let scale = min(3, max(0.25, clip.transform.scale))
                 if abs(scale - 1) > 0.001 { chain += ",scale=trunc(iw*\(scale)/2)*2:trunc(ih*\(scale)/2)*2" }
                 if abs(clip.transform.rotation) > 0.001 { chain += ",rotate=\(clip.transform.rotation)*PI/180:ow=rotw(iw):oh=roth(ih):c=black" }
@@ -3689,11 +4120,293 @@ enum ExportService {
 
 extension NSColor { convenience init(hex: String) { let value = Int(hex, radix: 16) ?? 0; self.init(red: CGFloat((value >> 16) & 255) / 255, green: CGFloat((value >> 8) & 255) / 255, blue: CGFloat(value & 255) / 255, alpha: 1) } }
 
+private final class WelcomeHeroImageView: NSImageView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        imageAlignment = .alignCenter
+        imageScaling = .scaleNone
+        setAccessibilityLabel("A film and photography editing studio")
+    }
+
+    required init?(coder: NSCoder) { super.init(coder: coder) }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor(hex: "15171B").setFill()
+        bounds.fill()
+        guard let image, image.size.width > 0, image.size.height > 0 else { return }
+        let scale = max(bounds.width / image.size.width, bounds.height / image.size.height)
+        let size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+        let destination = NSRect(
+            x: bounds.midX - size.width / 2,
+            y: bounds.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
+        image.draw(
+            in: destination,
+            from: NSRect(origin: .zero, size: image.size),
+            operation: .sourceOver,
+            fraction: 1,
+            respectFlipped: true,
+            hints: [.interpolation: NSImageInterpolation.high]
+        )
+    }
+}
+
+private final class WelcomeViewController: NSViewController {
+    var onOpenVideoEditor: (() -> Void)?
+    var onOpenPhotoEditor: (() -> Void)?
+    var onOpenProject: ((URL) -> Void)?
+
+    override func loadView() {
+        view = NSView()
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor(hex: "15171B").cgColor
+
+        let heroImage = WelcomeHeroImageView()
+        heroImage.translatesAutoresizingMaskIntoConstraints = false
+        if let heroURL = Bundle.main.url(forResource: "welcome-studio-hero", withExtension: "png") {
+            heroImage.image = NSImage(contentsOf: heroURL)
+        }
+        view.addSubview(heroImage)
+
+        let imageScrim = NSView()
+        imageScrim.translatesAutoresizingMaskIntoConstraints = false
+        imageScrim.wantsLayer = true
+        imageScrim.layer?.backgroundColor = NSColor(calibratedWhite: 0.025, alpha: 0.53).cgColor
+        view.addSubview(imageScrim)
+
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.spacing = 0
+        root.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(root)
+
+        let topBar = NSStackView()
+        topBar.orientation = .horizontal
+        topBar.alignment = .centerY
+        topBar.spacing = 10
+        topBar.edgeInsets = NSEdgeInsets(top: 0, left: 24, bottom: 0, right: 24)
+        topBar.wantsLayer = true
+        topBar.layer?.backgroundColor = NSColor(hex: "111317").cgColor
+        topBar.heightAnchor.constraint(equalToConstant: 58).isActive = true
+        let brandRow = NSStackView()
+        brandRow.orientation = .horizontal
+        brandRow.alignment = .centerY
+        brandRow.spacing = 9
+        let icon = NSImageView()
+        if let iconURL = Bundle.main.url(forResource: "NetVistaStudio", withExtension: "icns") {
+            icon.image = NSImage(contentsOf: iconURL)
+        } else {
+            icon.image = NSImage(systemSymbolName: "film.stack.fill", accessibilityDescription: "NetVista Studio")
+        }
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.widthAnchor.constraint(equalToConstant: 30).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        let brand = NSTextField(labelWithString: "NetVista Studio")
+        brand.font = .systemFont(ofSize: 15, weight: .semibold)
+        brand.textColor = .white
+        brandRow.addArrangedSubview(icon)
+        brandRow.addArrangedSubview(brand)
+        let beta = NSTextField(labelWithString: "BETA")
+        beta.font = .systemFont(ofSize: 9, weight: .bold)
+        beta.textColor = NSColor(hex: "EE6668")
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Beta"
+        let versionLabel = NSTextField(labelWithString: "Version \(version)")
+        versionLabel.font = .systemFont(ofSize: 11)
+        versionLabel.textColor = NSColor(hex: "7E8590")
+        topBar.addArrangedSubview(brandRow)
+        topBar.addArrangedSubview(beta)
+        topBar.addArrangedSubview(NSView())
+        topBar.addArrangedSubview(versionLabel)
+        root.addArrangedSubview(topBar)
+
+        let line = NSBox()
+        line.boxType = .separator
+        root.addArrangedSubview(line)
+
+        let body = NSStackView()
+        body.orientation = .vertical
+        body.alignment = .leading
+        body.spacing = 22
+        body.edgeInsets = NSEdgeInsets(top: 50, left: 64, bottom: 42, right: 64)
+
+        let title = NSTextField(labelWithString: "Welcome to NetVista Studio")
+        title.font = .systemFont(ofSize: 30, weight: .semibold)
+        title.textColor = .white
+        let subtitle = NSTextField(labelWithString: "Start a video or photo edit, or continue an existing project.")
+        subtitle.font = .systemFont(ofSize: 14)
+        subtitle.textColor = NSColor(hex: "969DA8")
+        body.addArrangedSubview(title)
+        body.setCustomSpacing(7, after: title)
+        body.addArrangedSubview(subtitle)
+
+        let columns = NSStackView()
+        columns.orientation = .horizontal
+        columns.alignment = .top
+        columns.spacing = 18
+
+        let startPanel = welcomePanel(width: 560)
+        startPanel.addArrangedSubview(sectionLabel("START"))
+        startPanel.addArrangedSubview(actionRow(symbol: "film", title: "New video project", detail: "Create a project with the full timeline, effects, colour, audio, 3D and export tools.", buttonTitle: "Video Editor", action: #selector(openVideoEditor), primary: true))
+        startPanel.addArrangedSubview(separator())
+        startPanel.addArrangedSubview(actionRow(symbol: "photo.on.rectangle.angled", title: "Edit photos", detail: "Open the separate Photos NetVistaStudio workspace for image adjustments and export.", buttonTitle: "Photo Editor", action: #selector(openPhotoEditor), primary: false))
+        startPanel.addArrangedSubview(separator())
+        startPanel.addArrangedSubview(actionRow(symbol: "folder", title: "Open a project", detail: "Continue a saved video or layered photo project.", buttonTitle: "Choose File…", action: #selector(openProjectPicker), primary: false))
+
+        let informationPanel = welcomePanel(width: 310)
+        informationPanel.addArrangedSubview(sectionLabel("WORKSPACE"))
+        informationPanel.addArrangedSubview(infoRow("rectangle.3.group", "Edit", "Timeline and clip tools"))
+        informationPanel.addArrangedSubview(infoRow("photo", "Photos", "Image adjustments and export"))
+        informationPanel.addArrangedSubview(infoRow("diamond", "Effects", "Keyframes and compositing"))
+        informationPanel.addArrangedSubview(infoRow("camera.filters", "Colour", "Grading and LUT controls"))
+        informationPanel.addArrangedSubview(infoRow("cube", "3D Scene", "Models, animation and cameras"))
+        informationPanel.addArrangedSubview(separator())
+        let privacy = NSTextField(wrappingLabelWithString: "Your projects stay on this Mac unless you choose Share or Export.")
+        privacy.font = .systemFont(ofSize: 11)
+        privacy.textColor = NSColor(hex: "7E8590")
+        privacy.maximumNumberOfLines = 2
+        informationPanel.addArrangedSubview(privacy)
+
+        columns.addArrangedSubview(startPanel)
+        columns.addArrangedSubview(informationPanel)
+        body.addArrangedSubview(columns)
+        root.addArrangedSubview(body)
+        root.addArrangedSubview(NSView())
+
+        NSLayoutConstraint.activate([
+            heroImage.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            heroImage.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            heroImage.topAnchor.constraint(equalTo: view.topAnchor),
+            heroImage.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            imageScrim.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            imageScrim.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            imageScrim.topAnchor.constraint(equalTo: view.topAnchor),
+            imageScrim.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            root.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            root.topAnchor.constraint(equalTo: view.topAnchor),
+            root.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            body.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            columns.widthAnchor.constraint(equalToConstant: 888)
+        ])
+    }
+
+    @objc private func openVideoEditor() { onOpenVideoEditor?() }
+    @objc private func openPhotoEditor() { onOpenPhotoEditor?() }
+
+    @objc private func openProjectPicker() {
+        let panel = NSOpenPanel()
+        panel.title = "Open NetVista Studio Project"
+        panel.prompt = "Open"
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = ["netvistastudio", "netvistaphoto"].compactMap { UTType(filenameExtension: $0) }
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self, weak panel] response in
+            guard response == .OK, let url = panel?.url else { return }
+            self?.onOpenProject?(url)
+        }
+        if let window = view.window { panel.beginSheetModal(for: window, completionHandler: completion) }
+        else { completion(panel.runModal()) }
+    }
+
+    private func welcomePanel(width: CGFloat) -> NSStackView {
+        let panel = NSStackView()
+        panel.orientation = .vertical
+        panel.alignment = .width
+        panel.spacing = 16
+        panel.edgeInsets = NSEdgeInsets(top: 22, left: 22, bottom: 22, right: 22)
+        panel.wantsLayer = true
+        panel.layer?.backgroundColor = NSColor(hex: "1C1F24").withAlphaComponent(0.94).cgColor
+        panel.layer?.cornerRadius = 8
+        panel.layer?.borderWidth = 1
+        panel.layer?.borderColor = NSColor(hex: "2B2F36").cgColor
+        panel.widthAnchor.constraint(equalToConstant: width).isActive = true
+        return panel
+    }
+
+    private func sectionLabel(_ title: String) -> NSTextField {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 10, weight: .semibold)
+        label.textColor = NSColor(hex: "8B929D")
+        label.alignment = .left
+        return label
+    }
+
+    private func actionRow(symbol: String, title: String, detail: String, buttonTitle: String, action: Selector, primary: Bool) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 14
+        let image = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: title) ?? NSImage())
+        image.contentTintColor = primary ? .systemBlue : NSColor(hex: "A2A8B1")
+        image.widthAnchor.constraint(equalToConstant: 25).isActive = true
+        image.heightAnchor.constraint(equalToConstant: 25).isActive = true
+        let copy = NSStackView()
+        copy.orientation = .vertical
+        copy.alignment = .leading
+        copy.spacing = 4
+        let heading = NSTextField(labelWithString: title)
+        heading.font = .systemFont(ofSize: 15, weight: .semibold)
+        heading.textColor = .white
+        let explanation = NSTextField(wrappingLabelWithString: detail)
+        explanation.font = .systemFont(ofSize: 11)
+        explanation.textColor = NSColor(hex: "9299A4")
+        explanation.maximumNumberOfLines = 2
+        explanation.widthAnchor.constraint(equalToConstant: 300).isActive = true
+        copy.addArrangedSubview(heading)
+        copy.addArrangedSubview(explanation)
+        let button = NSButton(title: buttonTitle, target: self, action: action)
+        button.bezelStyle = .rounded
+        button.font = .systemFont(ofSize: 12, weight: .medium)
+        button.widthAnchor.constraint(equalToConstant: 108).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 31).isActive = true
+        if primary { button.keyEquivalent = "\r"; button.contentTintColor = .systemBlue }
+        row.addArrangedSubview(image)
+        row.addArrangedSubview(copy)
+        row.addArrangedSubview(NSView())
+        row.addArrangedSubview(button)
+        return row
+    }
+
+    private func infoRow(_ symbol: String, _ title: String, _ detail: String) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        let image = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: title) ?? NSImage())
+        image.contentTintColor = NSColor(hex: "9097A2")
+        image.widthAnchor.constraint(equalToConstant: 17).isActive = true
+        let copy = NSStackView()
+        copy.orientation = .vertical
+        copy.alignment = .leading
+        copy.spacing = 1
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textColor = NSColor(hex: "D4D7DC")
+        let secondary = NSTextField(labelWithString: detail)
+        secondary.font = .systemFont(ofSize: 10)
+        secondary.textColor = NSColor(hex: "747B86")
+        copy.addArrangedSubview(label)
+        copy.addArrangedSubview(secondary)
+        row.addArrangedSubview(image)
+        row.addArrangedSubview(copy)
+        return row
+    }
+
+    private func separator() -> NSBox { let box = NSBox(); box.boxType = .separator; return box }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var window: NSWindow!
+    private var window: NSWindow?
     private var editor: EditorController?
+    private var videoWindow: NSWindow?
+    private var photoEditor: PhotoEditorViewController?
+    private var photoWindow: NSWindow?
+    private var welcome: WelcomeViewController?
     private var pendingOpenURLs: [URL] = []
     func applicationDidFinishLaunching(_ notification: Notification) {
+        installMainMenu()
         if let iconURL = Bundle.main.url(forResource: "NetVistaStudio", withExtension: "icns"),
            let icon = NSImage(contentsOf: iconURL) {
             NSApp.applicationIconImage = icon
@@ -3704,15 +4417,146 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.messageText = "Mods are unavailable"
             alert.runModal()
         }
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 790), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "NetVista Studio"; window.minSize = NSSize(width: 1000, height: 650)
-        let controller = EditorController(); editor = controller; window.contentViewController = controller
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1160, height: 720), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        self.window = window
+        window.title = "Welcome to NetVista Studio"
+        window.minSize = NSSize(width: 900, height: 600)
+        window.isReleasedWhenClosed = false
+        let welcome = WelcomeViewController()
+        welcome.onOpenVideoEditor = { [weak self] in self?.showVideoEditor() }
+        welcome.onOpenPhotoEditor = { [weak self] in self?.showPhotoEditor() }
+        welcome.onOpenProject = { [weak self] url in
+            guard let self else { return }
+            if PhotoEditorViewController.supportsPhotoProject(url) { self.showPhotoEditor().openPhotoProject(url) }
+            else { self.route([url], to: self.showVideoEditor()) }
+        }
+        self.welcome = welcome
+        window.contentViewController = welcome
         window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
-        if !pendingOpenURLs.isEmpty { route(pendingOpenURLs, to: controller); pendingOpenURLs.removeAll() }
+        if !pendingOpenURLs.isEmpty {
+            handleOpenURLs(pendingOpenURLs)
+            pendingOpenURLs.removeAll()
+        }
     }
+
+    private func installMainMenu() {
+        let main = NSMenu()
+
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu(title: "NetVista Studio")
+        appItem.submenu = appMenu
+        appMenu.addItem(withTitle: "About NetVista Studio", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Hide NetVista Studio", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthers = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Quit NetVista Studio", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        main.addItem(appItem)
+
+        let studioItem = NSMenuItem()
+        let studioMenu = NSMenu(title: "Studio")
+        studioItem.submenu = studioMenu
+        let homeItem = studioMenu.addItem(withTitle: "Studio Home", action: #selector(showStudioHomeFromMenu), keyEquivalent: "0")
+        homeItem.target = self
+        studioMenu.addItem(.separator())
+        let videoItem = studioMenu.addItem(withTitle: "Video Editor", action: #selector(showVideoEditorFromMenu), keyEquivalent: "1")
+        videoItem.target = self
+        let photoItem = studioMenu.addItem(withTitle: "Photo Editor", action: #selector(showPhotoEditorFromMenu), keyEquivalent: "2")
+        photoItem.target = self
+        main.addItem(studioItem)
+
+        let windowItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+        windowItem.submenu = windowMenu
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+        main.addItem(windowItem)
+        NSApp.windowsMenu = windowMenu
+        NSApp.mainMenu = main
+    }
+
+    @objc private func showStudioHomeFromMenu() { showStudioHome() }
+    @objc private func showVideoEditorFromMenu() { _ = showVideoEditor() }
+    @objc private func showPhotoEditorFromMenu() { _ = showPhotoEditor() }
     func application(_ application: NSApplication, open urls: [URL]) {
-        if let editor { route(urls, to: editor) }
+        if window != nil { handleOpenURLs(urls) }
         else { pendingOpenURLs.append(contentsOf: urls) }
+    }
+
+    private func handleOpenURLs(_ urls: [URL]) {
+        let photoProjects = urls.filter(PhotoEditorViewController.supportsPhotoProject)
+        let photos = urls.filter(PhotoEditorViewController.supportsImage)
+        let editorFiles = urls.filter { !PhotoEditorViewController.supportsImage($0) && !PhotoEditorViewController.supportsPhotoProject($0) }
+        if !photoProjects.isEmpty {
+            let photoEditor = showPhotoEditor()
+            photoProjects.forEach(photoEditor.openPhotoProject)
+        }
+        if !photos.isEmpty { showPhotoEditor().openImages(photos) }
+        if !editorFiles.isEmpty { route(editorFiles, to: showVideoEditor()) }
+    }
+
+    @discardableResult
+    private func showPhotoEditor() -> PhotoEditorViewController {
+        if let photoEditor {
+            photoWindow?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return photoEditor
+        }
+        let controller = PhotoEditorViewController()
+        let photoWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1320, height: 820),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        photoWindow.title = "Photos NetVistaStudio"
+        // The docked Properties and Layers panels need this much content height to
+        // remain usable without AppKit breaking their constraints during resize.
+        photoWindow.contentMinSize = NSSize(width: 980, height: 640)
+        photoWindow.isReleasedWhenClosed = false
+        photoWindow.contentViewController = controller
+        photoWindow.center()
+        self.photoEditor = controller
+        self.photoWindow = photoWindow
+        controller.onShowStudioHome = { [weak self] in self?.showStudioHome() }
+        photoWindow.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        return controller
+    }
+    @discardableResult
+    private func showVideoEditor() -> EditorController {
+        if let editor {
+            videoWindow?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return editor
+        }
+        let controller = EditorController()
+        let videoWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1_420, height: 860),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        videoWindow.title = "NetVista Studio — Video Editor"
+        videoWindow.minSize = NSSize(width: 1_000, height: 650)
+        videoWindow.isReleasedWhenClosed = false
+        videoWindow.contentViewController = controller
+        videoWindow.center()
+        controller.onShowStudioHome = { [weak self] in self?.showStudioHome() }
+        self.editor = controller
+        self.videoWindow = videoWindow
+        videoWindow.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        return controller
+    }
+
+    private func showStudioHome() {
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
     private func route(_ urls: [URL], to editor: EditorController) {
         for url in urls {

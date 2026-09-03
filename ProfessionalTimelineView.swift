@@ -1533,6 +1533,8 @@ final class ProfessionalTimelineView: NSView {
             NSRect(x: rect.maxX - 4, y: rect.minY + 5, width: 2, height: max(1, rect.height - 10)).fill()
         }
 
+        drawEffectsIndicator(for: clip, rect: rect)
+        drawKeyframes(for: clip, rect: rect)
         guard rect.width >= 24 else { return }
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: rect.insetBy(dx: 6, dy: 4)).addClip()
@@ -1547,7 +1549,6 @@ final class ProfessionalTimelineView: NSView {
                 .shadow: shadow
             ]
         )
-        drawKeyframes(for: clip, rect: rect)
         NSGraphicsContext.restoreGraphicsState()
     }
 
@@ -1571,9 +1572,9 @@ final class ProfessionalTimelineView: NSView {
     }
 
     private func drawKeyframes(for clip: TimelineClip, rect: NSRect) {
-        guard clip.kind == .video, selectedIDs.contains(clip.id) else { return }
+        guard clip.kind == .video else { return }
         let times = Set(clip.animation.channels.flatMap { $0.keyframes.map(\.time) })
-        NSColor.systemOrange.setFill()
+        (selectedIDs.contains(clip.id) ? NSColor.systemOrange : NSColor.systemOrange.withAlphaComponent(0.72)).setFill()
         for localTime in times where localTime >= 0 && localTime <= clipDuration(clip) {
             let x = xPosition(for: clip.timelineStart + localTime)
             let y = rect.maxY - 7
@@ -1584,6 +1585,20 @@ final class ProfessionalTimelineView: NSView {
             diamond.line(to: NSPoint(x: x - 4, y: y))
             diamond.close(); diamond.fill()
         }
+    }
+
+    private func drawEffectsIndicator(for clip: TimelineClip, rect: NSRect) {
+        guard clip.kind == .video else { return }
+        let hasKeyframes = clip.animation.channels.contains { !$0.keyframes.isEmpty }
+        let hasAppliedEffect = clip.transform != ClipTransform() || clip.effects != ClipEffects()
+        guard hasKeyframes || hasAppliedEffect else { return }
+        let centre = NSPoint(x: rect.maxX - 11, y: rect.minY + 11)
+        let dot = NSBezierPath(ovalIn: NSRect(x: centre.x - 4, y: centre.y - 4, width: 8, height: 8))
+        (hasKeyframes ? NSColor.systemOrange : NSColor.systemPurple).setFill()
+        dot.fill()
+        NSColor.white.withAlphaComponent(0.75).setStroke()
+        dot.lineWidth = 1
+        dot.stroke()
     }
 
     private func drawPlayhead(in rect: NSRect) {

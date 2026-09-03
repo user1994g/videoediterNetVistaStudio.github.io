@@ -17,9 +17,9 @@
   <key>CFBundleShortVersionString</key>
   <string>1.4.0</string>
   <key>CFBundleVersion</key>
-	<string>6</string>
+	<string>7</string>
   <key>NetVistaReleaseTag</key>
-	<string>v1.4.0-beta.2</string>
+	<string>v1.4.0-beta.3</string>
   <key>LSMinimumSystemVersion</key>
   <string>11.0</string>
   <key>NSPrincipalClass</key>
@@ -86,6 +86,34 @@
         <string>netvistamod</string>
       </array>
     </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>NetVista Layered Photo Project</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>local.netvista.studio.photo-project</string>
+      </array>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>netvistaphoto</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Photos NetVistaStudio Image</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.image</string>
+      </array>
+    </dict>
   </array>
   <key>UTExportedTypeDeclarations</key>
   <array>
@@ -126,6 +154,19 @@
       <dict>
         <key>public.filename-extension</key>
         <array><string>netvistamod</string></array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>local.netvista.studio.photo-project</string>
+      <key>UTTypeDescription</key>
+      <string>NetVista Layered Photo Project</string>
+      <key>UTTypeConformsTo</key>
+      <array><string>public.json</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array><string>netvistaphoto</string></array>
       </dict>
     </dict>
   </array>

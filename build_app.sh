@@ -7,6 +7,7 @@ mkdir -p "$APP/Contents/MacOS"
 mkdir -p "$APP/Contents/Resources"
 cp NetVistaStudio-Info.plist "$APP/Contents/Info.plist"
 cp assets/NetVistaStudio.icns "$APP/Contents/Resources/NetVistaStudio.icns"
+cp assets/welcome-studio-hero.png "$APP/Contents/Resources/welcome-studio-hero.png"
 CLANG_MODULE_CACHE_PATH="$CACHE_DIR" xcrun swiftc \
     -target arm64-apple-macos11.0 \
     -suppress-warnings \
@@ -31,6 +32,7 @@ CLANG_MODULE_CACHE_PATH="$CACHE_DIR" xcrun swiftc \
     ModsStudio.swift \
     ProfessionalTimelineView.swift \
     NetVistaStudio.swift \
+    PhotoEditor.swift \
     EffectsStudio.swift \
     NativeTimelineExportEngine.swift \
     ExportWorkspace.swift \
