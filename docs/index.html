@@ -16,8 +16,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&amp;family=DM+Sans:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
   <title>NetVista Studio Editor — Public Beta</title>
-  <link rel="stylesheet" href="assets/site.css?v=5">
-  <script defer src="assets/site.js?v=7"></script>
+  <link rel="stylesheet" href="assets/site.css?v=8">
+  <script defer src="assets/site.js?v=8"></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -36,106 +36,57 @@
   </header>
 
   <main id="main">
-    <section class="hero" id="top">
-      <div class="hero-atmosphere" aria-hidden="true"></div>
-      <div class="hero-grid shell">
-        <div class="hero-copy reveal">
-          <p class="kicker"><b>N</b> NETVISTASTUDIO CREATIVE TOOL</p>
-          <h1>Cut the story.<br>Keep the vision.</h1>
-          <div class="metadata" aria-label="Release information">
-            <strong>Public beta</strong><span>Version 1.4</span><i>macOS</i><i>Windows</i><i>Linux</i>
-          </div>
-          <p class="hero-summary">A native editing room for the people making the next netvistastudio story. Cut, colour, mix, animate 3D worlds, install creator mods, and export without leaving the timeline.</p>
-          <div class="button-row">
-            <a class="button button-primary download-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/tag/v1.4.0-beta.3"><span aria-hidden="true">↓</span> Download beta</a>
-            <a class="button button-secondary" href="#details"><span aria-hidden="true">ⓘ</span> Details</a>
-          </div>
-        </div>
-
-        <div class="editor-hero reveal" aria-label="A preview of the NetVista Studio editing workspace">
-          <div class="editor-glow"></div>
-          <div class="editor-window">
-            <div class="editor-titlebar">
-              <span class="traffic"><i></i><i></i><i></i></span>
-              <b>NetVista Studio</b>
-              <span>Untitled Project</span>
-            </div>
-            <div class="editor-body">
-              <aside class="mock-media">
-                <strong>MEDIA POOL</strong>
-                <div><i class="thumb t1"></i><span>opening.mov</span></div>
-                <div><i class="thumb t2"></i><span>night-shot.mov</span></div>
-                <div><i class="mock-wave"></i><span>score.wav</span></div>
-              </aside>
-              <div class="mock-program">
-                <div class="mock-frame"><span></span></div>
-                <div class="mock-controls"><i>◀</i><b>▶</b><i>▶</i><time>01:04:18:12</time></div>
-              </div>
-              <aside class="mock-inspector"><strong>INSPECTOR</strong><small>Transform</small><label>Position <b>0.0</b></label><label>Scale <b>100%</b></label><i></i><small>Opacity</small><i class="long"></i></aside>
-              <div class="mock-timeline">
-                <div class="mock-tools"><b>TIMELINE 1</b><span>V SELECT</span><span>BLADE</span><span>SNAP</span></div>
-                <div class="mock-ruler"><span>01:04:00</span><span>01:05:00</span><span>01:06:00</span></div>
-                <div class="mock-tracks">
-                  <b>V2</b><div></div>
-                  <b>V1</b><div><i class="clip clip-one">opening.mov</i><i class="clip clip-two">night-shot.mov</i></div>
-                  <b>A1</b><div><i class="audio audio-one"></i><i class="audio audio-two"></i></div>
-                  <em></em>
-                </div>
-              </div>
-            </div>
-          </div>
-          <p class="frame-note"><span></span> Native desktop apps. Your media stays local.</p>
-        </div>
+    <section class="hero shell" id="top">
+      <div class="edition-line"><span>Independent films. Independent tools.</span><span>Public beta / 1.4</span></div>
+      <h1><span>NetVista</span>Studio<span class="title-period">.</span></h1>
+      <div class="hero-bottom">
+        <p class="hero-label">THE DESKTOP<br>EDITING ROOM</p>
+        <p class="hero-summary">For the cut you keep coming back to. Video, sound, colour and animation in one native editing workspace. Made by netvistastudio.</p>
+        <div class="hero-action"><a class="text-link download-link" href="#download">Download the beta <span aria-hidden="true">↗</span></a><span>macOS / Windows / Linux</span></div>
       </div>
-      <div class="hero-index" aria-hidden="true"><span>01</span><i></i><span>04</span></div>
+      <figure class="studio-spread">
+        <img src="assets/studio-room.png" width="1672" height="941" alt="A dimly lit editing desk with a cinema camera, monitor and photographs" fetchpriority="high">
+        <figcaption><span>01 / THE EDITING ROOM</span><a href="#details">Explore the tools ↓</a></figcaption>
+      </figure>
     </section>
 
     <section class="intro shell reveal" id="details">
       <div>
         <p class="section-label">THE EDITING ROOM</p>
-        <h2>Built for stories<br>after dark.</h2>
+        <h2>Your footage.<br>Your decisions.</h2>
       </div>
       <div class="intro-copy">
         <p>NetVista Studio brings picture, sound, colour, effects, 3D work, and safe creator-made extensions into one connected native desktop app. The project format and editing flow travel with you across macOS, Windows, and Linux.</p>
-        <ul>
-          <li><b>∞</b><span>Video and audio layers</span></li>
-          <li><b>30</b><span>Frame-accurate preview</span></li>
-          <li><b>100%</b><span>Local project workflow</span></li>
-        </ul>
+        <p class="quiet">Start with a rough sequence. Save an editable project and return to it when the next idea arrives. Your media stays on your computer unless you choose to share or export it.</p>
       </div>
     </section>
 
     <section class="feature-section" id="features">
       <div class="shell">
         <div class="section-head reveal">
-          <div><p class="section-label">INSIDE THE STUDIO</p><h2>One app. Every finish.</h2></div>
-          <p>A focused set of connected workspaces made for building a complete edit.</p>
+          <div><p class="section-label">INSIDE THE STUDIO</p><h2>Room to experiment.</h2></div>
+          <p>Picture, sound and everything between.</p>
         </div>
         <div class="feature-grid">
           <article class="feature-card feature-main reveal">
             <span class="number">01</span><p class="card-label">TIMELINE</p><h3>Build the cut</h3>
             <p>Place unlimited clips side by side or stack them across layers. Trim, split, snap, zoom, move linked audio, and watch the result update in the program monitor.</p>
-            <div class="card-graphic graphic-timeline"><i></i><i></i><i></i><b></b></div>
           </article>
           <article class="feature-card feature-main reveal">
             <span class="number">02</span><p class="card-label">COLOUR</p><h3>Find the look</h3>
             <p>Shape lift, gamma and gain, tune primary controls, and bring in a 3D LUT.</p>
-            <div class="colour-wheels"><i></i><i></i><i></i></div>
           </article>
           <article class="feature-card feature-main reveal">
             <span class="number">03</span><p class="card-label">EFFECTS</p><h3>Move the frame</h3>
             <p>Animate transform, opacity, blur, glow, vignette, Ultra Key, and more with keyframes.</p>
-            <div class="keyframe-line"><i></i><i></i><i></i></div>
           </article>
           <article class="feature-card reveal">
             <span class="number">04</span><p class="card-label">ANIMATED 3D</p><h3>Build the world</h3>
             <p>On macOS, import models, make maps, animate objects and cameras, pose bones in rigged assets, add physics, place keyed video screens, and remove their green screen. Windows and Linux preserve the editable scene data in this beta.</p>
-            <div class="cube" aria-hidden="true"><i></i></div>
           </article>
           <article class="feature-card reveal">
             <span class="number">05</span><p class="card-label">MODS + DELIVERY</p><h3>Make it yours</h3>
             <p>Install data-only creator mods for themes and native information pages, browse checked creator catalogs, switch packages on or off, then deliver at a preset or custom size up to 16K.</p>
-            <div class="keyframe-line"><i></i><i></i><i></i></div>
           </article>
         </div>
       </div>
@@ -156,25 +107,24 @@
       <div class="download-grid shell">
         <div class="download-copy reveal">
           <p class="section-label">PUBLIC BETA · VERSION 1.4</p>
-          <h2>Enter the<br>editing room.</h2>
+          <h2>Take it<br>from here.</h2>
           <p>This is an early beta, not a finished production release. Features may be incomplete and bugs may occur, so keep backups of important projects and media.</p>
           <div class="requirements"><span>macOS</span><span>Windows 10/11</span><span>Linux</span><span>Up to 16K</span></div>
           <div class="button-row">
             <a class="button button-primary download-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/tag/v1.4.0-beta.3"><span>↓</span> Choose your download</a>
             <a class="button button-secondary releases-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/tag/v1.4.0-beta.3" target="_blank" rel="noreferrer">Release notes</a>
           </div>
-          <aside class="beta-warning"><b>Beta software</b><span>Keep backups of important work. On macOS, Control-click and choose <strong>Open</strong> on first launch. On Windows and Linux, unzip the complete application folder before launching.</span></aside>
+          <aside class="beta-warning"><b>Beta software</b><span>Keep backups of important work. The macOS beta is ad-hoc signed, not Apple-notarized; macOS may block its first launch. On Windows and Linux, unzip the complete application folder before launching.</span></aside>
         </div>
         <div class="build-card reveal">
           <div class="build-top"><span>SOURCE ACCESS</span><a class="github-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io" target="_blank" rel="noreferrer">GitHub ↗</a></div>
           <h3>Build it yourself.</h3><p>The editor is built in the open with Swift, AppKit, Qt, AVFoundation and FFmpeg. No browser runtime powers the desktop apps.</p>
           <div class="terminal" aria-label="Build instructions">
             <div><i></i><i></i><i></i><button class="copy-button" type="button">Copy</button></div>
-            <pre><code><span>$</span> git clone <em class="clone-url">REPOSITORY_URL</em>
-<span>$</span> cd <em class="repo-name">REPOSITORY_NAME</em>
+            <pre><code><span>$</span> git clone <em class="clone-url">https://github.com/user1994g/videoediterNetVistaStudio.github.io.git</em>
+<span>$</span> cd <em class="repo-name">videoediterNetVistaStudio.github.io</em>
 <span>$</span> sh build_app.sh
-
-<b>Built NetVista Studio.app ✓</b></code></pre>
+</code></pre>
           </div>
         </div>
       </div>

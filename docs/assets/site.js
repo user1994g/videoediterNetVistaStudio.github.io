@@ -55,25 +55,9 @@
     if (event.key === 'Escape') closeNavigation();
   });
 
-  const editorHero = document.querySelector('.editor-hero');
-  const editorWindow = editorHero?.querySelector('.editor-window');
-  const fitEditorPreview = () => {
-    if (!editorHero || !editorWindow) return;
-    const naturalWidth = 1040;
-    const naturalHeight = 650;
-    const scale = Math.min(1, Math.max(0.1, editorHero.clientWidth / naturalWidth));
-    editorWindow.style.transform = `scale(${scale})`;
-    editorHero.style.height = `${Math.ceil(naturalHeight * scale + 28)}px`;
-  };
-  fitEditorPreview();
-  if ('ResizeObserver' in window) {
-    new ResizeObserver(fitEditorPreview).observe(editorHero);
-  } else {
-    window.addEventListener('resize', fitEditorPreview, { passive: true });
-  }
-
   const downloadModal = document.querySelector('#download-modal');
   const downloadDialog = downloadModal.querySelector('.download-dialog');
+  const backgroundSurfaces = [...document.querySelectorAll('header, main, footer')];
   const downloadButtons = document.querySelectorAll('.download-link');
   let downloadReturnFocus = null;
   const preferredPlatform = /Win/i.test(navigator.platform + navigator.userAgent) ? 'windows'
@@ -85,6 +69,7 @@
     if (downloadModal.hidden) return;
     downloadModal.hidden = true;
     document.body.classList.remove('overlay-open');
+    backgroundSurfaces.forEach((element) => { element.inert = false; });
     downloadReturnFocus?.focus();
   };
   const openDownload = (event) => {
@@ -92,12 +77,19 @@
     downloadReturnFocus = event.currentTarget;
     downloadModal.hidden = false;
     document.body.classList.add('overlay-open');
+    backgroundSurfaces.forEach((element) => { element.inert = true; });
     downloadDialog.querySelector(`[data-platform="${preferredPlatform}"]`)?.focus();
   };
   downloadButtons.forEach((button) => button.addEventListener('click', openDownload));
   downloadModal.querySelectorAll('[data-close-download]').forEach((button) => button.addEventListener('click', closeDownload));
   downloadModal.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') closeDownload();
+    if (event.key === 'Escape') { event.preventDefault(); closeDownload(); }
+    if (event.key === 'Tab') {
+      const controls = [...downloadDialog.querySelectorAll('a[href], button:not([disabled])')];
+      const first = controls[0], last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
   });
 
   const copyButton = document.querySelector('.copy-button');
