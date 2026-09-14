@@ -16,8 +16,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&amp;family=DM+Sans:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
   <title>NetVista Studio Editor — Public Beta</title>
-  <link rel="stylesheet" href="assets/site.css?v=8">
-  <script defer src="assets/site.js?v=8"></script>
+  <meta name="referrer" content="no-referrer">
+  <link rel="stylesheet" href="assets/site.css?v=11">
+  <script defer src="assets/site.js?v=11"></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -111,7 +112,7 @@
           <p>This is an early beta, not a finished production release. Features may be incomplete and bugs may occur, so keep backups of important projects and media.</p>
           <div class="requirements"><span>macOS</span><span>Windows 10/11</span><span>Linux</span><span>Up to 16K</span></div>
           <div class="button-row">
-            <a class="button button-primary download-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/tag/v1.4.0-beta.3"><span>↓</span> Choose your download</a>
+            <a class="button button-primary download-link" href="#download"><span>↓</span> Choose your download</a>
             <a class="button button-secondary releases-link" href="https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/tag/v1.4.0-beta.3" target="_blank" rel="noreferrer">Release notes</a>
           </div>
           <aside class="beta-warning"><b>Beta software</b><span>Keep backups of important work. The macOS beta is ad-hoc signed, not Apple-notarized; macOS may block its first launch. On Windows and Linux, unzip the complete application folder before launching.</span></aside>
@@ -151,6 +152,44 @@
       </div>
       <p class="download-help"><span>Beta release</span> Windows and Linux downloads contain the complete app folder. Unzip the full folder before launching NetVista Studio.</p>
       <a class="all-releases-link releases-link" href="#" target="_blank" rel="noreferrer">View release notes and all downloads ↗</a>
+    </section>
+  </div>
+
+  <div class="account-gate-modal" id="account-gate-modal" hidden>
+    <button class="account-gate-backdrop" type="button" data-close-account-gate aria-label="Close account sign-in"></button>
+    <section class="account-gate-dialog" role="dialog" aria-modal="true" aria-labelledby="account-gate-title" aria-describedby="account-gate-description">
+      <button class="account-gate-close" type="button" data-close-account-gate aria-label="Close">×</button>
+      <p class="section-label">NETVISTA STUDIO · PUBLIC BETA</p>
+      <h2 id="account-gate-title">Make the studio yours.</h2>
+      <p id="account-gate-description">Sign in or create a free NetVista account to unlock the app downloads. Your editing projects remain local to your computer.</p>
+      <div class="account-gate-tabs" role="tablist" aria-label="Download account access">
+        <button type="button" class="account-gate-tab is-active" id="gate-signin-tab" role="tab" aria-selected="true" aria-controls="gate-signin-form">Sign in</button>
+        <button type="button" class="account-gate-tab" id="gate-signup-tab" role="tab" aria-selected="false" aria-controls="gate-signup-form">Create account</button>
+      </div>
+      <div id="account-gate-status" class="account-gate-status" role="status" aria-live="polite" hidden></div>
+      <form id="gate-signin-form" method="post" class="account-gate-form" role="tabpanel" aria-labelledby="gate-signin-tab">
+        <fieldset disabled class="account-fields">
+        <label for="gate-signin-email">Email address</label>
+        <input id="gate-signin-email" type="email" autocomplete="email" inputmode="email" required>
+        <label for="gate-signin-password">Password</label>
+        <input id="gate-signin-password" type="password" autocomplete="current-password" required>
+        <button class="account-gate-submit" type="submit">Sign in and continue <span aria-hidden="true">↗</span></button>
+        <button class="account-gate-text" id="gate-forgot-password" type="button">Forgot your password?</button>
+        </fieldset>
+      </form>
+      <form id="gate-signup-form" method="post" class="account-gate-form" role="tabpanel" aria-labelledby="gate-signup-tab" hidden>
+        <fieldset disabled class="account-fields">
+        <label for="gate-signup-name">Display name <span>(optional)</span></label>
+        <input id="gate-signup-name" type="text" autocomplete="name" maxlength="80">
+        <label for="gate-signup-email">Email address</label>
+        <input id="gate-signup-email" type="email" autocomplete="email" inputmode="email" required>
+        <label for="gate-signup-password">Password</label>
+        <input id="gate-signup-password" type="password" autocomplete="new-password" minlength="8" required>
+        <p class="account-gate-note">Use a unique password with at least 8 characters.</p>
+        <button class="account-gate-submit" type="submit">Create account and continue <span aria-hidden="true">↗</span></button>
+        </fieldset>
+      </form>
+      <p class="account-gate-footnote">Passwords are sent to Supabase Auth over HTTPS, not saved by this page. App downloads and source code are also publicly available on GitHub.</p>
     </section>
   </div>
 

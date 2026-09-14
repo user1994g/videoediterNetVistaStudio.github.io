@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#08090c">
+  <meta name="description" content="NetVista Studio account sign in and setup.">
+  <title>Account — NetVista Studio</title>
+  <link rel="icon" type="image/png" href="https://netvistastudio.com/assets/images/photos/netvistastudio-logo.png">
+  <meta name="referrer" content="no-referrer">
+  <link rel="stylesheet" href="../assets/site.css?v=11">
+  <link rel="stylesheet" href="account.css?v=1">
+</head>
+<body class="account-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header" id="site-header">
+    <a class="brand" href="https://netvistastudio.com/" aria-label="NetVista Studio home"><span>netvistastudio</span></a>
+    <nav class="primary-nav" aria-label="Main navigation">
+      <a href="https://netvistastudio.com/">Home</a>
+      <a href="https://video.netvistastudio.com/">Editor</a>
+      <a class="is-active" href="./" aria-current="page">Account</a>
+    </nav>
+    <div class="header-actions"><a class="header-app-button" href="https://video.netvistastudio.com/#download"><span>↓</span><span>Get the beta</span></a></div>
+  </header>
+
+  <main id="main" class="account-main">
+    <div class="account-intro">
+      <p class="section-label">NETVISTA STUDIO · ACCOUNT</p>
+      <h1>Your studio,<br><span>wherever you work.</span></h1>
+      <p class="account-lede">Create an account to keep your NetVista profile ready across the studio. Your video, photo and game projects still stay on your computer unless you explicitly share or export them.</p>
+    </div>
+
+    <section class="account-card" aria-labelledby="account-title">
+      <div class="account-card-head">
+        <p class="section-label">PUBLIC BETA</p>
+        <h2 id="account-title">Welcome back.</h2>
+        <p id="account-subtitle">Sign in to NetVista Studio, or make a new account in a minute.</p>
+      </div>
+
+      <div class="account-tabs" role="tablist" aria-label="Account actions">
+        <button type="button" class="account-tab is-active" id="signin-tab" role="tab" aria-selected="true" aria-controls="signin-panel">Sign in</button>
+        <button type="button" class="account-tab" id="signup-tab" role="tab" aria-selected="false" aria-controls="signup-panel">Create account</button>
+      </div>
+
+      <div id="status" class="account-status" role="status" aria-live="polite" hidden></div>
+
+      <noscript>JavaScript is required to sign in safely. Enable it and reload this page.</noscript>
+      <form id="signin-panel" method="post" class="account-form" role="tabpanel" aria-labelledby="signin-tab">
+        <fieldset disabled class="account-fields">
+        <label for="signin-email">Email address</label>
+        <input id="signin-email" type="email" autocomplete="email" inputmode="email" required>
+        <label for="signin-password">Password</label>
+        <input id="signin-password" type="password" autocomplete="current-password" required>
+        <button class="account-submit" type="submit">Sign in <span aria-hidden="true">↗</span></button>
+        <button class="text-button" id="forgot-password" type="button">Forgot your password?</button>
+        </fieldset>
+      </form>
+
+      <form id="signup-panel" method="post" class="account-form" role="tabpanel" aria-labelledby="signup-tab" hidden>
+        <fieldset disabled class="account-fields">
+        <label for="signup-name">Display name <span>(optional)</span></label>
+        <input id="signup-name" type="text" autocomplete="name" maxlength="80">
+        <label for="signup-email">Email address</label>
+        <input id="signup-email" type="email" autocomplete="email" inputmode="email" required>
+        <label for="signup-password">Password</label>
+        <input id="signup-password" type="password" autocomplete="new-password" minlength="8" required>
+        <p class="field-note">Use a unique password with at least 8 characters.</p>
+        <button class="account-submit" type="submit">Create account <span aria-hidden="true">↗</span></button>
+        </fieldset>
+      </form>
+
+      <form id="recovery-panel" method="post" class="account-form" hidden aria-label="Set a new password">
+        <fieldset disabled class="account-fields">
+          <label for="recovery-password">New password</label>
+          <input id="recovery-password" type="password" autocomplete="new-password" minlength="8" required>
+          <label for="recovery-confirm">Repeat new password</label>
+          <input id="recovery-confirm" type="password" autocomplete="new-password" minlength="8" required>
+          <button class="account-submit" type="submit">Save new password</button>
+          <button class="text-button" id="cancel-recovery" type="button">Cancel</button>
+        </fieldset>
+      </form>
+
+      <section id="signed-in-panel" class="signed-in-panel" hidden aria-labelledby="signed-in-title">
+        <p class="section-label">SIGNED IN</p>
+        <h3 id="signed-in-title">You’re in the studio.</h3>
+        <p id="signed-in-email"></p>
+        <div class="signed-in-actions">
+          <a class="account-submit account-link" href="https://video.netvistastudio.com/">Open Editor <span aria-hidden="true">↗</span></a>
+          <button id="signout" class="text-button" type="button">Sign out</button>
+          <button id="change-password" class="text-button" type="button">Change password</button>
+        </div>
+      </section>
+
+      <p class="account-privacy">Passwords are sent to Supabase Auth over HTTPS, not saved by this page. Read the <a href="https://supabase.com/privacy" target="_blank" rel="noreferrer">privacy policy ↗</a>.</p>
+    </section>
+  </main>
+
+  <footer class="site-footer account-footer">
+    <a class="footer-brand" href="https://netvistastudio.com/">netvistastudio</a>
+    <p>Independent stories after dark.</p>
+    <div class="footer-actions"><a href="https://video.netvistastudio.com/">Editor</a><a href="https://github.com/user1994g/videoediterNetVistaStudio.github.io" target="_blank" rel="noreferrer">Source ↗</a></div>
+    <p class="copyright">© <span id="year"></span> netvistastudio</p>
+  </footer>
+
+  <script type="module" src="account.js?v=2"></script>
+</body>
+</html>
