@@ -18,7 +18,8 @@
   <title>NetVista Studio Editor — Public Beta</title>
   <meta name="referrer" content="no-referrer">
   <link rel="stylesheet" href="assets/site.css?v=11">
-  <script defer src="assets/site.js?v=11"></script>
+  <link rel="stylesheet" href="assets/account-ui.css?v=1">
+  <script defer src="assets/site.js?v=12"></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -159,9 +160,15 @@
     <button class="account-gate-backdrop" type="button" data-close-account-gate aria-label="Close account sign-in"></button>
     <section class="account-gate-dialog" role="dialog" aria-modal="true" aria-labelledby="account-gate-title" aria-describedby="account-gate-description">
       <button class="account-gate-close" type="button" data-close-account-gate aria-label="Close">×</button>
-      <p class="section-label">NETVISTA STUDIO · PUBLIC BETA</p>
-      <h2 id="account-gate-title">Make the studio yours.</h2>
-      <p id="account-gate-description">Sign in or create a free NetVista account to unlock the app downloads. Your editing projects remain local to your computer.</p>
+      <aside class="auth-story" aria-label="NetVista Studio">
+        <p class="auth-wordmark">netvistastudio<span>CREATIVE TOOLS / PUBLIC BETA</span></p>
+        <div class="auth-story-copy"><p class="section-label">YOUR NEXT CHAPTER</p><h2>Good ideas.<br>Great company.</h2><p>A little space to make something<br>that feels like you.</p></div>
+        <p class="auth-story-footer">VIDEO &nbsp; / &nbsp; PHOTOS &nbsp; / &nbsp; GAMES</p>
+      </aside>
+      <div class="account-gate-body">
+      <p class="auth-eyebrow">YOUR NETVISTA ACCOUNT</p>
+      <h2 id="account-gate-title">Welcome back.</h2>
+      <p id="account-gate-description">Sign in to choose your app download.</p>
       <div class="account-gate-tabs" role="tablist" aria-label="Download account access">
         <button type="button" class="account-gate-tab is-active" id="gate-signin-tab" role="tab" aria-selected="true" aria-controls="gate-signin-form">Sign in</button>
         <button type="button" class="account-gate-tab" id="gate-signup-tab" role="tab" aria-selected="false" aria-controls="gate-signup-form">Create account</button>
@@ -189,7 +196,9 @@
         <button class="account-gate-submit" type="submit">Create account and continue <span aria-hidden="true">↗</span></button>
         </fieldset>
       </form>
-      <p class="account-gate-footnote">Passwords are sent to Supabase Auth over HTTPS, not saved by this page. App downloads and source code are also publicly available on GitHub.</p>
+      <p class="auth-local-note">Your projects stay yours. Files remain on your computer.</p>
+      <p class="account-gate-footnote">Secure sign-in by Supabase. App downloads and source are also public on GitHub.</p>
+      </div>
     </section>
   </div>
 

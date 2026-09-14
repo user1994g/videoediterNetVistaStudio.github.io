@@ -9,7 +9,7 @@ In the NetVista Supabase project (`tsitgxafmtzjgtmiczsq`), open **Authentication
 - **Site URL:** `https://video.netvistastudio.com/`
 - **Additional Redirect URLs:** `https://video.netvistastudio.com/account/`
 
-Keep the **Email** provider enabled. Email confirmation is controlled in Supabase, not by a GitHub Pages deployment. The site supports both immediate sign-in when confirmations are disabled and confirmation-required signup when they are enabled. Disabling confirmation means signup does not prove ownership of an email address.
+Keep the **Email** provider enabled. Email confirmation is controlled in Supabase, not by a GitHub Pages deployment. For the NetVista Studio beta, **Confirm email is currently disabled**, so new accounts can sign in immediately without waiting for a message. Disabling confirmation means signup does not prove ownership of an email address.
 
 All confirmation and recovery requests use the production account URL above, even when testing the website locally. The redirect must be allowed in Supabase; otherwise Supabase can fall back to its configured Site URL.
 

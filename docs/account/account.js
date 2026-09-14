@@ -4,7 +4,8 @@ const forms = [signin, signup, recovery];
 const callback = new URLSearchParams(window.location.hash.slice(1));
 const callbackError = callback.get('error_code') || callback.get('error');
 let wantsRecovery = callback.get('type') === 'recovery';
-let client, redirectTo, user = null, ready = false, mode = 'signin';
+let client, redirectTo, user = null, ready = false;
+let mode = new URLSearchParams(window.location.search).get('mode') === 'signup' ? 'signup' : 'signin';
 const setStatus = (message, tone = '') => {
   $('#status').hidden = !message;
   $('#status').className = 'account-status ' + tone;
@@ -23,6 +24,7 @@ const render = () => {
   }
   $('#account-subtitle').textContent = recovering ? 'Choose a new, unique password.' : user ? 'Your NetVista account is ready.' : 'Sign in or create your NetVista account.';
   $('#signed-in-email').textContent = user?.email || '';
+  $('#account-title').textContent = recovering ? 'A fresh start.' : user ? 'You’re all set.' : mode === 'signup' ? 'Join the studio.' : 'Welcome back.';
 };
 const request = async operation => {
   let timer;
@@ -64,7 +66,7 @@ signup.addEventListener('submit', () => {
   }), data => {
     user = data.session?.user || null; mode = 'signin'; render();
     $('#signin-email').value = email;
-    setStatus(user ? 'Account created. You can now get the app.' : 'Your account needs email verification under the current server settings. Check your inbox or try signing in.', user ? 'success' : '');
+    setStatus(user ? 'Account created. You can now get the app.' : 'Account created. Sign in to continue.', user ? 'success' : '');
   });
 });
 $('#forgot-password').addEventListener('click', () => {
@@ -92,6 +94,7 @@ $('#signout').addEventListener('click', async () => {
   else { user = null; wantsRecovery = false; mode = 'signin'; forms.forEach(form => form.reset()); render(); setStatus('You are signed out.', 'success'); }
 });
 $('#year').textContent = new Date().getFullYear();
+render();
 setStatus('Connecting securely…');
 const initialized = await request(async () => {
   const auth = await import('../assets/auth-client.js');
@@ -99,7 +102,9 @@ const initialized = await request(async () => {
   client.auth.onAuthStateChange((event, session) => {
     user = session?.user || null;
     if (event === 'PASSWORD_RECOVERY') wantsRecovery = true;
-    if (!user) { wantsRecovery = false; mode = 'signin'; }
+    // Preserve an explicit ?mode=signup deep link on the initial signed-out
+    // callback; this is how the native app opens the create-account tab.
+    if (!user) { wantsRecovery = false; if (mode !== 'signup') mode = 'signin'; }
     else if (wantsRecovery) mode = 'recovery';
     render();
   });

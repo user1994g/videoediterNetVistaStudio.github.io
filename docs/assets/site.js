@@ -126,6 +126,8 @@
     accountGateSignupTab.setAttribute('aria-selected', String(signup));
     accountGateSigninForm.hidden = signup;
     accountGateSignupForm.hidden = !signup;
+    document.querySelector('#account-gate-title').textContent = signup ? 'Join the studio.' : 'Welcome back.';
+    document.querySelector('#account-gate-description').textContent = signup ? 'Create a free account and start making.' : 'Sign in to choose your app download.';
     setGateStatus('');
   };
   const setGateBusy = (form, busy) => {
@@ -228,7 +230,7 @@
       setGateMode('signin');
       document.querySelector('#gate-signin-email').value = email;
       accountGateSignupForm.reset();
-      setGateStatus('Account created. Check your email to confirm it, then return here to sign in.', 'success');
+      setGateStatus('Account created. Sign in to continue.', 'success');
     }
   });
   document.querySelector('#gate-forgot-password').addEventListener('click', async () => {
