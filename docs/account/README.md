@@ -24,6 +24,8 @@ All confirmation and recovery requests use the production account URL above, eve
 
 The main editor landing page uses the same client and opens this sign-in/create-account flow inline when a visitor chooses **Get the beta**. The Account page remains available as the confirmation and password-reset return route, but it is not required from the main navigation.
 
+Every new download request requires a fresh successful sign-in or signup in that dialog, including for visitors with a saved browser session. Closing the chooser, choosing a platform, or returning through browser history ends that download flow. Existing sessions still work for account management. This is the website download workflow; public GitHub release assets remain accessible directly.
+
 The page is intentionally static and can be deployed with GitHub Pages. Supabase handles password storage and token exchange; the site only receives the user session through the official JavaScript client.
 
 Credential fields remain disabled until authentication loads, have no HTML submission names, and use POST forms as a fallback. JavaScript cancels native submissions before loading the remote client. Run the offline regression checks with `node --experimental-vm-modules Tests/web_auth_regression.cjs` from the repository root.

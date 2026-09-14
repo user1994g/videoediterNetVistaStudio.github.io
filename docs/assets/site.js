@@ -69,7 +69,7 @@
   const downloadButtons = document.querySelectorAll('.download-link');
   let downloadReturnFocus = null;
   let accountGateReturnFocus = null;
-  let authSession = null;
+  let gateAttempt = 0;
   let authLoadError = null;
   let authRedirect;
   const authRequest = async (operation) => {
@@ -85,10 +85,7 @@
   const authReady = authRequest(async () => {
     const { supabase, authRedirect: publicRedirect } = await import('./auth-client.js');
     authRedirect = publicRedirect;
-    supabase.auth.onAuthStateChange((_event, session) => { authSession = session; });
-    const { data: { session }, error } = await supabase.auth.getSession();
-    if (error) throw error;
-    authSession = session;
+    // A remembered session must never unlock a new download request.
     return { data: supabase };
   }).then(({ data, error }) => {
     if (error) { authLoadError = error; return null; }
@@ -127,7 +124,7 @@
     accountGateSigninForm.hidden = signup;
     accountGateSignupForm.hidden = !signup;
     document.querySelector('#account-gate-title').textContent = signup ? 'Join the studio.' : 'Welcome back.';
-    document.querySelector('#account-gate-description').textContent = signup ? 'Create a free account and start making.' : 'Sign in to choose your app download.';
+    document.querySelector('#account-gate-description').textContent = signup ? 'Create a free account and start making.' : 'Sign in for this download. We ask each time you get the app.';
     setGateStatus('');
   };
   const setGateBusy = (form, busy) => {
@@ -135,6 +132,9 @@
   };
   const closeAccountGate = () => {
     if (accountGateModal.hidden) return;
+    gateAttempt += 1;
+    accountGateSigninForm.reset();
+    accountGateSignupForm.reset();
     accountGateModal.hidden = true;
     document.body.classList.remove('overlay-open');
     backgroundSurfaces.forEach((element) => { element.inert = false; });
@@ -142,18 +142,16 @@
   };
   const openAccountGate = (event) => {
     event.preventDefault();
+    const attempt = ++gateAttempt;
     accountGateReturnFocus = event.currentTarget;
     accountGateModal.hidden = false;
     document.body.classList.add('overlay-open');
     backgroundSurfaces.forEach((element) => { element.inert = true; });
     setGateMode('signin');
-    setGateStatus('Checking your NetVista account…');
+    setGateStatus('Loading sign-in…');
     authReady.then((client) => {
-      if (accountGateModal.hidden) return;
-      if (client && authSession) {
-        closeAccountGate();
-        openDownloadChooser();
-      } else if (!client) {
+      if (accountGateModal.hidden || attempt !== gateAttempt) return;
+      if (!client) {
         setGateStatus('Account sign-in is temporarily unavailable. Please try again shortly.', 'error');
       } else {
         setGateStatus('');
@@ -164,11 +162,14 @@
   };
   const handleDownloadRequest = (event) => {
     downloadReturnFocus = event.currentTarget;
-    if (authSession) { event.preventDefault(); openDownloadChooser(); return; }
     openAccountGate(event);
   };
   downloadButtons.forEach((button) => button.addEventListener('click', handleDownloadRequest));
   downloadModal.querySelectorAll('[data-close-download]').forEach((button) => button.addEventListener('click', closeDownload));
+  downloadModal.querySelectorAll('[data-platform]').forEach((link) => link.addEventListener('click', closeDownload));
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted) { closeDownload(); closeAccountGate(); }
+  });
   downloadModal.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') { event.preventDefault(); closeDownload(); }
     if (event.key === 'Tab') {
@@ -192,23 +193,27 @@
   });
   accountGateSigninForm.addEventListener('submit', async (event) => {
     event.preventDefault();
+    const attempt = gateAttempt;
     const client = await authReady;
+    if (accountGateModal.hidden || attempt !== gateAttempt) return;
     if (!client) { setGateStatus('Account sign-in is temporarily unavailable. Please try again shortly.', 'error'); return; }
     const email = document.querySelector('#gate-signin-email').value.trim();
     const password = document.querySelector('#gate-signin-password').value;
     setGateBusy(accountGateSigninForm, true); setGateStatus('Signing you in…');
     const { data, error } = await authRequest(() => client.auth.signInWithPassword({ email, password }));
     setGateBusy(accountGateSigninForm, false);
+    if (accountGateModal.hidden || attempt !== gateAttempt) return;
     if (error) { setGateStatus(error.message || 'We could not sign you in. Check your email and password.', 'error'); return; }
-    authSession = data.session;
     accountGateSigninForm.reset();
-    if (accountGateModal.hidden || !authSession) return;
+    if (!data.session) { setGateStatus('Please sign in again to continue.', 'error'); return; }
     closeAccountGate();
     openDownloadChooser();
   });
   accountGateSignupForm.addEventListener('submit', async (event) => {
     event.preventDefault();
+    const attempt = gateAttempt;
     const client = await authReady;
+    if (accountGateModal.hidden || attempt !== gateAttempt) return;
     if (!client) { setGateStatus('Account sign-in is temporarily unavailable. Please try again shortly.', 'error'); return; }
     const email = document.querySelector('#gate-signup-email').value.trim();
     const password = document.querySelector('#gate-signup-password').value;
@@ -219,9 +224,9 @@
       options: { emailRedirectTo: authRedirect, data: displayName ? { display_name: displayName } : undefined }
     }));
     setGateBusy(accountGateSignupForm, false);
+    if (accountGateModal.hidden || attempt !== gateAttempt) return;
     if (error) { setGateStatus(error.message || 'We could not create that account. Please try again.', 'error'); return; }
     if (data.session) {
-      authSession = data.session;
       accountGateSignupForm.reset();
       if (accountGateModal.hidden) return;
       closeAccountGate();
