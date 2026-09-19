@@ -6,11 +6,11 @@ on:
       release_tag:
         description: Existing GitHub release tag to update
         required: true
-        default: v1.4.0-beta.3
+        default: v1.4.0-beta.4
       asset_name:
         description: Download filename shown on GitHub
         required: true
-        default: NetVista-Studio-macOS-1.4-Beta-3.zip
+        default: NetVista-Studio-macOS-1.4-Beta-4.zip
 
 permissions:
   contents: write
@@ -86,6 +86,21 @@ jobs:
           echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
           echo "CODESIGN_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
+      - name: Stamp the exact release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+            echo 'Use a version such as v1.4.0-beta.4 or v1.4.0.' >&2
+            exit 1
+          fi
+          CORE_VERSION="${BASH_REMATCH[1]}"
+          /usr/libexec/PlistBuddy -c "Set :NetVistaReleaseTag $RELEASE_TAG" NetVistaStudio-Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $CORE_VERSION" NetVistaStudio-Info.plist
+          CURRENT_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' NetVistaStudio-Info.plist)
+          NEXT_BUILD=$((CURRENT_BUILD + GITHUB_RUN_NUMBER))
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEXT_BUILD" NetVistaStudio-Info.plist
+
       - name: Build and sign with hardened runtime
         run: sh build_app.sh
 
@@ -94,6 +109,7 @@ jobs:
         run: |
           set -euo pipefail
           codesign --verify --deep --strict --verbose=2 'NetVista Studio.app'
+          codesign --verify --strict --verbose=2 'NetVista Studio.app/Contents/Helpers/NetVistaUpdateHelper'
           codesign -dv --verbose=4 'NetVista Studio.app' 2>&1 | grep 'TeamIdentifier='
 
       - name: Submit to Apple notary service

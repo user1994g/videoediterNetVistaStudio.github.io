@@ -35,6 +35,11 @@ def main() -> int:
         if (window.width_spin.value(), window.height_spin.value()) != (15360, 8640):
             return 2
         QTimer.singleShot(250, app.quit)
+    else:
+        from netvista.account_ui import AccountController
+        window.account_controller = AccountController(window)
+        app.aboutToQuit.connect(window.account_controller.stop)
+        QTimer.singleShot(0, window.account_controller.start)
     return app.exec()
 
 

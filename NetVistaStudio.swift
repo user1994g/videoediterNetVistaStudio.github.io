@@ -175,14 +175,18 @@ struct ColorExtras: Codable, Equatable {
     var midtones: ColorWheelAdjustment = .init()
     var gain: ColorWheelAdjustment = .init()
     var cubeLUT: ClipLUTSettings?
+    /// Non-destructive Resolve-style grade nodes. An empty list preserves the
+    /// legacy Beta project behaviour and keeps older project files readable.
+    var gradeNodes: [GradeNode] = []
 
-    init(exposure: Double = 0, tint: Double = 0, highlights: Double = 0, shadows: Double = 0, vibrance: Double = 0, hue: Double = 0, lift: ColorWheelAdjustment = .init(), midtones: ColorWheelAdjustment = .init(), gain: ColorWheelAdjustment = .init(), cubeLUT: ClipLUTSettings? = nil) {
+    init(exposure: Double = 0, tint: Double = 0, highlights: Double = 0, shadows: Double = 0, vibrance: Double = 0, hue: Double = 0, lift: ColorWheelAdjustment = .init(), midtones: ColorWheelAdjustment = .init(), gain: ColorWheelAdjustment = .init(), cubeLUT: ClipLUTSettings? = nil, gradeNodes: [GradeNode] = []) {
         self.exposure = exposure; self.tint = tint; self.highlights = highlights; self.shadows = shadows; self.vibrance = vibrance; self.hue = hue
         self.lift = lift; self.midtones = midtones; self.gain = gain
         self.cubeLUT = cubeLUT
+        self.gradeNodes = gradeNodes
     }
 
-    private enum CodingKeys: String, CodingKey { case exposure, tint, highlights, shadows, vibrance, hue, lift, midtones, gain, cubeLUT }
+    private enum CodingKeys: String, CodingKey { case exposure, tint, highlights, shadows, vibrance, hue, lift, midtones, gain, cubeLUT, gradeNodes }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         exposure = try c.decodeIfPresent(Double.self, forKey: .exposure) ?? 0
@@ -195,6 +199,7 @@ struct ColorExtras: Codable, Equatable {
         midtones = try c.decodeIfPresent(ColorWheelAdjustment.self, forKey: .midtones) ?? .init()
         gain = try c.decodeIfPresent(ColorWheelAdjustment.self, forKey: .gain) ?? .init()
         cubeLUT = try c.decodeIfPresent(ClipLUTSettings.self, forKey: .cubeLUT)
+        gradeNodes = try c.decodeIfPresent([GradeNode].self, forKey: .gradeNodes) ?? []
     }
 }
 
@@ -293,13 +298,14 @@ struct ColorControlValues: Equatable {
     var midtones = ColorWheelAdjustment()
     var gain = ColorWheelAdjustment()
     var cubeLUT: ClipLUTSettings?
+    var gradeNodes: [GradeNode] = []
 
     init() {}
     init(_ clip: TimelineClip) {
         brightness = clip.brightness; contrast = clip.contrast; saturation = clip.saturation; gamma = clip.gamma; temperature = clip.temperature
         exposure = clip.colorExtras.exposure; tint = clip.colorExtras.tint; highlights = clip.colorExtras.highlights; shadows = clip.colorExtras.shadows; vibrance = clip.colorExtras.vibrance; hue = clip.colorExtras.hue
         lift = clip.colorExtras.lift; midtones = clip.colorExtras.midtones; gain = clip.colorExtras.gain
-        cubeLUT = clip.colorExtras.cubeLUT
+        cubeLUT = clip.colorExtras.cubeLUT; gradeNodes = clip.colorExtras.gradeNodes
     }
 }
 
@@ -570,6 +576,7 @@ private final class FlippedWorkspaceDocumentView: NSView {
 
 final class EditorController: NSViewController {
     var onShowStudioHome: (() -> Void)?
+    var onCheckForUpdates: (() -> Void)?
     private var media: [MediaAsset] = []
     private var timelineClips: [TimelineClip] = []
     private var storedScenes: [StoredScene] = []
@@ -657,11 +664,12 @@ final class EditorController: NSViewController {
     private var playerEndObserver: NSObjectProtocol?
     private var activeKeyframeProperty: AnimatableProperty = .opacity
     private var colorStudioWindow: NSWindow?
-    private var colorStudioController: ColorStudioViewController?
+    private var colorStudioController: AdvancedColorStudioViewController?
     private var liftColorControl = ColorWheelAdjustment()
     private var midtoneColorControl = ColorWheelAdjustment()
     private var gainColorControl = ColorWheelAdjustment()
     private var cubeLUTColorControl: ClipLUTSettings?
+    private var advancedGradeNodes: [GradeNode] = []
     private var advancedEffectControl = ClipEffects()
     private var effectsStudioWindow: NSWindow?
     private var effectsStudioController: EffectsStudioViewController?
@@ -673,9 +681,7 @@ final class EditorController: NSViewController {
     private var shareWindow: NSWindow?
     private var sharePanelController: SharePanelViewController?
     private var shareServer: LocalShareServer?
-    private let appUpdateService = AppUpdateService()
     private weak var updateButton: NSButton?
-    private var updateRequestActive = false
     private var exportWorkspaceController: ExportWorkspaceViewController?
     private var activeExportJob: TimelineExportJob?
     private var sceneEditorWindow: SceneEditorWindowController?
@@ -2417,11 +2423,13 @@ final class EditorController: NSViewController {
     @objc private func openColorStudio() {
         let clip = primarySelectedVideo()
         if colorStudioController == nil {
-            let controller = ColorStudioViewController()
+            let controller = AdvancedColorStudioViewController()
             controller.onPreview = { [weak self] values in self?.receiveColorStudioPreview(values) }
             controller.onApply = { [weak self] values in self?.receiveColorStudioApply(values) }
             controller.onCancelPreview = { [weak self] in self?.cancelColorPreview() }
             controller.onRequestSavedValues = { [weak self] in self?.primarySelectedVideo().map(ColorControlValues.init) }
+            controller.onExportLUT = { [weak self] nodes, dimension in self?.exportAdvancedLUT(nodes: nodes, dimension: dimension) }
+            controller.onRequestScopeImage = { [weak self] in self?.currentScopeImage() }
             let window = studioWindow(title: "NetVista Studio — Colour", size: NSSize(width: 1_120, height: 860), controller: controller)
             window.minSize = NSSize(width: 820, height: 620)
             colorStudioController = controller; colorStudioWindow = window
@@ -2430,6 +2438,35 @@ final class EditorController: NSViewController {
         if let window = colorStudioWindow { keepStudioWindowVisible(window) }
         colorStudioWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func exportAdvancedLUT(nodes: [GradeNode], dimension: Int) {
+        let panel = NSSavePanel()
+        panel.title = "Export Grade LUT"
+        panel.nameFieldStringValue = "NetVista Grade \(dimension).cube"
+        panel.allowedContentTypes = [UTType(filenameExtension: "cube")].compactMap { $0 }
+        panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try AdvancedGradeRuntime.exportCube(to: url, dimension: dimension, nodes: nodes)
+            status("Exported \(url.lastPathComponent) — reusable \(dimension)³ grade LUT.")
+        } catch {
+            status("Could not export LUT: \(error.localizedDescription)")
+        }
+    }
+
+    private func currentScopeImage() -> CIImage? {
+        guard let clip = primarySelectedVideo() else { return nil }
+        let asset = AVAsset(url: clip.url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 640, height: 360)
+        let localTime = max(0, timelineView.currentPlayheadTime - clip.timelineStart) + clip.inPoint
+        guard let cgImage = try? generator.copyCGImage(at: CMTime(seconds: localTime, preferredTimescale: 600), actualTime: nil) else { return nil }
+        let source = CIImage(cgImage: cgImage)
+        // Scopes should describe what the editor is showing, including the
+        // current live node grade, rather than an unrelated ungraded source.
+        return NativeTimelineVisualPipeline.applyGrade(to: source, clip: clip, timelineTime: timelineView.currentPlayheadTime)
     }
     @objc private func openEffectsStudio() {
         let clip = primarySelectedVideo()
@@ -2580,6 +2617,7 @@ final class EditorController: NSViewController {
         exposureSlider.doubleValue = values.exposure; tintSlider.doubleValue = values.tint; highlightsSlider.doubleValue = values.highlights; shadowsSlider.doubleValue = values.shadows; vibranceSlider.doubleValue = values.vibrance; hueSlider.doubleValue = values.hue
         liftColorControl = values.lift; midtoneColorControl = values.midtones; gainColorControl = values.gain
         cubeLUTColorControl = values.cubeLUT
+        advancedGradeNodes = values.gradeNodes
     }
     private func setEffectControls(_ values: EffectControlValues) {
         advancedEffectControl = values.effects
@@ -2624,6 +2662,7 @@ final class EditorController: NSViewController {
         values.brightness = brightnessSlider.doubleValue; values.contrast = contrastSlider.doubleValue; values.saturation = saturationSlider.doubleValue; values.gamma = gammaSlider.doubleValue; values.temperature = temperatureSlider.doubleValue
         values.exposure = exposureSlider.doubleValue; values.tint = tintSlider.doubleValue; values.highlights = highlightsSlider.doubleValue; values.shadows = shadowsSlider.doubleValue; values.vibrance = vibranceSlider.doubleValue; values.hue = hueSlider.doubleValue
         values.lift = liftColorControl; values.midtones = midtoneColorControl; values.gain = gainColorControl; values.cubeLUT = cubeLUTColorControl
+        values.gradeNodes = advancedGradeNodes
         return values
     }
     private func currentEffectControlValues() -> EffectControlValues {
@@ -2637,7 +2676,7 @@ final class EditorController: NSViewController {
     private func apply(_ values: ColorControlValues, to clip: inout TimelineClip) {
         clip.brightness = values.brightness; clip.contrast = values.contrast; clip.saturation = values.saturation; clip.gamma = values.gamma; clip.temperature = values.temperature
         clip.colorExtras.exposure = values.exposure; clip.colorExtras.tint = values.tint; clip.colorExtras.highlights = values.highlights; clip.colorExtras.shadows = values.shadows; clip.colorExtras.vibrance = values.vibrance; clip.colorExtras.hue = values.hue
-        clip.colorExtras.lift = values.lift; clip.colorExtras.midtones = values.midtones; clip.colorExtras.gain = values.gain; clip.colorExtras.cubeLUT = values.cubeLUT
+        clip.colorExtras.lift = values.lift; clip.colorExtras.midtones = values.midtones; clip.colorExtras.gain = values.gain; clip.colorExtras.cubeLUT = values.cubeLUT; clip.colorExtras.gradeNodes = values.gradeNodes
     }
     private func apply(_ values: EffectControlValues, to clip: inout TimelineClip) {
         clip.transform = values.transform
@@ -2664,6 +2703,7 @@ final class EditorController: NSViewController {
         clip.colorExtras.exposure = exposureSlider.doubleValue; clip.colorExtras.tint = tintSlider.doubleValue; clip.colorExtras.highlights = highlightsSlider.doubleValue; clip.colorExtras.shadows = shadowsSlider.doubleValue; clip.colorExtras.vibrance = vibranceSlider.doubleValue; clip.colorExtras.hue = hueSlider.doubleValue
         clip.colorExtras.lift = liftColorControl; clip.colorExtras.midtones = midtoneColorControl; clip.colorExtras.gain = gainColorControl
         clip.colorExtras.cubeLUT = cubeLUTColorControl
+        clip.colorExtras.gradeNodes = advancedGradeNodes
     }
     private func applyEffectControls(to clip: inout TimelineClip) {
         advancedEffectControl.blurRadius = blurSlider.doubleValue
@@ -2734,6 +2774,7 @@ final class EditorController: NSViewController {
         exposureSlider.doubleValue = 0; tintSlider.doubleValue = 0; highlightsSlider.doubleValue = 0; shadowsSlider.doubleValue = 0; vibranceSlider.doubleValue = 0; hueSlider.doubleValue = 0
         liftColorControl = .init(); midtoneColorControl = .init(); gainColorControl = .init()
         cubeLUTColorControl = nil
+        advancedGradeNodes = []
         let selectionName = primarySelectedVideo()?.name ?? "No timeline video selected"
         colorStudioController?.load(ColorControlValues(), selectionName: selectionName, isEnabled: primarySelectedVideo() != nil)
         applyColorGrade()
@@ -3155,6 +3196,7 @@ final class EditorController: NSViewController {
         do {
             let project = currentProjectFile()
             try JSONEncoder().encode(project).write(to: url, options: .atomic)
+            NSDocumentController.shared.noteNewRecentDocumentURL(url)
             status("Saved \(url.lastPathComponent), including \(storedScenes.count) editable 3D scene(s).")
             refresh3DProjectUI()
         } catch {
@@ -3193,7 +3235,8 @@ final class EditorController: NSViewController {
         openProject(at: url)
     }
 
-    func openProject(at url: URL) {
+    @discardableResult
+    func openProject(at url: URL, recordRecent: Bool = true) -> Bool {
         do {
             let project = try JSONDecoder().decode(ProjectFile.self, from: Data(contentsOf: url))
             // A listener is deliberately scoped to the project the user chose
@@ -3240,8 +3283,11 @@ final class EditorController: NSViewController {
             projectUndoManager.removeAllActions()
             refresh3DProjectUI()
             status("Opened \(url.lastPathComponent) with \(storedScenes.count) editable 3D scene(s).")
+            if recordRecent { NSDocumentController.shared.noteNewRecentDocumentURL(url) }
+            return true
         } catch {
             status("Could not open: \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -3363,83 +3409,26 @@ final class EditorController: NSViewController {
         panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
     }
 
-    @objc private func checkForUpdates() {
-        guard !updateRequestActive else { return }
-        updateRequestActive = true
-        updateButton?.isEnabled = false
-        status("Checking GitHub for a NetVista Studio update…")
-        appUpdateService.checkForUpdate { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.updateRequestActive = false
-                self.updateButton?.isEnabled = true
-                switch result {
-                case .success(nil):
-                    self.status("NetVista Studio \(self.appUpdateService.currentTag) is up to date.")
-                    let alert = NSAlert()
-                    alert.messageText = "You have the newest beta"
-                    alert.informativeText = "NetVista Studio \(self.appUpdateService.currentTag) is the newest version currently published on GitHub."
-                    alert.addButton(withTitle: "Done")
-                    alert.runModal()
-                case .success(.some(let update)):
-                    self.presentAvailableUpdate(update)
-                case .failure(let error):
-                    self.status("Update check failed: \(error.localizedDescription)")
-                    let alert = NSAlert(error: error)
-                    alert.messageText = "Could not check for updates"
-                    alert.informativeText = "Check your internet connection and try the Update button again.\n\n\(error.localizedDescription)"
-                    alert.runModal()
-                }
-            }
-        }
+    @objc private func checkForUpdates() { onCheckForUpdates?() }
+
+    func setUpdateState(_ title: String, enabled: Bool) {
+        updateButton?.title = title; updateButton?.isEnabled = enabled
     }
 
-    private func presentAvailableUpdate(_ update: NetVistaAvailableUpdate) {
-        status("NetVista Studio \(update.release.tag) is available.")
-        let alert = NSAlert()
-        alert.messageText = "A newer NetVista Studio beta is available"
-        alert.informativeText = "Installed: \(appUpdateService.currentTag)\nAvailable: \(update.release.tag)\n\nThis is beta software. Save your project before installing an update. The app will download the verified macOS package to Downloads; you choose when to quit and replace the current app."
-        alert.addButton(withTitle: "Download update")
-        alert.addButton(withTitle: "View release notes")
-        alert.addButton(withTitle: "Later")
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            downloadUpdate(update)
-        case .alertSecondButtonReturn:
-            NSWorkspace.shared.open(update.release.pageURL)
-        default:
-            break
-        }
+    var updateRestartBlocker: String? {
+        if activeExportJob != nil { return "Wait for your video export to finish, then press Update again." }
+        if sceneEditorWindow?.sceneEditor.isRendering == true { return "Wait for your 3D render to finish before updating." }
+        return nil
     }
 
-    private func downloadUpdate(_ update: NetVistaAvailableUpdate) {
-        guard !updateRequestActive else { return }
-        updateRequestActive = true
-        updateButton?.isEnabled = false
-        status("Downloading \(update.asset.name) to Downloads…")
-        appUpdateService.download(update) { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.updateRequestActive = false
-                self.updateButton?.isEnabled = true
-                switch result {
-                case .success(let url):
-                    self.status("Update downloaded and verified: \(url.lastPathComponent)")
-                    NSWorkspace.shared.activateFileViewerSelecting([url])
-                    let alert = NSAlert()
-                    alert.messageText = "Update ready in Downloads"
-                    alert.informativeText = "\(url.lastPathComponent) passed its size and SHA-256 safety checks. Save your work, quit NetVista Studio, open the ZIP, and move the new app into Applications."
-                    alert.addButton(withTitle: "Done")
-                    alert.runModal()
-                case .failure(let error):
-                    self.status("Update download failed: \(error.localizedDescription)")
-                    let alert = NSAlert(error: error)
-                    alert.messageText = "Could not download the update"
-                    alert.informativeText = error.localizedDescription
-                    alert.runModal()
-                }
-            }
+    func writeUpdateRecovery(to url: URL) throws {
+        var project = currentProjectFile()
+        for index in project.timeline.indices {
+            let id = project.timeline[index].id
+            if let colour = liveColourPreviewValues[id] { apply(colour,to:&project.timeline[index]) }
+            if let effects = liveEffectsPreviewValues[id] { apply(effects,to:&project.timeline[index]) }
         }
+        try JSONEncoder().encode(project).write(to:url,options:.atomic)
     }
 
     private func status(_ text: String) { statusLabel.stringValue = text }
@@ -4120,289 +4109,19 @@ enum ExportService {
 
 extension NSColor { convenience init(hex: String) { let value = Int(hex, radix: 16) ?? 0; self.init(red: CGFloat((value >> 16) & 255) / 255, green: CGFloat((value >> 8) & 255) / 255, blue: CGFloat(value & 255) / 255, alpha: 1) } }
 
-private final class WelcomeHeroImageView: NSImageView {
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        imageAlignment = .alignCenter
-        imageScaling = .scaleNone
-        setAccessibilityLabel("A film and photography editing studio")
-    }
-
-    required init?(coder: NSCoder) { super.init(coder: coder) }
-
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor(hex: "15171B").setFill()
-        bounds.fill()
-        guard let image, image.size.width > 0, image.size.height > 0 else { return }
-        let scale = max(bounds.width / image.size.width, bounds.height / image.size.height)
-        let size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
-        let destination = NSRect(
-            x: bounds.midX - size.width / 2,
-            y: bounds.midY - size.height / 2,
-            width: size.width,
-            height: size.height
-        )
-        image.draw(
-            in: destination,
-            from: NSRect(origin: .zero, size: image.size),
-            operation: .sourceOver,
-            fraction: 1,
-            respectFlipped: true,
-            hints: [.interpolation: NSImageInterpolation.high]
-        )
-    }
-}
-
-private final class WelcomeViewController: NSViewController {
-    var onOpenVideoEditor: (() -> Void)?
-    var onOpenPhotoEditor: (() -> Void)?
-    var onOpenProject: ((URL) -> Void)?
-
-    override func loadView() {
-        view = NSView()
-        view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor(hex: "15171B").cgColor
-
-        let heroImage = WelcomeHeroImageView()
-        heroImage.translatesAutoresizingMaskIntoConstraints = false
-        if let heroURL = Bundle.main.url(forResource: "welcome-studio-hero", withExtension: "png") {
-            heroImage.image = NSImage(contentsOf: heroURL)
-        }
-        view.addSubview(heroImage)
-
-        let imageScrim = NSView()
-        imageScrim.translatesAutoresizingMaskIntoConstraints = false
-        imageScrim.wantsLayer = true
-        imageScrim.layer?.backgroundColor = NSColor(calibratedWhite: 0.025, alpha: 0.53).cgColor
-        view.addSubview(imageScrim)
-
-        let root = NSStackView()
-        root.orientation = .vertical
-        root.spacing = 0
-        root.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(root)
-
-        let topBar = NSStackView()
-        topBar.orientation = .horizontal
-        topBar.alignment = .centerY
-        topBar.spacing = 10
-        topBar.edgeInsets = NSEdgeInsets(top: 0, left: 24, bottom: 0, right: 24)
-        topBar.wantsLayer = true
-        topBar.layer?.backgroundColor = NSColor(hex: "111317").cgColor
-        topBar.heightAnchor.constraint(equalToConstant: 58).isActive = true
-        let brandRow = NSStackView()
-        brandRow.orientation = .horizontal
-        brandRow.alignment = .centerY
-        brandRow.spacing = 9
-        let icon = NSImageView()
-        if let iconURL = Bundle.main.url(forResource: "NetVistaStudio", withExtension: "icns") {
-            icon.image = NSImage(contentsOf: iconURL)
-        } else {
-            icon.image = NSImage(systemSymbolName: "film.stack.fill", accessibilityDescription: "NetVista Studio")
-        }
-        icon.imageScaling = .scaleProportionallyUpOrDown
-        icon.widthAnchor.constraint(equalToConstant: 30).isActive = true
-        icon.heightAnchor.constraint(equalToConstant: 30).isActive = true
-        let brand = NSTextField(labelWithString: "NetVista Studio")
-        brand.font = .systemFont(ofSize: 15, weight: .semibold)
-        brand.textColor = .white
-        brandRow.addArrangedSubview(icon)
-        brandRow.addArrangedSubview(brand)
-        let beta = NSTextField(labelWithString: "BETA")
-        beta.font = .systemFont(ofSize: 9, weight: .bold)
-        beta.textColor = NSColor(hex: "EE6668")
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Beta"
-        let versionLabel = NSTextField(labelWithString: "Version \(version)")
-        versionLabel.font = .systemFont(ofSize: 11)
-        versionLabel.textColor = NSColor(hex: "7E8590")
-        topBar.addArrangedSubview(brandRow)
-        topBar.addArrangedSubview(beta)
-        topBar.addArrangedSubview(NSView())
-        topBar.addArrangedSubview(versionLabel)
-        root.addArrangedSubview(topBar)
-
-        let line = NSBox()
-        line.boxType = .separator
-        root.addArrangedSubview(line)
-
-        let body = NSStackView()
-        body.orientation = .vertical
-        body.alignment = .leading
-        body.spacing = 22
-        body.edgeInsets = NSEdgeInsets(top: 50, left: 64, bottom: 42, right: 64)
-
-        let title = NSTextField(labelWithString: "Welcome to NetVista Studio")
-        title.font = .systemFont(ofSize: 30, weight: .semibold)
-        title.textColor = .white
-        let subtitle = NSTextField(labelWithString: "Start a video or photo edit, or continue an existing project.")
-        subtitle.font = .systemFont(ofSize: 14)
-        subtitle.textColor = NSColor(hex: "969DA8")
-        body.addArrangedSubview(title)
-        body.setCustomSpacing(7, after: title)
-        body.addArrangedSubview(subtitle)
-
-        let columns = NSStackView()
-        columns.orientation = .horizontal
-        columns.alignment = .top
-        columns.spacing = 18
-
-        let startPanel = welcomePanel(width: 560)
-        startPanel.addArrangedSubview(sectionLabel("START"))
-        startPanel.addArrangedSubview(actionRow(symbol: "film", title: "New video project", detail: "Create a project with the full timeline, effects, colour, audio, 3D and export tools.", buttonTitle: "Video Editor", action: #selector(openVideoEditor), primary: true))
-        startPanel.addArrangedSubview(separator())
-        startPanel.addArrangedSubview(actionRow(symbol: "photo.on.rectangle.angled", title: "Edit photos", detail: "Open the separate Photos NetVistaStudio workspace for image adjustments and export.", buttonTitle: "Photo Editor", action: #selector(openPhotoEditor), primary: false))
-        startPanel.addArrangedSubview(separator())
-        startPanel.addArrangedSubview(actionRow(symbol: "folder", title: "Open a project", detail: "Continue a saved video or layered photo project.", buttonTitle: "Choose File…", action: #selector(openProjectPicker), primary: false))
-
-        let informationPanel = welcomePanel(width: 310)
-        informationPanel.addArrangedSubview(sectionLabel("WORKSPACE"))
-        informationPanel.addArrangedSubview(infoRow("rectangle.3.group", "Edit", "Timeline and clip tools"))
-        informationPanel.addArrangedSubview(infoRow("photo", "Photos", "Image adjustments and export"))
-        informationPanel.addArrangedSubview(infoRow("diamond", "Effects", "Keyframes and compositing"))
-        informationPanel.addArrangedSubview(infoRow("camera.filters", "Colour", "Grading and LUT controls"))
-        informationPanel.addArrangedSubview(infoRow("cube", "3D Scene", "Models, animation and cameras"))
-        informationPanel.addArrangedSubview(separator())
-        let privacy = NSTextField(wrappingLabelWithString: "Your projects stay on this Mac unless you choose Share or Export.")
-        privacy.font = .systemFont(ofSize: 11)
-        privacy.textColor = NSColor(hex: "7E8590")
-        privacy.maximumNumberOfLines = 2
-        informationPanel.addArrangedSubview(privacy)
-
-        columns.addArrangedSubview(startPanel)
-        columns.addArrangedSubview(informationPanel)
-        body.addArrangedSubview(columns)
-        root.addArrangedSubview(body)
-        root.addArrangedSubview(NSView())
-
-        NSLayoutConstraint.activate([
-            heroImage.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            heroImage.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            heroImage.topAnchor.constraint(equalTo: view.topAnchor),
-            heroImage.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            imageScrim.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            imageScrim.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            imageScrim.topAnchor.constraint(equalTo: view.topAnchor),
-            imageScrim.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            root.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            root.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            root.topAnchor.constraint(equalTo: view.topAnchor),
-            root.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            body.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-            columns.widthAnchor.constraint(equalToConstant: 888)
-        ])
-    }
-
-    @objc private func openVideoEditor() { onOpenVideoEditor?() }
-    @objc private func openPhotoEditor() { onOpenPhotoEditor?() }
-
-    @objc private func openProjectPicker() {
-        let panel = NSOpenPanel()
-        panel.title = "Open NetVista Studio Project"
-        panel.prompt = "Open"
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = ["netvistastudio", "netvistaphoto"].compactMap { UTType(filenameExtension: $0) }
-        let completion: (NSApplication.ModalResponse) -> Void = { [weak self, weak panel] response in
-            guard response == .OK, let url = panel?.url else { return }
-            self?.onOpenProject?(url)
-        }
-        if let window = view.window { panel.beginSheetModal(for: window, completionHandler: completion) }
-        else { completion(panel.runModal()) }
-    }
-
-    private func welcomePanel(width: CGFloat) -> NSStackView {
-        let panel = NSStackView()
-        panel.orientation = .vertical
-        panel.alignment = .width
-        panel.spacing = 16
-        panel.edgeInsets = NSEdgeInsets(top: 22, left: 22, bottom: 22, right: 22)
-        panel.wantsLayer = true
-        panel.layer?.backgroundColor = NSColor(hex: "1C1F24").withAlphaComponent(0.94).cgColor
-        panel.layer?.cornerRadius = 8
-        panel.layer?.borderWidth = 1
-        panel.layer?.borderColor = NSColor(hex: "2B2F36").cgColor
-        panel.widthAnchor.constraint(equalToConstant: width).isActive = true
-        return panel
-    }
-
-    private func sectionLabel(_ title: String) -> NSTextField {
-        let label = NSTextField(labelWithString: title)
-        label.font = .systemFont(ofSize: 10, weight: .semibold)
-        label.textColor = NSColor(hex: "8B929D")
-        label.alignment = .left
-        return label
-    }
-
-    private func actionRow(symbol: String, title: String, detail: String, buttonTitle: String, action: Selector, primary: Bool) -> NSView {
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 14
-        let image = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: title) ?? NSImage())
-        image.contentTintColor = primary ? .systemBlue : NSColor(hex: "A2A8B1")
-        image.widthAnchor.constraint(equalToConstant: 25).isActive = true
-        image.heightAnchor.constraint(equalToConstant: 25).isActive = true
-        let copy = NSStackView()
-        copy.orientation = .vertical
-        copy.alignment = .leading
-        copy.spacing = 4
-        let heading = NSTextField(labelWithString: title)
-        heading.font = .systemFont(ofSize: 15, weight: .semibold)
-        heading.textColor = .white
-        let explanation = NSTextField(wrappingLabelWithString: detail)
-        explanation.font = .systemFont(ofSize: 11)
-        explanation.textColor = NSColor(hex: "9299A4")
-        explanation.maximumNumberOfLines = 2
-        explanation.widthAnchor.constraint(equalToConstant: 300).isActive = true
-        copy.addArrangedSubview(heading)
-        copy.addArrangedSubview(explanation)
-        let button = NSButton(title: buttonTitle, target: self, action: action)
-        button.bezelStyle = .rounded
-        button.font = .systemFont(ofSize: 12, weight: .medium)
-        button.widthAnchor.constraint(equalToConstant: 108).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 31).isActive = true
-        if primary { button.keyEquivalent = "\r"; button.contentTintColor = .systemBlue }
-        row.addArrangedSubview(image)
-        row.addArrangedSubview(copy)
-        row.addArrangedSubview(NSView())
-        row.addArrangedSubview(button)
-        return row
-    }
-
-    private func infoRow(_ symbol: String, _ title: String, _ detail: String) -> NSView {
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 10
-        let image = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: title) ?? NSImage())
-        image.contentTintColor = NSColor(hex: "9097A2")
-        image.widthAnchor.constraint(equalToConstant: 17).isActive = true
-        let copy = NSStackView()
-        copy.orientation = .vertical
-        copy.alignment = .leading
-        copy.spacing = 1
-        let label = NSTextField(labelWithString: title)
-        label.font = .systemFont(ofSize: 12, weight: .medium)
-        label.textColor = NSColor(hex: "D4D7DC")
-        let secondary = NSTextField(labelWithString: detail)
-        secondary.font = .systemFont(ofSize: 10)
-        secondary.textColor = NSColor(hex: "747B86")
-        copy.addArrangedSubview(label)
-        copy.addArrangedSubview(secondary)
-        row.addArrangedSubview(image)
-        row.addArrangedSubview(copy)
-        return row
-    }
-
-    private func separator() -> NSBox { let box = NSBox(); box.boxType = .separator; return box }
-}
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let account = StudioAccount()
+    private var accountWindow: StudioAccountWindow?
+    private let updater = AppUpdateCoordinator()
+    private var updateMenuItem: NSMenuItem?
     private var window: NSWindow?
     private var editor: EditorController?
     private var videoWindow: NSWindow?
     private var photoEditor: PhotoEditorViewController?
     private var photoWindow: NSWindow?
+    private var gameEditors: [GameEditorViewController] = []
+    private var gameWindows: [NSWindow] = []
     private var welcome: WelcomeViewController?
     private var pendingOpenURLs: [URL] = []
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -4417,18 +4136,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.messageText = "Mods are unavailable"
             alert.runModal()
         }
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1160, height: 720), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        let visibleSize = NSScreen.main?.visibleFrame.size ?? NSSize(width:1320,height:980)
+        let homeSize = NSSize(width:min(1240,max(900,visibleSize.width-80)),height:min(880,max(600,visibleSize.height-100)))
+        let window = NSWindow(contentRect: NSRect(origin:.zero,size:homeSize), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         self.window = window
         window.title = "Welcome to NetVista Studio"
         window.minSize = NSSize(width: 900, height: 600)
         window.isReleasedWhenClosed = false
         let welcome = WelcomeViewController()
+        welcome.onCheckForUpdates = { [weak self] in self?.updater.check() }
+        welcome.onOpenAccount = { [weak self] in self?.showAccount() }
         welcome.onOpenVideoEditor = { [weak self] in self?.showVideoEditor() }
         welcome.onOpenPhotoEditor = { [weak self] in self?.showPhotoEditor() }
+        welcome.onOpenGameMaker = { [weak self] in self?.chooseGameType() }
         welcome.onOpenProject = { [weak self] url in
             guard let self else { return }
-            if PhotoEditorViewController.supportsPhotoProject(url) { self.showPhotoEditor().openPhotoProject(url) }
-            else { self.route([url], to: self.showVideoEditor()) }
+            self.handleOpenURLs([url])
         }
         self.welcome = welcome
         window.contentViewController = welcome
@@ -4437,6 +4160,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             handleOpenURLs(pendingOpenURLs)
             pendingOpenURLs.removeAll()
         }
+        configureUpdates()
+        restoreAfterUpdate()
+        updater.start()
+        account.onChange = { [weak self] in
+            guard let self else { return }
+            self.welcome?.setAccountState(self.account.session != nil ? "Account" : "Sign in", detail: self.account.status)
+            self.accountWindow?.refresh()
+        }
+        account.onInvalidated = { [weak self] in self?.showAccount() }
+        account.start()
+        if account.session == nil { showAccount() }
     }
 
     private func installMainMenu() {
@@ -4446,6 +4180,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu(title: "NetVista Studio")
         appItem.submenu = appMenu
         appMenu.addItem(withTitle: "About NetVista Studio", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let accountItem = appMenu.addItem(withTitle: "Your NetVista Account…", action: #selector(showAccount), keyEquivalent: "")
+        accountItem.target = self
+        let updateItem = appMenu.addItem(withTitle:"Check for Updates…",action:#selector(checkForUpdatesFromMenu),keyEquivalent:"")
+        updateItem.target = self; updateMenuItem = updateItem
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide NetVista Studio", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let hideOthers = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
@@ -4465,6 +4203,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         videoItem.target = self
         let photoItem = studioMenu.addItem(withTitle: "Photo Editor", action: #selector(showPhotoEditorFromMenu), keyEquivalent: "2")
         photoItem.target = self
+        let gameItem = studioMenu.addItem(withTitle: "Game Maker…", action: #selector(chooseGameType), keyEquivalent: "3")
+        gameItem.target = self
         main.addItem(studioItem)
 
         let windowItem = NSMenuItem()
@@ -4482,21 +4222,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showStudioHomeFromMenu() { showStudioHome() }
     @objc private func showVideoEditorFromMenu() { _ = showVideoEditor() }
     @objc private func showPhotoEditorFromMenu() { _ = showPhotoEditor() }
+    @objc private func checkForUpdatesFromMenu() { updater.check() }
+    @objc private func showAccount() {
+        if accountWindow == nil { accountWindow = StudioAccountWindow(account: account) }
+        accountWindow?.present()
+    }
+    func applicationDidBecomeActive(_ notification: Notification) { account.checkIfDue() }
     func application(_ application: NSApplication, open urls: [URL]) {
         if window != nil { handleOpenURLs(urls) }
         else { pendingOpenURLs.append(contentsOf: urls) }
     }
 
     private func handleOpenURLs(_ urls: [URL]) {
+        for url in urls where url.pathExtension.lowercased() == "netvistagame" {
+            if let existing = gameEditors.first(where: { $0.projectURL?.standardizedFileURL == url.standardizedFileURL }) {
+                existing.view.window?.makeKeyAndOrderFront(nil); continue
+            }
+            do {
+                showGameEditor(try GameProject.open(url), url: url)
+                NSDocumentController.shared.noteNewRecentDocumentURL(url)
+            } catch { NSAlert(error: error).runModal() }
+        }
         let photoProjects = urls.filter(PhotoEditorViewController.supportsPhotoProject)
         let photos = urls.filter(PhotoEditorViewController.supportsImage)
-        let editorFiles = urls.filter { !PhotoEditorViewController.supportsImage($0) && !PhotoEditorViewController.supportsPhotoProject($0) }
+        let editorFiles = urls.filter { $0.pathExtension.lowercased() != "netvistagame" && !PhotoEditorViewController.supportsImage($0) && !PhotoEditorViewController.supportsPhotoProject($0) }
         if !photoProjects.isEmpty {
             let photoEditor = showPhotoEditor()
-            photoProjects.forEach(photoEditor.openPhotoProject)
+            photoProjects.forEach { photoEditor.openPhotoProject($0) }
         }
         if !photos.isEmpty { showPhotoEditor().openImages(photos) }
         if !editorFiles.isEmpty { route(editorFiles, to: showVideoEditor()) }
+    }
+
+    @objc private func chooseGameType() {
+        let alert = NSAlert()
+        alert.messageText = "What kind of game do you want to make?"
+        alert.informativeText = "Start with an empty scene. Add your own sprites or 3D OBJ models, connect behaviour blocks, and press Play. Save your project or export it as a Three.js or Python game."
+        alert.addButton(withTitle: "2D Game"); alert.addButton(withTitle: "3D Game"); alert.addButton(withTitle: "Cancel")
+        alert.buttons[2].keyEquivalent = "\u{1b}"
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            if response == .alertFirstButtonReturn { self?.showGameEditor(.starter(.twoD)) }
+            else if response == .alertSecondButtonReturn { self?.showGameEditor(.starter(.threeD)) }
+        }
+        if let host = NSApp.keyWindow ?? window { alert.beginSheetModal(for: host, completionHandler: completion) }
+        else { completion(alert.runModal()) }
+    }
+    private func showGameEditor(_ project: GameProject, url: URL? = nil) {
+        let controller = GameEditorViewController(project: project, url: url)
+        let gameWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 840), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        gameWindow.contentMinSize = NSSize(width: 1100, height: 680)
+        gameWindow.isReleasedWhenClosed = false; gameWindow.contentViewController = controller
+        controller.onShowStudioHome = { [weak self] in self?.showStudioHome() }
+        controller.onClose = { [weak self, weak controller, weak gameWindow] in
+            self?.gameEditors.removeAll { $0 === controller }; self?.gameWindows.removeAll { $0 === gameWindow }
+        }
+        gameEditors.append(controller); gameWindows.append(gameWindow)
+        gameWindow.center(); gameWindow.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
 
     @discardableResult
@@ -4548,6 +4329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         videoWindow.center()
         controller.onShowStudioHome = { [weak self] in self?.showStudioHome() }
         self.editor = controller
+        controller.onCheckForUpdates = { [weak self] in self?.updater.check() }
         self.videoWindow = videoWindow
         videoWindow.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -4555,6 +4337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showStudioHome() {
+        welcome?.refreshRecentProjects()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -4571,6 +4354,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 editor.addMedia([url], addToTimeline: true)
             }
         }
+    }
+    private func configureUpdates() {
+        updater.hostWindow = { [weak self] in NSApp.keyWindow ?? self?.window }
+        updater.onStateChanged = { [weak self] title, enabled in
+            self?.welcome?.setUpdateState(title,enabled:enabled)
+            self?.editor?.setUpdateState(title,enabled:enabled)
+            self?.updateMenuItem?.isEnabled = enabled
+        }
+        updater.canRestart = { [weak self] in
+            self?.editor?.updateRestartBlocker ?? self?.photoEditor?.updateRestartBlocker ?? (self?.gameEditors.isEmpty == false ? "Close your Game Maker windows before updating. You will be asked to save your game files." : nil)
+        }
+        updater.prepareRecovery = { [weak self] in
+            guard let self else { throw NetVistaUpdateError.invalidResponse }
+            // Commit any currently edited text field before serializing.
+            for window in [self.videoWindow,self.photoWindow] { window?.makeFirstResponder(nil) }
+            var recovery = NetVistaUpdateRecovery(id:UUID())
+            try FileManager.default.createDirectory(at:recovery.directory,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
+            if let editor = self.editor {
+                try editor.writeUpdateRecovery(to:recovery.videoURL); recovery.video = true
+            }
+            if let photo = try self.photoEditor?.writeUpdateRecovery(to:recovery.photoURL) {
+                recovery.photo = true; recovery.photoOriginalURL = photo.0; recovery.photoName = photo.1
+            }
+            try recovery.write()
+            return recovery.manifestURL
+        }
+    }
+    private func restoreAfterUpdate() {
+        let args = CommandLine.arguments
+        func argument(_ key: String) -> URL? {
+            guard let index = args.firstIndex(of:key), args.indices.contains(index+1) else { return nil }
+            return URL(fileURLWithPath:args[index+1]).standardizedFileURL
+        }
+        do {
+            var plan: NetVistaInstallPlan?
+            if let planURL = argument("--netvista-update-job") {
+                let loaded = try JSONDecoder().decode(NetVistaInstallPlan.self,from:Data(contentsOf:planURL))
+                try loaded.validatePaths()
+                guard loaded.planURL == planURL,
+                      loaded.target.path == Bundle.main.bundleURL.standardizedFileURL.resolvingSymlinksInPath().path,
+                      loaded.expectedTag == Bundle.main.object(forInfoDictionaryKey:"NetVistaReleaseTag") as? String else { throw NetVistaUpdateError.invalidResponse }
+                plan = loaded
+            }
+            if let manifest = plan?.recoveryManifest ?? argument("--netvista-update-recovery") {
+                let recovery = try NetVistaUpdateRecovery.load(manifest)
+                if recovery.video {
+                    guard showVideoEditor().openProject(at:recovery.videoURL,recordRecent:false) else {
+                        throw NetVistaUpdateError.unsafePackage("Your video recovery copy remains at \(recovery.videoURL.path).")
+                    }
+                }
+                if recovery.photo {
+                    try showPhotoEditor().restoreUpdateRecovery(from:recovery.photoURL,originalURL:recovery.photoOriginalURL,name:recovery.photoName ?? "Untitled Photo")
+                }
+            }
+            // Only confirm after the new process and its project windows initialize.
+            if let plan { try plan.id.uuidString.write(to:plan.receipt,atomically:true,encoding:.utf8) }
+        } catch {
+            let alert = NSAlert(); alert.messageText = "Could not restore the update session"
+            alert.informativeText = error.localizedDescription; alert.addButton(withTitle:"OK")
+            alert.runModal()
+        }
+    }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard updater.mayQuit() else { return .terminateCancel }
+        for game in gameEditors where !game.confirmClose() { return .terminateCancel }
+        return .terminateNow
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }

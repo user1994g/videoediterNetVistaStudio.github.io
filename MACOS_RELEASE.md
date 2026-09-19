@@ -28,6 +28,12 @@ Treat the certificate, password, and API key as private credentials. Never commi
 
 The workflow only replaces the public download after Apple accepts the submission and `spctl` accepts the stapled app.
 
+The release workflow stamps the exact release tag into the bundle before signing.
+Keep the bundled update helper signed and notarize the complete app. Newer releases
+with `NetVistaInPlaceUpdaterVersion` support installation into the existing app
+location and restart recovery; see [UPDATING.md](UPDATING.md). Publish a new
+increasing tag when changing the app so installed clients can discover it.
+
 ## Local development
 
 `sh build_app.sh` continues to create an ad-hoc signed local build when `CODESIGN_IDENTITY` is not set. To create a Developer ID build locally after installing the certificate:

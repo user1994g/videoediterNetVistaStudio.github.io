@@ -345,6 +345,9 @@ public struct SceneObjectRecord: Codable, Equatable, Identifiable {
     public var chromaKey: SceneChromaKey
     public var transformKeyframes: [SceneTransformKeyframe]
     public var bonePoseTracks: [SceneBonePoseTrack]
+    /// Optional non-destructive authored rig. It is nil for legacy scenes and
+    /// for imported models that have not been bound yet.
+    public var authoredRig: SceneAuthoredRig?
     public var physics: ScenePhysicsSettings
 
     public init(
@@ -361,6 +364,7 @@ public struct SceneObjectRecord: Codable, Equatable, Identifiable {
         chromaKey: SceneChromaKey = .init(),
         transformKeyframes: [SceneTransformKeyframe] = [],
         bonePoseTracks: [SceneBonePoseTrack] = [],
+        authoredRig: SceneAuthoredRig? = nil,
         physics: ScenePhysicsSettings = .init()
     ) {
         self.id = id
@@ -376,12 +380,13 @@ public struct SceneObjectRecord: Codable, Equatable, Identifiable {
         self.chromaKey = chromaKey
         self.transformKeyframes = transformKeyframes
         self.bonePoseTracks = bonePoseTracks
+        self.authoredRig = authoredRig
         self.physics = physics
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, kind, position, rotation, scale, color, mediaURL, modelURL
-        case mediaAspectRatio, chromaKey, transformKeyframes, bonePoseTracks, physics
+        case mediaAspectRatio, chromaKey, transformKeyframes, bonePoseTracks, authoredRig, physics
     }
 
     public init(from decoder: Decoder) throws {
@@ -399,6 +404,7 @@ public struct SceneObjectRecord: Codable, Equatable, Identifiable {
         chromaKey = try c.decodeIfPresent(SceneChromaKey.self, forKey: .chromaKey) ?? .init()
         transformKeyframes = try c.decodeIfPresent([SceneTransformKeyframe].self, forKey: .transformKeyframes) ?? []
         bonePoseTracks = try c.decodeIfPresent([SceneBonePoseTrack].self, forKey: .bonePoseTracks) ?? []
+        authoredRig = try c.decodeIfPresent(SceneAuthoredRig.self, forKey: .authoredRig)
         physics = try c.decodeIfPresent(ScenePhysicsSettings.self, forKey: .physics) ?? .init()
     }
 }
@@ -511,10 +517,43 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
     private var cameraNode = SCNNode()
     private var ambientNode = SCNNode()
     private var keyLightNode = SCNNode()
-    private var isRendering = false
+    private(set) var isRendering = false
     private var scenePlayTimer: Timer?
     private var currentSceneTime: Double = 0
     private var isScenePlaying = false
+    private let sceneHistory = UndoManager()
+    public override var undoManager: UndoManager? { sceneHistory }
+    private let inspectorTabs = NSSegmentedControl(labels: ["Object", "Rig", "World"], trackingMode: .selectOne, target: nil, action: nil)
+    private var inspectorSections: [[NSView]] = [[], [], []]
+    private let autoKey = NSButton(checkboxWithTitle: "Auto key", target: nil, action: nil)
+    private let viewportTool = NSSegmentedControl(labels: ["Orbit", "Move", "Rotate", "Scale"], trackingMode: .selectOne, target: nil, action: nil)
+    private var dragStart: SceneTransform?
+    private var dragDocument: NetVistaSceneDocument?
+    private var playbackOrigin: TimeInterval = 0
+    private var playbackStartTime: Double = 0
+    private let loopPlayback = NSButton(checkboxWithTitle: "Loop", target: nil, action: nil)
+    private let shotPreview = NSButton(checkboxWithTitle: "Camera preview", target: nil, action: nil)
+    private var navigationBeforePreview: SCNNode?
+    private var gizmo: SCNNode?
+    private var axisPixels = CGPoint(x: 1, y: 0)
+
+    private func recordUndo(_ snapshot: NetVistaSceneDocument, name: String) {
+        sceneHistory.registerUndo(withTarget: self) { target in
+            let current = target.document
+            target.recordUndo(current, name: name)
+            target.document = snapshot
+            if !snapshot.objects.contains(where: { $0.id == target.selectedObjectID }) { target.selectedObjectID = snapshot.objects.first?.id }
+            target.rebuildRuntimeScene()
+            target.refreshControlsFromDocument()
+        }
+        sceneHistory.setActionName(name)
+    }
+
+    @objc private func undoScene(_ sender: Any?) { sceneHistory.undo() }
+    @objc private func redoScene(_ sender: Any?) { sceneHistory.redo() }
+    @objc private func inspectorTabChanged(_ sender: Any?) {
+        for (index, views) in inspectorSections.enumerated() { views.forEach { $0.isHidden = index != inspectorTabs.selectedSegment } }
+    }
 
     public convenience init(onRenderedClip: ((SceneRenderedClip) -> Void)?) {
         self.init(nibName: nil, bundle: nil)
@@ -545,6 +584,7 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
 
     public func replaceDocument(_ newDocument: NetVistaSceneDocument, sourceURL: URL? = nil) {
         if !isViewLoaded { _ = view }
+        sceneHistory.removeAllActions()
         document = newDocument
         document.formatVersion = 2
         documentURL = sourceURL
@@ -583,6 +623,7 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
             throw SceneEditorError.unsupportedDocumentVersion(loaded.formatVersion)
         }
         loaded.formatVersion = 2
+        sceneHistory.removeAllActions()
         document = loaded
         documentURL = url
         selectedObjectID = nil
@@ -771,6 +812,11 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
         let delete = toolbarButton("Delete Selected", #selector(deleteSelected(_:)))
         delete.contentTintColor = .systemRed
         panel.addArrangedSubview(delete)
+        panel.addArrangedSubview(toolbarButton("Duplicate Selected", #selector(duplicateSelected(_:))))
+        let history = NSStackView()
+        history.addArrangedSubview(toolbarButton("Undo", #selector(undoScene(_:))))
+        history.addArrangedSubview(toolbarButton("Redo", #selector(redoScene(_:))))
+        panel.addArrangedSubview(history)
         return panel
     }
 
@@ -787,22 +833,49 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
         sceneView.onNodePicked = { [weak self] node in self?.selectRuntimeNode(node) }
         sceneView.onMediaDropped = { [weak self] url in self?.addMediaPlane(url: url) }
         sceneView.onModelDropped = { [weak self] url in self?.addImportedModel(url: url) }
+        sceneView.onDelete = { [weak self] in self?.deleteSelected(nil) }
+        sceneView.onFocus = { [weak self] in self?.focusSelected(nil) }
+        sceneView.onPlay = { [weak self] in self?.toggleScenePlayback(nil) }
+        sceneView.onTransformDrag = { [weak self] delta, phase in self?.transformDrag(delta, phase: phase) }
         holder.addSubview(sceneView)
         NSLayoutConstraint.activate([
             sceneView.leadingAnchor.constraint(equalTo: holder.leadingAnchor),
             sceneView.trailingAnchor.constraint(equalTo: holder.trailingAnchor),
-            sceneView.topAnchor.constraint(equalTo: holder.topAnchor),
-            sceneView.bottomAnchor.constraint(equalTo: holder.bottomAnchor)
+            sceneView.topAnchor.constraint(equalTo: holder.topAnchor, constant: 38),
+            sceneView.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -44)
         ])
 
-        let help = NSTextField(labelWithString: "Drag to orbit  •  Two-finger drag to pan  •  Scroll to zoom  •  Drop a movie or 3D model to add it")
+        let tools = NSStackView(); tools.orientation = .horizontal; tools.spacing = 8; tools.alignment = .centerY
+        tools.translatesAutoresizingMaskIntoConstraints = false
+        viewportTool.selectedSegment = 0; viewportTool.target = self; viewportTool.action = #selector(viewportToolChanged(_:))
+        tools.addArrangedSubview(viewportTool)
+        tools.addArrangedSubview(toolbarButton("Frame selected · F", #selector(focusSelected(_:))))
+        tools.addArrangedSubview(autoKey)
+        holder.addSubview(tools)
+        NSLayoutConstraint.activate([tools.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 10), tools.topAnchor.constraint(equalTo: holder.topAnchor, constant: 5), tools.heightAnchor.constraint(equalToConstant: 28)])
+
+        let transport = NSStackView()
+        transport.orientation = .horizontal; transport.alignment = .centerY; transport.spacing = 6
+        transport.translatesAutoresizingMaskIntoConstraints = false
+        scenePlayButton.target = self; scenePlayButton.action = #selector(toggleScenePlayback(_:)); scenePlayButton.bezelStyle = .texturedRounded
+        transport.addArrangedSubview(toolbarButton("⏮", #selector(rewindScene(_:))))
+        transport.addArrangedSubview(toolbarButton("‹ Frame", #selector(previousSceneFrame(_:))))
+        transport.addArrangedSubview(scenePlayButton)
+        transport.addArrangedSubview(toolbarButton("Stop", #selector(stopAndRewindScene(_:))))
+        transport.addArrangedSubview(toolbarButton("Frame ›", #selector(nextSceneFrame(_:))))
+        transport.addArrangedSubview(loopPlayback)
+        shotPreview.target = self; shotPreview.action = #selector(toggleShotPreview(_:))
+        transport.addArrangedSubview(shotPreview)
+        holder.addSubview(transport)
+        NSLayoutConstraint.activate([transport.centerXAnchor.constraint(equalTo: holder.centerXAnchor), transport.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -7)])
+        let help = NSTextField(labelWithString: "X red · Y green · Z blue   |   Drag a handle · Space play/pause · F frame")
         help.textColor = NSColor.white.withAlphaComponent(0.7)
         help.font = .systemFont(ofSize: 11, weight: .medium)
         help.translatesAutoresizingMaskIntoConstraints = false
         holder.addSubview(help)
         NSLayoutConstraint.activate([
             help.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 14),
-            help.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -12)
+            help.bottomAnchor.constraint(equalTo: sceneView.bottomAnchor, constant: -10)
         ])
         return holder
     }
@@ -815,6 +888,10 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
         documentView.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 18, right: 12)
         documentView.wantsLayer = true
         documentView.layer?.backgroundColor = NSColor(calibratedWhite: 0.085, alpha: 1).cgColor
+
+        inspectorTabs.selectedSegment = 0; inspectorTabs.target = self; inspectorTabs.action = #selector(inspectorTabChanged(_:))
+        documentView.addArrangedSubview(inspectorTabs)
+        let objectSectionStart = documentView.arrangedSubviews.count
 
         documentView.addArrangedSubview(sectionLabel("OBJECT INSPECTOR"))
         nameField.placeholderString = "Select an object"
@@ -832,6 +909,7 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
             label.font = .systemFont(ofSize: 10)
             label.widthAnchor.constraint(equalToConstant: 48).isActive = true
             row.addArrangedSubview(label)
+            var firstAxisField: NSTextField?
             for key in group.1 {
                 let field = NSTextField(string: key.defaultText)
                 field.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
@@ -839,8 +917,16 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
                 field.target = self
                 field.action = #selector(applyObjectInspector(_:))
                 field.toolTip = key.toolTip
-                transformFields[key] = field
                 row.addArrangedSubview(field)
+                field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+                field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                field.widthAnchor.constraint(greaterThanOrEqualToConstant: 42).isActive = true
+                if let first = firstAxisField {
+                    field.widthAnchor.constraint(equalTo: first.widthAnchor).isActive = true
+                } else {
+                    firstAxisField = field
+                }
+                transformFields[key] = field
             }
             documentView.addArrangedSubview(row)
         }
@@ -884,7 +970,12 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
         documentView.addArrangedSubview(labeledRow("Bounce", physicsRestitution))
         documentView.addArrangedSubview(labeledRow("Friction", physicsFriction))
 
-        documentView.addArrangedSubview(subsectionLabel("Rig Pose · Imported Rigs"))
+        inspectorSections[0] = Array(documentView.arrangedSubviews.dropFirst(objectSectionStart))
+        let rigSectionStart = documentView.arrangedSubviews.count
+        documentView.addArrangedSubview(sectionLabel("SKELETON & ANIMATION"))
+        let rigHelp = NSTextField(wrappingLabelWithString: "Select a joint, set its rotation, then add a Bone Key. Auto key records rotation edits at the current time.")
+        rigHelp.font = .systemFont(ofSize: 11); rigHelp.textColor = .secondaryLabelColor
+        documentView.addArrangedSubview(rigHelp)
         bonePopup.target = self
         bonePopup.action = #selector(selectBone(_:))
         documentView.addArrangedSubview(labeledRow("Bone", bonePopup))
@@ -903,8 +994,23 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
             field.action = #selector(applyBonePose(_:))
             field.toolTip = tip
             poseRow.addArrangedSubview(field)
+            field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            field.widthAnchor.constraint(greaterThanOrEqualToConstant: 42).isActive = true
+            if field !== boneRotationX {
+                field.widthAnchor.constraint(equalTo: boneRotationX.widthAnchor).isActive = true
+            }
         }
         documentView.addArrangedSubview(poseRow)
+        let rigButton = toolbarButton("Create / bind humanoid rig", #selector(createHumanoidRig(_:)))
+        rigButton.toolTip = "Create a starter skeleton, bind it to the selected model, then pose body parts with Bone Keyframes."
+        rigButton.contentTintColor = .systemOrange
+        documentView.addArrangedSubview(rigButton)
+        documentView.addArrangedSubview(toolbarButton("Key whole pose", #selector(keyWholePose(_:))))
+        documentView.addArrangedSubview(toolbarButton("Previous key", #selector(previousSceneKey(_:))))
+        documentView.addArrangedSubview(toolbarButton("Next key", #selector(nextSceneKey(_:))))
+        inspectorSections[1] = Array(documentView.arrangedSubviews.dropFirst(rigSectionStart))
+        let worldSectionStart = documentView.arrangedSubviews.count
 
         documentView.addArrangedSubview(separator(horizontal: true))
         documentView.addArrangedSubview(sectionLabel("SCENE & LIGHTING"))
@@ -943,6 +1049,8 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
         resolutionPopup.addItems(withTitles: ["Preview · 1280 × 720", "HD · 1920 × 1080", "4K · 3840 × 2160"])
         resolutionPopup.selectItem(at: 1)
         documentView.addArrangedSubview(labeledRow("Resolution", resolutionPopup))
+        inspectorSections[2] = Array(documentView.arrangedSubviews.dropFirst(worldSectionStart))
+        inspectorTabChanged(nil)
         documentView.addArrangedSubview(NSView())
 
         let scroll = NSScrollView()
@@ -963,52 +1071,52 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
 
     private func makeSceneTimelinePanel() -> NSView {
         let panel = NSStackView()
-        panel.orientation = .horizontal
-        panel.alignment = .centerY
+        panel.orientation = .vertical
+        panel.alignment = .width
         panel.spacing = 8
         panel.edgeInsets = NSEdgeInsets(top: 7, left: 10, bottom: 7, right: 10)
         panel.wantsLayer = true
         panel.layer?.backgroundColor = NSColor(calibratedWhite: 0.095, alpha: 1).cgColor
 
-        scenePlayButton.target = self
-        scenePlayButton.action = #selector(toggleScenePlayback(_:))
-        scenePlayButton.bezelStyle = .texturedRounded
-        panel.addArrangedSubview(scenePlayButton)
+        let actions = NSStackView()
+        actions.orientation = .horizontal; actions.alignment = .centerY; actions.spacing = 8
+        actions.addArrangedSubview(sectionLabel("ANIMATION"))
 
         let cameraKey = toolbarButton("◆ Camera Key", #selector(addCameraKeyframe(_:)))
         cameraKey.toolTip = "Store the current camera position and target at the playhead"
-        panel.addArrangedSubview(cameraKey)
+        actions.addArrangedSubview(cameraKey)
         let objectKey = toolbarButton("◆ Object Key", #selector(addObjectKeyframe(_:)))
         objectKey.toolTip = "Store the selected object's transform at the playhead"
-        panel.addArrangedSubview(objectKey)
+        actions.addArrangedSubview(objectKey)
         let poseKey = toolbarButton("◆ Bone Key", #selector(addBoneKeyframe(_:)))
         poseKey.toolTip = "Store the selected bone pose at the playhead"
-        panel.addArrangedSubview(poseKey)
+        actions.addArrangedSubview(poseKey)
         let remove = toolbarButton("Remove Key", #selector(removeKeyframeAtPlayhead(_:)))
         remove.contentTintColor = .systemRed
-        panel.addArrangedSubview(remove)
+        actions.addArrangedSubview(remove)
 
         keyInterpolationPopup.addItems(withTitles: ["Hold", "Linear", "Ease In/Out"])
         keyInterpolationPopup.selectItem(at: 2)
-        panel.addArrangedSubview(keyInterpolationPopup)
+        actions.addArrangedSubview(keyInterpolationPopup)
 
         sceneTimeline.translatesAutoresizingMaskIntoConstraints = false
-        sceneTimeline.heightAnchor.constraint(equalToConstant: 42).isActive = true
+        sceneTimeline.heightAnchor.constraint(equalToConstant: 76).isActive = true
         sceneTimeline.widthAnchor.constraint(greaterThanOrEqualToConstant: 280).isActive = true
         sceneTimeline.setContentHuggingPriority(.defaultLow, for: .horizontal)
         sceneTimeline.onScrub = { [weak self] time in self?.setSceneTime(time, userInitiated: true) }
-        panel.addArrangedSubview(sceneTimeline)
 
         sceneTimeLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
         sceneTimeLabel.alignment = .right
         sceneTimeLabel.widthAnchor.constraint(equalToConstant: 142).isActive = true
-        panel.addArrangedSubview(sceneTimeLabel)
+        actions.addArrangedSubview(sceneTimeLabel)
         keySummaryLabel.textColor = .secondaryLabelColor
         keySummaryLabel.font = .systemFont(ofSize: 10)
         keySummaryLabel.lineBreakMode = .byTruncatingTail
         keySummaryLabel.widthAnchor.constraint(equalToConstant: 112).isActive = true
-        panel.addArrangedSubview(keySummaryLabel)
-        panel.heightAnchor.constraint(equalToConstant: 58).isActive = true
+        actions.addArrangedSubview(keySummaryLabel)
+        panel.addArrangedSubview(actions)
+        panel.addArrangedSubview(sceneTimeline)
+        panel.heightAnchor.constraint(equalToConstant: 125).isActive = true
         return panel
     }
 
@@ -1016,6 +1124,7 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
 
     @objc private func createNewScene(_ sender: Any?) {
         stopScenePlayback(resetButton: true)
+        if sender != nil { recordUndo(document, name: "New Scene") }
         document = NetVistaSceneDocument()
         document.objects = [
             SceneObjectRecord(name: "Hero Cube", kind: .cube, position: SceneVector3(x: 0, y: 0.5, z: 0))
@@ -1029,6 +1138,8 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
     }
 
     private func rebuildRuntimeScene() {
+        gizmo = nil
+        navigationBeforePreview = nil
         players.values.forEach { $0.pause() }
         players.removeAll()
         playerLoopers.removeAll()
@@ -1206,6 +1317,7 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
     @objc private func addPlane(_ sender: Any?) { addPrimitive(.plane) }
 
     private func addPrimitive(_ kind: SceneObjectKind) {
+        recordUndo(document, name: "Add Object")
         let count = document.objects.filter { $0.kind == kind }.count + 1
         let record = SceneObjectRecord(
             name: "\(kind.displayName) \(count)",
@@ -1303,8 +1415,44 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
         }
     }
 
+    @objc private func createHumanoidRig(_ sender: Any?) {
+        guard let id = selectedObjectID,
+              let objectIndex = document.objects.firstIndex(where: { $0.id == id }),
+              document.objects[objectIndex].kind == .model,
+              let node = objectNodes[id] else {
+            setStatus("Select an imported model before creating a rig.")
+            return
+        }
+        if document.objects[objectIndex].authoredRig != nil {
+            setStatus("This model already has an authored rig. Select a bone and add Bone Keys to animate it.")
+            return
+        }
+        guard RigInspector.bones(in: node).isEmpty else {
+            setStatus("This model already has a skeleton. Select its joints in the Rig tab to animate it.")
+            return
+        }
+        do {
+            let starter = try SceneRigging.humanoid(in: node)
+            let bound = try SceneRigging.bind(starter, to: node)
+            recordUndo(document, name: "Create Rig")
+            try SceneRigging.install(bound, in: node)
+            document.objects[objectIndex].authoredRig = bound
+            selectedBonePath = nil
+            SceneRigging.addOverlay(to: node, selectedJointID: nil)
+            refreshObjectInspector()
+            setStatus("Created a humanoid rig with \(bound.joints.count) joints. Pose a bone, then press Bone Key.")
+        } catch {
+            setStatus("Could not create rig: \(error.localizedDescription)")
+            let alert = NSAlert(error: error)
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
+    }
+
     @objc private func deleteSelected(_ sender: Any?) {
         guard let id = selectedObjectID, let index = document.objects.firstIndex(where: { $0.id == id }) else { return }
+        stopScenePlayback(resetButton: true)
+        recordUndo(document, name: "Delete Object")
         let name = document.objects[index].name
         players[id]?.pause()
         players[id] = nil
@@ -1323,6 +1471,7 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
         guard let id = selectedObjectID,
               let index = document.objects.firstIndex(where: { $0.id == id }),
               let node = objectNodes[id] else { return }
+        recordUndo(document, name: "Edit Object")
         var record = document.objects[index]
         if !nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             record.name = nameField.stringValue
@@ -1360,6 +1509,7 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
     }
 
     @objc private func applyEnvironment(_ sender: Any?) {
+        recordUndo(document, name: "Edit Lighting")
         document.environmentPreset = SceneEnvironmentPreset.allCases[safe: environmentPopup.indexOfSelectedItem] ?? .studio
         document.ambientLightIntensity = ambientSlider.doubleValue
         document.keyLightIntensity = keySlider.doubleValue
@@ -1371,9 +1521,16 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
     }
 
     private func refreshObjectInspector() {
+        defer { updateGizmo() }
+        for (id, root) in objectNodes where id != selectedObjectID {
+            root.childNode(withName: SceneRigging.overlayName, recursively: false)?.removeFromParentNode()
+        }
         guard let id = selectedObjectID, let record = document.objects.first(where: { $0.id == id }) else {
             nameField.stringValue = ""
             setInspectorEnabled(false)
+            rigBones = []; selectedBonePath = nil; bonePopup.removeAllItems()
+            bonePopup.addItem(withTitle: "Select a model")
+            refreshTimelineSummary()
             return
         }
         setInspectorEnabled(true)
@@ -1477,10 +1634,15 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
             objectNodes: objectNodes,
             camera: cameraNode
         )
+        if let id = selectedObjectID, let root = objectNodes[id], root.childNode(withName: SceneRigging.rootName, recursively: false) != nil {
+            let joint = rigBones.first(where: { $0.path == selectedBonePath })?.node.value(forKey: "netVistaJointID") as? String
+            SceneRigging.addOverlay(to: root, selectedJointID: joint)
+        }
         if userInitiated || !isScenePlaying { seekSceneMedia(to: currentSceneTime) }
         sceneTimeLabel.stringValue = "\(sceneTimeText(currentSceneTime)) / \(sceneTimeText(duration))"
         refreshAnimatedInspectorValues()
         refreshTimelineSummary()
+        updateGizmo()
     }
 
     private func seekSceneMedia(to time: Double) {
@@ -1501,20 +1663,30 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
             return
         }
         if currentSceneTime >= document.duration - (1.0 / 120.0) { currentSceneTime = 0 }
+        setSceneTime(currentSceneTime, userInitiated: false)
         isScenePlaying = true
+        updateGizmo()
         scenePlayButton.title = "Pause"
+        playbackStartTime = currentSceneTime
+        playbackOrigin = ProcessInfo.processInfo.systemUptime
         players.values.forEach { $0.play() }
         let interval = 1.0 / Double(min(60, max(24, document.framesPerSecond)))
-        scenePlayTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] timer in
+        scenePlayTimer = Timer(timeInterval: interval, repeats: true) { [weak self] timer in
             guard let self else { timer.invalidate(); return }
-            let next = self.currentSceneTime + interval
+            let next = self.playbackStartTime + ProcessInfo.processInfo.systemUptime - self.playbackOrigin
             if next >= self.document.duration {
+                if self.loopPlayback.state == .on {
+                    self.playbackStartTime = 0; self.playbackOrigin = ProcessInfo.processInfo.systemUptime
+                    self.setSceneTime(0, userInitiated: false); self.seekSceneMedia(to: 0)
+                    return
+                }
                 self.setSceneTime(self.document.duration, userInitiated: false)
                 self.stopScenePlayback(resetButton: true)
             } else {
                 self.setSceneTime(next, userInitiated: false)
             }
         }
+        if let timer = scenePlayTimer { RunLoop.main.add(timer, forMode: .common) }
     }
 
     private func stopScenePlayback(resetButton: Bool) {
@@ -1523,6 +1695,61 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
         isScenePlaying = false
         players.values.forEach { $0.pause() }
         if resetButton { scenePlayButton.title = "Play" }
+        updateGizmo()
+    }
+
+    @objc private func rewindScene(_ sender: Any?) { setSceneTime(0, userInitiated: true) }
+    @objc private func stopAndRewindScene(_ sender: Any?) { setSceneTime(0, userInitiated: true) }
+    @objc private func previousSceneFrame(_ sender: Any?) { setSceneTime(currentSceneTime - 1 / Double(max(1, document.framesPerSecond)), userInitiated: true) }
+    @objc private func nextSceneFrame(_ sender: Any?) { setSceneTime(currentSceneTime + 1 / Double(max(1, document.framesPerSecond)), userInitiated: true) }
+
+    @objc private func toggleShotPreview(_ sender: Any?) {
+        if shotPreview.state == .on {
+            navigationBeforePreview = sceneView.pointOfView
+            sceneView.pointOfView = cameraNode
+        } else if let navigationBeforePreview { sceneView.pointOfView = navigationBeforePreview }
+        sceneView.allowsCameraControl = shotPreview.state == .off && viewportTool.selectedSegment == 0
+        sceneView.transformMode = shotPreview.state == .on ? 0 : viewportTool.selectedSegment
+        sceneView.inspectionOnly = shotPreview.state == .on
+        updateGizmo()
+    }
+
+    private func updateGizmo() {
+        scene.rootNode.childNode(withName: "__grid", recursively: false)?.isHidden = shotPreview.state == .on
+        for node in objectNodes.values {
+            node.childNode(withName: SceneRigging.overlayName, recursively: false)?.isHidden = shotPreview.state == .on || isScenePlaying
+        }
+        guard shotPreview.state == .off, !isScenePlaying, viewportTool.selectedSegment != 0,
+              let id = selectedObjectID, let object = objectNodes[id] else { gizmo?.isHidden = true; return }
+        if gizmo == nil {
+            let root = SCNNode(); root.name = "__transformHandles"
+            for (axis, color) in [NSColor.systemRed, .systemGreen, .systemBlue].enumerated() {
+                let arm = SCNNode(); arm.name = "__axis_\(axis)"
+                if axis == 0 { arm.eulerAngles.z = -.pi / 2 }
+                if axis == 2 { arm.eulerAngles.x = .pi / 2 }
+                let shaft = SCNNode(geometry: SCNCylinder(radius: 0.025, height: 0.85))
+                shaft.position.y = 0.425
+                let tip = SCNNode(geometry: SCNCone(topRadius: 0, bottomRadius: 0.085, height: 0.2))
+                tip.position.y = 0.95
+                for part in [shaft, tip] {
+                    part.name = arm.name
+                    let material = SCNMaterial(); material.diffuse.contents = color; material.lightingModel = .constant
+                    material.readsFromDepthBuffer = false; material.writesToDepthBuffer = false
+                    part.geometry?.materials = [material]; part.renderingOrder = 1000
+                    arm.addChildNode(part)
+                }
+                root.addChildNode(arm)
+            }
+            scene.rootNode.addChildNode(root); gizmo = root
+        }
+        gizmo?.isHidden = false
+        gizmo?.position = object.worldPosition
+        if let camera = sceneView.pointOfView {
+            let p = camera.presentation.worldPosition, q = object.worldPosition
+            let distance = sqrt(pow(p.x-q.x, 2) + pow(p.y-q.y, 2) + pow(p.z-q.z, 2))
+            let size = max(0.3, min(5, distance * 0.12))
+            gizmo?.scale = SCNVector3(size, size, size)
+        }
     }
 
     @objc private func addObjectKeyframe(_ sender: Any?) {
@@ -1541,12 +1768,14 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
             ),
             scale: SceneVector3(node.presentation.scale)
         )
+        recordUndo(document, name: "Object Keyframe")
         upsertTransformKeyframe(&document.objects[index].transformKeyframes, transform: transform)
         setStatus("Object transform keyframe added at \(sceneTimeText(currentSceneTime)).")
         setSceneTime(currentSceneTime, userInitiated: false)
     }
 
     @objc private func addCameraKeyframe(_ sender: Any?) {
+        recordUndo(document, name: "Camera Keyframe")
         let point = sceneView.pointOfView?.presentation ?? cameraNode.presentation
         let position = SceneVector3(point.worldPosition)
         let front = point.worldFront
@@ -1581,6 +1810,7 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
             y: Double(bone.node.eulerAngles.y) * 180 / .pi,
             z: Double(bone.node.eulerAngles.z) * 180 / .pi
         )
+        recordUndo(document, name: "Bone Keyframe")
         let trackIndex: Int
         if let existing = document.objects[objectIndex].bonePoseTracks.firstIndex(where: { $0.bonePath == path }) {
             trackIndex = existing
@@ -1613,6 +1843,7 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
     }
 
     @objc private func removeKeyframeAtPlayhead(_ sender: Any?) {
+        recordUndo(document, name: "Remove Keyframe")
         var removed = 0
         let tolerance = 1.0 / 120.0
         let oldCameraCount = document.cameraKeyframes.count
@@ -1643,6 +1874,10 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
             }
         }
         sceneTimeline.keyTimes = times
+        sceneTimeline.cameraTimes = document.cameraKeyframes.map(\.time)
+        let selected = document.objects.first(where: { $0.id == selectedObjectID })
+        sceneTimeline.objectTimes = selected?.transformKeyframes.map(\.time) ?? []
+        sceneTimeline.boneTimes = selected?.bonePoseTracks.flatMap { $0.keyframes.map(\.time) } ?? []
         keySummaryLabel.stringValue = times.isEmpty ? "No keyframes" : "\(times.count) visible key(s)"
     }
 
@@ -1669,7 +1904,8 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
         rigBones = RigInspector.bones(in: root)
         guard !rigBones.isEmpty else {
             selectedBonePath = nil
-            bonePopup.addItem(withTitle: "Model has no imported rig")
+            let message = root.value(forKey: "netVistaRigWarning") as? String ?? "No authored/imported rig — use Create / bind humanoid rig"
+            bonePopup.addItem(withTitle: message)
             bonePopup.isEnabled = false
             return
         }
@@ -1681,12 +1917,19 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
         boneRotationX.isEnabled = true
         boneRotationY.isEnabled = true
         boneRotationZ.isEnabled = true
+        if record.authoredRig != nil {
+            SceneRigging.addOverlay(to: root, selectedJointID: rigBones[selectedIndex].node.value(forKey: "netVistaJointID") as? String)
+        }
         refreshBonePoseFields()
     }
 
     @objc private func selectBone(_ sender: Any?) {
         guard rigBones.indices.contains(bonePopup.indexOfSelectedItem) else { return }
         selectedBonePath = rigBones[bonePopup.indexOfSelectedItem].path
+        if let id = selectedObjectID, let root = objectNodes[id] {
+            let jointID = rigBones[bonePopup.indexOfSelectedItem].node.value(forKey: "netVistaJointID") as? String
+            SceneRigging.addOverlay(to: root, selectedJointID: jointID)
+        }
         refreshBonePoseFields()
         refreshTimelineSummary()
     }
@@ -1700,15 +1943,133 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
 
     @objc private func applyBonePose(_ sender: Any?) {
         guard let path = selectedBonePath, let bone = rigBones.first(where: { $0.path == path }) else { return }
+        stopScenePlayback(resetButton: true)
         bone.node.eulerAngles = SCNVector3(
             boneRotationX.doubleValue * .pi / 180,
             boneRotationY.doubleValue * .pi / 180,
             boneRotationZ.doubleValue * .pi / 180
         )
         setStatus("Posed \(bone.name). Add a Bone Key to animate this pose.")
+        if autoKey.state == .on { addBoneKeyframe(nil) }
+        if let id = selectedObjectID, let root = objectNodes[id] {
+            SceneRigging.addOverlay(to: root, selectedJointID: bone.node.value(forKey: "netVistaJointID") as? String)
+        }
     }
 
+    @objc private func duplicateSelected(_ sender: Any?) {
+        guard let original = document.objects.first(where: { $0.id == selectedObjectID }) else { return }
+        recordUndo(document, name: "Duplicate Object")
+        var copy = original; copy.id = UUID(); copy.name += " copy"; copy.position.x += 0.5
+        for index in copy.transformKeyframes.indices { copy.transformKeyframes[index].transform.position.x += 0.5 }
+        document.objects.append(copy); selectedObjectID = copy.id
+        rebuildRuntimeScene()
+        setStatus("Duplicated \(original.name)")
+    }
+
+    @objc private func viewportToolChanged(_ sender: Any?) {
+        shotPreview.state = .off
+        toggleShotPreview(nil)
+        sceneView.transformMode = viewportTool.selectedSegment
+        sceneView.allowsCameraControl = viewportTool.selectedSegment == 0
+        updateGizmo()
+    }
+
+    @objc private func focusSelected(_ sender: Any?) {
+        guard let id = selectedObjectID, let node = objectNodes[id] else { return }
+        let box = node.boundingBox
+        let center = SCNVector3((box.min.x + box.max.x) / 2, (box.min.y + box.max.y) / 2, (box.min.z + box.max.z) / 2)
+        let world = node.convertPosition(center, to: nil)
+        let radius = max(1, max(box.max.x - box.min.x, max(box.max.y - box.min.y, box.max.z - box.min.z)) * max(abs(node.scale.x), max(abs(node.scale.y), abs(node.scale.z))))
+        // Navigation uses a separate camera so framing never edits an animated shot.
+        let navigation = cameraNode.clone()
+        scene.rootNode.childNode(withName: "__navigationCamera", recursively: false)?.removeFromParentNode()
+        navigation.name = "__navigationCamera"
+        navigation.position = SCNVector3(world.x, world.y + radius * 0.35, world.z + radius * 2.5)
+        navigation.look(at: world)
+        scene.rootNode.addChildNode(navigation)
+        sceneView.pointOfView = navigation
+        sceneView.defaultCameraController.target = world
+    }
+
+    private func transformDrag(_ delta: CGPoint, phase: Int) {
+        guard let id = selectedObjectID, let index = document.objects.firstIndex(where: { $0.id == id }), let node = objectNodes[id] else { return }
+        if phase == 0 {
+            stopScenePlayback(resetButton: true)
+            dragDocument = document
+            dragStart = SceneTransform(position: SceneVector3(node.position), rotation: SceneVector3(x: Double(node.eulerAngles.x) * 180 / .pi, y: Double(node.eulerAngles.y) * 180 / .pi, z: Double(node.eulerAngles.z) * 180 / .pi), scale: SceneVector3(node.scale))
+            if let axis = sceneView.activeAxis {
+                var end = node.worldPosition
+                if axis == 0 { end.x += 1 }; if axis == 1 { end.y += 1 }; if axis == 2 { end.z += 1 }
+                let a = sceneView.projectPoint(node.worldPosition), b = sceneView.projectPoint(end)
+                axisPixels = CGPoint(x: CGFloat(b.x-a.x), y: CGFloat(b.y-a.y))
+            }
+            return
+        }
+        guard let start = dragStart else { return }
+        let alternate = NSEvent.modifierFlags.contains(.shift)
+        if let axis = sceneView.activeAxis {
+            let lengthSquared = axisPixels.x * axisPixels.x + axisPixels.y * axisPixels.y
+            let distance = lengthSquared > 4 ? (delta.x * axisPixels.x + delta.y * axisPixels.y) / lengthSquared : (delta.x + delta.y) * 0.01
+            var position = [start.position.x, start.position.y, start.position.z]
+            var rotation = [start.rotation.x, start.rotation.y, start.rotation.z]
+            var scale = [start.scale.x, start.scale.y, start.scale.z]
+            switch viewportTool.selectedSegment {
+            case 1: position[axis] += distance
+            case 2: rotation[axis] += (delta.x + delta.y) * 0.5
+            case 3: scale[axis] = max(0.01, scale[axis] * exp(distance * 0.5))
+            default: break
+            }
+            node.position = SCNVector3(position[0], position[1], position[2])
+            node.eulerAngles = SCNVector3(rotation[0] * .pi / 180, rotation[1] * .pi / 180, rotation[2] * .pi / 180)
+            node.scale = SCNVector3(scale[0], scale[1], scale[2])
+        } else { switch viewportTool.selectedSegment {
+        case 1:
+            node.position = SCNVector3(start.position.x + delta.x * 0.01, start.position.y + (alternate ? 0 : delta.y * 0.01), start.position.z + (alternate ? -delta.y * 0.01 : 0))
+        case 2:
+            node.eulerAngles = SCNVector3((start.rotation.x + (alternate ? delta.y : 0)) * .pi / 180, (start.rotation.y + delta.x) * .pi / 180, (start.rotation.z + (alternate ? 0 : delta.y)) * .pi / 180)
+        case 3:
+            let factor = exp(Double(delta.x + delta.y) * 0.007)
+            node.scale = SCNVector3(max(0.01, start.scale.x * factor), max(0.01, start.scale.y * factor), max(0.01, start.scale.z * factor))
+        default: break
+        } }
+        updateGizmo()
+        refreshAnimatedInspectorValues()
+        if phase == 2 {
+            if let before = dragDocument { recordUndo(before, name: "Transform Object") }
+            let pose = SceneTransform(position: SceneVector3(node.position), rotation: SceneVector3(x: Double(node.eulerAngles.x) * 180 / .pi, y: Double(node.eulerAngles.y) * 180 / .pi, z: Double(node.eulerAngles.z) * 180 / .pi), scale: SceneVector3(node.scale))
+            if autoKey.state == .on || !document.objects[index].transformKeyframes.isEmpty {
+                upsertTransformKeyframe(&document.objects[index].transformKeyframes, transform: pose)
+            } else {
+                document.objects[index].position = pose.position; document.objects[index].rotation = pose.rotation; document.objects[index].scale = pose.scale
+            }
+            dragStart = nil; dragDocument = nil; refreshTimelineSummary()
+        }
+    }
+
+    @objc private func keyWholePose(_ sender: Any?) {
+        guard !rigBones.isEmpty else { return }
+        let selected = selectedBonePath
+        // Snapshot all rotations before any key insertion evaluates the scene.
+        let poses = rigBones.map { ($0.path, $0.node.eulerAngles) }
+        sceneHistory.beginUndoGrouping()
+        for (path, rotation) in poses {
+            selectedBonePath = path
+            rigBones.first(where: { $0.path == path })?.node.eulerAngles = rotation
+            addBoneKeyframe(nil)
+        }
+        sceneHistory.endUndoGrouping(); sceneHistory.setActionName("Key Whole Pose")
+        selectedBonePath = selected; refreshBonePoseFields(); refreshTimelineSummary()
+    }
+
+    private var selectedKeyTimes: [Double] {
+        guard let object = document.objects.first(where: { $0.id == selectedObjectID }) else { return document.cameraKeyframes.map(\.time) }
+        return object.transformKeyframes.map(\.time) + object.bonePoseTracks.flatMap { $0.keyframes.map(\.time) }
+    }
+    @objc private func previousSceneKey(_ sender: Any?) { setSceneTime(selectedKeyTimes.filter { $0 < currentSceneTime - 0.001 }.max() ?? 0, userInitiated: true) }
+    @objc private func nextSceneKey(_ sender: Any?) { setSceneTime(selectedKeyTimes.filter { $0 > currentSceneTime + 0.001 }.min() ?? document.duration, userInitiated: true) }
+
     @objc private func rebuildMap(_ sender: Any?) {
+        recordUndo(document, name: "Edit Map")
         document.mapSettings.enabled = mapEnabled.state == .on
         document.mapSettings.preset = SceneMapPreset.allCases[safe: mapPresetPopup.indexOfSelectedItem] ?? .studioStage
         document.mapSettings.size = mapSizeSlider.doubleValue
@@ -1727,12 +2088,17 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
     }
 
     private func selectRuntimeNode(_ node: SCNNode) {
+        let pickedJoint = node.value(forKey: "netVistaJointID") as? String
         var candidate: SCNNode? = node
         while let current = candidate {
             if let text = current.value(forKey: "netVistaSceneObjectID") as? String, let id = UUID(uuidString: text) {
                 selectedObjectID = id
                 restoreOutlinerSelection()
                 refreshObjectInspector()
+                if let pickedJoint, let index = rigBones.firstIndex(where: { $0.node.value(forKey: "netVistaJointID") as? String == pickedJoint }) {
+                    bonePopup.selectItem(at: index); selectBone(nil)
+                    inspectorTabs.selectedSegment = 1; inspectorTabChanged(nil)
+                }
                 setStatus("Selected \(current.name ?? "object")")
                 return
             }
@@ -1945,6 +2311,9 @@ private extension Array {
 }
 
 private final class SceneTimelineControl: NSControl {
+    var cameraTimes: [Double] = [] { didSet { needsDisplay = true } }
+    var objectTimes: [Double] = [] { didSet { needsDisplay = true } }
+    var boneTimes: [Double] = [] { didSet { needsDisplay = true } }
     var duration: Double = 5 { didSet { duration = max(0.25, duration); needsDisplay = true } }
     var playhead: Double = 0 { didSet { needsDisplay = true } }
     var keyTimes: [Double] = [] { didSet { needsDisplay = true } }
@@ -1954,28 +2323,34 @@ private final class SceneTimelineControl: NSControl {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        let track = bounds.insetBy(dx: 8, dy: 8)
+        let track = NSRect(x: 84, y: 4, width: max(1, bounds.width - 98), height: bounds.height - 8)
         NSColor(calibratedWhite: 0.055, alpha: 1).setFill()
         NSBezierPath(roundedRect: track, xRadius: 5, yRadius: 5).fill()
 
         NSColor(calibratedWhite: 0.24, alpha: 1).setStroke()
-        let baseline = NSBezierPath()
-        baseline.move(to: CGPoint(x: track.minX, y: track.midY))
-        baseline.line(to: CGPoint(x: track.maxX, y: track.midY))
-        baseline.lineWidth = 1
-        baseline.stroke()
-
         let safeDuration = max(0.25, duration)
-        NSColor.systemTeal.setFill()
-        for time in Set(keyTimes.map { min(safeDuration, max(0, $0)) }) {
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium), .foregroundColor: NSColor.secondaryLabelColor]
+        let divisions = max(2, Int(track.width / 110))
+        for tick in 0...divisions {
+            let x = track.minX + CGFloat(tick) / CGFloat(divisions) * track.width
+            let line = NSBezierPath(); line.move(to: CGPoint(x: x, y: 20)); line.line(to: CGPoint(x: x, y: track.maxY)); line.stroke()
+            let label = String(format: "%.1fs", Double(tick) / Double(divisions) * safeDuration)
+            (label as NSString).draw(at: CGPoint(x: min(x, track.maxX - 36), y: 3), withAttributes: attributes)
+        }
+        for (index, lane) in [("Camera", cameraTimes), ("Object", objectTimes), ("Rig", boneTimes)].enumerated() {
+            let y = CGFloat(29 + index * 17)
+            (lane.0 as NSString).draw(at: CGPoint(x: 10, y: y - 6), withAttributes: attributes)
+            [NSColor.systemOrange, .systemTeal, .systemPurple][index].setFill()
+            for time in Set(lane.1.map { min(safeDuration, max(0, $0)) }) {
             let x = track.minX + CGFloat(time / safeDuration) * track.width
             let marker = NSBezierPath()
-            marker.move(to: CGPoint(x: x, y: track.midY - 6))
-            marker.line(to: CGPoint(x: x + 5, y: track.midY))
-            marker.line(to: CGPoint(x: x, y: track.midY + 6))
-            marker.line(to: CGPoint(x: x - 5, y: track.midY))
+            marker.move(to: CGPoint(x: x, y: y - 5))
+            marker.line(to: CGPoint(x: x + 5, y: y))
+            marker.line(to: CGPoint(x: x, y: y + 5))
+            marker.line(to: CGPoint(x: x - 5, y: y))
             marker.close()
             marker.fill()
+            }
         }
 
         let x = track.minX + CGFloat(min(safeDuration, max(0, playhead)) / safeDuration) * track.width
@@ -1992,7 +2367,7 @@ private final class SceneTimelineControl: NSControl {
 
     private func scrub(_ event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        let track = bounds.insetBy(dx: 8, dy: 8)
+        let track = NSRect(x: 84, y: 4, width: max(1, bounds.width - 98), height: bounds.height - 8)
         let fraction = Double(min(1, max(0, (point.x - track.minX) / max(1, track.width))))
         onScrub?(fraction * duration)
     }
@@ -2018,7 +2393,7 @@ private enum RigInspector {
         inspect(root)
         root.enumerateChildNodes { node, _ in inspect(node) }
         return boneNodes.compactMap { bone in
-            let display = bone.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let display = (bone.value(forKey: "netVistaJointDisplayName") as? String ?? bone.name)?.trimmingCharacters(in: .whitespacesAndNewlines)
             let namedFallback = display.flatMap { $0.isEmpty ? nil : "name:\($0)" }
             guard let stablePath = path(from: root, to: bone) ?? namedFallback else { return nil }
             return RigBoneReference(
@@ -2333,9 +2708,25 @@ private struct SceneSeededRandom {
 }
 
 private final class SceneViewportView: SCNView {
+    var onPlay: (() -> Void)?
+    var activeAxis: Int?
+    var inspectionOnly = false
     var onNodePicked: ((SCNNode) -> Void)?
     var onMediaDropped: ((URL) -> Void)?
     var onModelDropped: ((URL) -> Void)?
+    var onDelete: (() -> Void)?
+    var onFocus: (() -> Void)?
+    var onTransformDrag: ((CGPoint, Int) -> Void)?
+    var transformMode = 0
+    private var dragOrigin: CGPoint?
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 49 { onPlay?(); return }
+        if event.keyCode == 51 || event.keyCode == 117 { onDelete?(); return }
+        if event.charactersIgnoringModifiers?.lowercased() == "f" { onFocus?(); return }
+        super.keyDown(with: event)
+    }
 
     override init(frame frameRect: NSRect, options: [String: Any]? = nil) {
         super.init(frame: frameRect, options: options)
@@ -2348,11 +2739,36 @@ private final class SceneViewportView: SCNView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        guard !inspectionOnly else { return }
         let point = convert(event.locationInWindow, from: nil)
-        if let hit = hitTest(point, options: [.searchMode: SCNHitTestSearchMode.closest.rawValue]).first {
-            onNodePicked?(hit.node)
+        let hits = hitTest(point, options: [.searchMode: SCNHitTestSearchMode.all.rawValue])
+        activeAxis = nil
+        if transformMode != 0, let handle = hits.first(where: { $0.node.name?.hasPrefix("__axis_") == true }),
+           let axis = Int(handle.node.name!.suffix(1)) {
+            activeAxis = axis; dragOrigin = point; onTransformDrag?(.zero, 0); return
         }
+        if let hit = hits.first(where: { $0.node.name?.hasPrefix("__axis_") != true }) {
+            onNodePicked?(hit.node)
+            if transformMode != 0, !(hit.node.name ?? "").hasPrefix("__") {
+                dragOrigin = point; onTransformDrag?(.zero, 0); return
+            }
+        }
+        if transformMode != 0 { return }
         super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let origin = dragOrigin else { super.mouseDragged(with: event); return }
+        let point = convert(event.locationInWindow, from: nil)
+        onTransformDrag?(CGPoint(x: point.x - origin.x, y: point.y - origin.y), 1)
+    }
+    override func mouseUp(with event: NSEvent) {
+        guard let origin = dragOrigin else { super.mouseUp(with: event); return }
+        let point = convert(event.locationInWindow, from: nil)
+        onTransformDrag?(CGPoint(x: point.x - origin.x, y: point.y - origin.y), 2)
+        dragOrigin = nil
+        activeAxis = nil
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
@@ -2459,6 +2875,15 @@ private enum SceneNodeFactory {
             material.roughness.contents = 0.36
             material.metalness.contents = record.kind == .plane || record.kind == .mediaPlane ? 0.05 : 0.15
             material.isDoubleSided = record.kind == .plane || record.kind == .mediaPlane
+        }
+        if record.kind == .model, node.value(forKey: "netVistaMissingModel") == nil,
+           let rig = record.authoredRig, !rig.bindings.isEmpty,
+           node.childNode(withName: SceneRigging.rootName, recursively: false) == nil {
+            do {
+                try SceneRigging.install(rig, in: node)
+            } catch {
+                node.setValue("Saved rig could not be restored: \(error.localizedDescription)", forKey: "netVistaRigWarning")
+            }
         }
         return node
     }

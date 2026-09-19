@@ -70,8 +70,8 @@
   let downloadReturnFocus = null;
   let accountGateReturnFocus = null;
   let gateAttempt = 0;
-  let authLoadError = null;
   let authRedirect;
+  let authReady = null;
   const authRequest = async (operation) => {
     let timer;
     try {
@@ -82,16 +82,22 @@
       return { data: {}, error };
     } finally { clearTimeout(timer); }
   };
-  const authReady = authRequest(async () => {
-    const { supabase, authRedirect: publicRedirect } = await import('./auth-client.js');
-    authRedirect = publicRedirect;
-    // A remembered session must never unlock a new download request.
-    return { data: supabase };
-  }).then(({ data, error }) => {
-    if (error) { authLoadError = error; return null; }
-    [accountGateSigninForm, accountGateSignupForm].forEach(form => { form.querySelector('fieldset').disabled = false; });
-    return data;
-  });
+  // Keep ordinary site visits light: the Supabase SDK is loaded only when
+  // someone opens the account/download flow that needs it.
+  const loadAuthClient = () => {
+    if (authReady) return authReady;
+    authReady = authRequest(async () => {
+      const { supabase, authRedirect: publicRedirect } = await import('./auth-client.js');
+      authRedirect = publicRedirect;
+      // A remembered session must never unlock a new download request.
+      return { data: supabase };
+    }).then(({ data, error }) => {
+      if (error) return null;
+      [accountGateSigninForm, accountGateSignupForm].forEach(form => { form.querySelector('fieldset').disabled = false; });
+      return data;
+    });
+    return authReady;
+  };
   const preferredPlatform = /Win/i.test(navigator.platform + navigator.userAgent) ? 'windows'
     : /Linux/i.test(navigator.platform + navigator.userAgent) && !/Android/i.test(navigator.userAgent) ? 'linux' : 'mac';
   const preferredCard = downloadModal.querySelector(`[data-platform="${preferredPlatform}"]`);
@@ -149,7 +155,7 @@
     backgroundSurfaces.forEach((element) => { element.inert = true; });
     setGateMode('signin');
     setGateStatus('Loading sign-in…');
-    authReady.then((client) => {
+    loadAuthClient().then((client) => {
       if (accountGateModal.hidden || attempt !== gateAttempt) return;
       if (!client) {
         setGateStatus('Account sign-in is temporarily unavailable. Please try again shortly.', 'error');
@@ -194,7 +200,7 @@
   accountGateSigninForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const attempt = gateAttempt;
-    const client = await authReady;
+    const client = await loadAuthClient();
     if (accountGateModal.hidden || attempt !== gateAttempt) return;
     if (!client) { setGateStatus('Account sign-in is temporarily unavailable. Please try again shortly.', 'error'); return; }
     const email = document.querySelector('#gate-signin-email').value.trim();
@@ -212,7 +218,7 @@
   accountGateSignupForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const attempt = gateAttempt;
-    const client = await authReady;
+    const client = await loadAuthClient();
     if (accountGateModal.hidden || attempt !== gateAttempt) return;
     if (!client) { setGateStatus('Account sign-in is temporarily unavailable. Please try again shortly.', 'error'); return; }
     const email = document.querySelector('#gate-signup-email').value.trim();
@@ -239,7 +245,7 @@
     }
   });
   document.querySelector('#gate-forgot-password').addEventListener('click', async () => {
-    const client = await authReady;
+    const client = await loadAuthClient();
     const email = document.querySelector('#gate-signin-email').value.trim();
     if (!email) { setGateStatus('Enter your email address first, then press “Forgot your password?”.', 'error'); document.querySelector('#gate-signin-email').focus(); return; }
     if (!client) { setGateStatus('Account sign-in is temporarily unavailable. Please try again shortly.', 'error'); return; }
@@ -248,10 +254,6 @@
     if (error) setGateStatus(error.message || 'We could not send the reset email.', 'error');
     else setGateStatus('If an account uses that email, a password reset link is on its way.', 'success');
   });
-  authReady.then((client) => {
-    if (!client && accountGateModal && !accountGateModal.hidden && authLoadError) setGateStatus('Account sign-in is temporarily unavailable. Please try again shortly.', 'error');
-  });
-
   const copyButton = document.querySelector('.copy-button');
   copyButton.addEventListener('click', async () => {
     const command = `git clone ${repositoryURL}.git\ncd ${repository}\n# macOS: sh build_app.sh\n# Windows/Linux: see cross_platform/README.md`;

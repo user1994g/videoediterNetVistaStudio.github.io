@@ -18,6 +18,7 @@ final class SharePanelViewController: NSViewController {
     private let phaseDot = NSView(frame: .zero)
     private let phaseLabel = NSTextField(labelWithString: "Not sharing")
     private let statusDetailLabel = NSTextField(wrappingLabelWithString: "Press New Code to start sharing on your local network.")
+    private let reachabilityLabel = NSTextField(wrappingLabelWithString: "No connection from another device yet.")
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
 
     private let addressField = NSTextField(labelWithString: "Waiting for a local address…")
@@ -35,6 +36,7 @@ final class SharePanelViewController: NSViewController {
     private let newCodeButton = NSButton(title: "New Code", target: nil, action: nil)
     private let forgetButton = NSButton(title: "Forget Paired Devices", target: nil, action: nil)
     private let stopButton = NSButton(title: "Stop Sharing", target: nil, action: nil)
+    private let testButton = NSButton(title: "Check Connection", target: nil, action: nil)
 
     init(server: LocalShareServer) {
         self.server = server
@@ -220,8 +222,10 @@ final class SharePanelViewController: NSViewController {
         statusDetailLabel.font = .systemFont(ofSize: 11)
         statusDetailLabel.textColor = Palette.secondaryText
         statusDetailLabel.maximumNumberOfLines = 2
+        reachabilityLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        reachabilityLabel.textColor = Palette.secondaryText
 
-        let details = NSStackView(views: [eyebrow, heading, addressField, alternateAddressField, buttons, statusDetailLabel])
+        let details = NSStackView(views: [eyebrow, heading, addressField, alternateAddressField, buttons, statusDetailLabel, reachabilityLabel])
         details.orientation = .vertical
         details.alignment = .width
         details.spacing = 7
@@ -333,8 +337,9 @@ final class SharePanelViewController: NSViewController {
         configureButton(newCodeButton, action: #selector(createNewCode), tint: .systemBlue)
         configureButton(forgetButton, action: #selector(confirmForgetDevices), tint: Palette.secondaryText)
         configureButton(stopButton, action: #selector(stopSharing), tint: .systemRed)
+        configureButton(testButton, action: #selector(checkConnection), tint: Palette.secondaryText)
 
-        let footer = NSStackView(views: [newCodeButton, forgetButton, flexibleSpacer(), stopButton])
+        let footer = NSStackView(views: [newCodeButton, testButton, forgetButton, flexibleSpacer(), stopButton])
         footer.orientation = .horizontal
         footer.alignment = .centerY
         footer.spacing = 9
@@ -363,6 +368,10 @@ final class SharePanelViewController: NSViewController {
         precondition(Thread.isMainThread)
         let previous = state
         state = newState
+        reachabilityLabel.stringValue = newState.remoteConnectionCount == 0
+            ? "No connection from another device yet. This Mac’s checks do not count."
+            : "\(newState.remoteConnectionCount) incoming connection(s) from other devices reached this Mac."
+        reachabilityLabel.textColor = newState.remoteConnectionCount == 0 ? Palette.secondaryText : Palette.success
 
         switch newState.phase {
         case .stopped:
@@ -373,7 +382,7 @@ final class SharePanelViewController: NSViewController {
             statusDetailLabel.stringValue = "Requesting local-network access and preparing the address…"
         case .ready:
             setPhase(title: "Sharing", color: Palette.success)
-            statusDetailLabel.stringValue = "This private IP works only for devices on the same Wi-Fi or LAN. Keep NetVista Studio open."
+            statusDetailLabel.stringValue = "Open the full http:// address including :\(newState.primaryURL?.port ?? 8787). Keep this app open and the Mac’s lid open."
         case .failed:
             setPhase(title: "Couldn’t start", color: Palette.error)
             statusDetailLabel.stringValue = "Check local-network access and try creating a new code."
@@ -507,6 +516,40 @@ final class SharePanelViewController: NSViewController {
         guard let url = state.primaryURL else { return }
         if NSWorkspace.shared.open(url) { reportStatus("Opened the local sharing page on this Mac.") }
         else { reportStatus("The local sharing address could not be opened.") }
+    }
+
+    @objc private func checkConnection() {
+        guard let url = state.primaryURL, state.phase == .ready else {
+            showConnectionResult("Sharing is not ready", detail: "Connect this Mac to Wi-Fi or Ethernet, then press New Code.\n\nIn System Settings → Privacy & Security → Local Network, allow NetVista Studio if it is listed. If you just changed permission, restart the app.")
+            return
+        }
+        testButton.isEnabled = false
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 5
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.connectionProxyDictionary = [:]
+        let session = URLSession(configuration: configuration)
+        session.dataTask(with: request) { [weak self] _, response, error in
+            session.finishTasksAndInvalidate()
+            let works = (response as? HTTPURLResponse)?.statusCode == 200
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.testButton.isEnabled = true
+                self.showConnectionResult(works ? "The local server responds" : "Could not reach the local server", detail:
+                    (works ? "This Mac can open \(url.absoluteString). This does not yet confirm access from your other device." : (error?.localizedDescription ?? "The server returned an unexpected response.")) +
+                    "\n\nOn your phone, open the exact http:// address above, including the port, or scan the QR code. Try Safari as a second browser. If the browser appears under the phone’s Privacy & Security → Local Network settings, check that access is allowed.\n\nWatch the incoming-connection count on the Mac while you reload. Zero means the connection has not reached the app; a successful check on this Mac is not proof of phone access.\n\nGuest Wi-Fi or client isolation can block devices even on the same Wi-Fi name. Check VPN routing and the Mac’s app-specific Local Network / Firewall permissions; do not disable the firewall.\n\nAlternative: connect both devices to another trusted Wi-Fi network, or connect the Mac to your phone’s Personal Hotspot if available, then press New Code and scan the updated address. No cloud upload or public server is required.")
+            }
+        }.resume()
+    }
+
+    private func showConnectionResult(_ title: String, detail: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.addButton(withTitle: "OK")
+        if let window = view.window { alert.beginSheetModal(for: window) }
+        else { alert.runModal() }
     }
 
     @objc private func createNewCode() {

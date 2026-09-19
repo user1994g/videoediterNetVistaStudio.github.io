@@ -19,7 +19,9 @@
   <key>CFBundleVersion</key>
 	<string>7</string>
   <key>NetVistaReleaseTag</key>
-	<string>v1.4.0-beta.3</string>
+	<string>v1.4.0-beta.4</string>
+  <key>NetVistaInPlaceUpdaterVersion</key>
+  <integer>1</integer>
   <key>LSMinimumSystemVersion</key>
   <string>11.0</string>
   <key>NSPrincipalClass</key>
@@ -34,6 +36,13 @@
   </array>
   <key>CFBundleDocumentTypes</key>
   <array>
+    <dict>
+      <key>CFBundleTypeName</key><string>NetVista Game Project</string>
+      <key>CFBundleTypeRole</key><string>Editor</string>
+      <key>LSHandlerRank</key><string>Owner</string>
+      <key>LSItemContentTypes</key><array><string>local.netvista.studio.game-project</string></array>
+      <key>CFBundleTypeExtensions</key><array><string>netvistagame</string></array>
+    </dict>
     <dict>
       <key>CFBundleTypeName</key>
       <string>NetVista Studio Project</string>
@@ -117,6 +126,13 @@
   </array>
   <key>UTExportedTypeDeclarations</key>
   <array>
+    <dict>
+      <key>UTTypeIdentifier</key><string>local.netvista.studio.game-project</string>
+      <key>UTTypeDescription</key><string>NetVista Game Project</string>
+      <key>UTTypeConformsTo</key><array><string>public.json</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict><key>public.filename-extension</key><array><string>netvistagame</string></array></dict>
+    </dict>
     <dict>
       <key>UTTypeIdentifier</key>
       <string>local.netvista.studio.project</string>

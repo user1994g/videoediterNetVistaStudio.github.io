@@ -45,6 +45,7 @@ enum NetVistaUpdateError: LocalizedError {
     case missingChecksum
     case downloadedSize(expected: Int64, actual: Int64)
     case checksum(expected: String, actual: String)
+    case unsafePackage(String)
 
     var errorDescription: String? {
         switch self {
@@ -60,13 +61,12 @@ enum NetVistaUpdateError: LocalizedError {
             return "The update download was incomplete (expected \(expected) bytes, received \(actual))."
         case .checksum(let expected, let actual):
             return "The update did not pass its safety check. Expected \(expected), received \(actual)."
+        case .unsafePackage(let reason): return reason
         }
     }
 }
 
-/// Manual, user-controlled updater backed by the public GitHub Releases feed.
-/// It downloads a verified package to Downloads; it never replaces a running
-/// application or touches an open project.
+/// GitHub release discovery and verification, shared by the app-wide updater.
 final class AppUpdateService {
     static let releasesURL = URL(string: "https://api.github.com/repos/user1994g/videoediterNetVistaStudio.github.io/releases?per_page=30")!
 
@@ -109,42 +109,34 @@ final class AppUpdateService {
 
     func download(
         _ update: NetVistaAvailableUpdate,
+        to directory: URL,
+        progress: @escaping (Double) -> Void = { _ in },
         completion: @escaping (Result<URL, Error>) -> Void
-    ) {
+    ) -> NetVistaUpdateDownload? {
+        guard Self.isTrustedDownload(update.asset.downloadURL), update.asset.size > 0,
+              update.asset.size <= 2_000_000_000 else {
+            completion(.failure(NetVistaUpdateError.unsafePackage("The release has an invalid download address or package size."))); return nil
+        }
+        guard let expected = Self.expectedSHA256(update.asset.digest) else {
+            completion(.failure(NetVistaUpdateError.missingChecksum)); return nil
+        }
         var request = URLRequest(url: update.asset.downloadURL)
         request.timeoutInterval = 120
         request.setValue("NetVistaStudio/\(currentTag)", forHTTPHeaderField: "User-Agent")
-        session.downloadTask(with: request) { temporaryURL, response, error in
-            if let error { completion(.failure(error)); return }
-            guard let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode),
-                  let temporaryURL else {
-                completion(.failure(NetVistaUpdateError.invalidResponse)); return
-            }
+        let transfer = NetVistaUpdateDownload(expectedSize:update.asset.size,progress:progress) { result in
             do {
-                let values = try temporaryURL.resourceValues(forKeys: [.fileSizeKey])
-                let actualSize = Int64(values.fileSize ?? 0)
-                if update.asset.size > 0, actualSize != update.asset.size {
-                    throw NetVistaUpdateError.downloadedSize(expected: update.asset.size, actual: actualSize)
-                }
-                guard let expected = Self.expectedSHA256(update.asset.digest) else {
-                    throw NetVistaUpdateError.missingChecksum
-                }
-                let actual = try Self.sha256(of: temporaryURL)
-                guard actual.caseInsensitiveCompare(expected) == .orderedSame else {
-                    throw NetVistaUpdateError.checksum(expected: expected, actual: actual)
-                }
-                guard let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first else {
-                    throw NetVistaUpdateError.noDownloadsDirectory
-                }
-                try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
-                let destination = Self.uniqueDestination(in: downloads, named: update.asset.name)
+                let temporaryURL = try result.get()
+                defer { try? FileManager.default.removeItem(at:temporaryURL) }
+                try Self.verifyDownload(temporaryURL,size:update.asset.size,expected:expected)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let destination = directory.appendingPathComponent("update.zip")
                 try FileManager.default.moveItem(at: temporaryURL, to: destination)
                 completion(.success(destination))
             } catch {
                 completion(.failure(error))
             }
-        }.resume()
+        }
+        transfer.start(request); return transfer
     }
 
     static func bestUpdate(
@@ -156,7 +148,7 @@ final class AppUpdateService {
         return releases
             .filter { !$0.draft && NetVistaVersion($0.tag) > current }
             .compactMap { release -> NetVistaAvailableUpdate? in
-                guard let asset = release.assets.first(where: { assetMatches($0.name, platform: platform) }) else { return nil }
+                guard let asset = release.assets.first(where: { assetMatches($0.name, platform: platform) && architectureMatches($0.name, platform:platform) }) else { return nil }
                 return NetVistaAvailableUpdate(release: release, asset: asset)
             }
             .max { NetVistaVersion($0.release.tag) < NetVistaVersion($1.release.tag) }
@@ -172,14 +164,28 @@ final class AppUpdateService {
         }
     }
 
-    private static func expectedSHA256(_ digest: String?) -> String? {
+    static func architectureMatches(_ name: String, platform: String) -> Bool {
+        guard ["macos","darwin"].contains(platform.lowercased()) else { return true }
+        let lower = name.lowercased()
+        #if arch(arm64)
+        return !lower.contains("x86_64") && !lower.contains("x64") && !lower.contains("intel")
+        #else
+        return !lower.contains("arm64") && !lower.contains("aarch64")
+        #endif
+    }
+    static func isTrustedDownload(_ url: URL) -> Bool {
+        url.scheme == "https" && url.host == "github.com" && url.user == nil && url.password == nil &&
+        url.port == nil && url.path.hasPrefix("/user1994g/videoediterNetVistaStudio.github.io/releases/download/")
+    }
+    static func expectedSHA256(_ digest: String?) -> String? {
         guard let digest else { return nil }
         let parts = digest.split(separator: ":", maxSplits: 1).map(String.init)
-        guard parts.count == 2, parts[0].lowercased() == "sha256", parts[1].count == 64 else { return nil }
+        guard parts.count == 2, parts[0].lowercased() == "sha256", parts[1].count == 64,
+              parts[1].allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return nil }
         return parts[1]
     }
 
-    private static func sha256(of url: URL) throws -> String {
+    static func sha256(of url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = SHA256()
@@ -190,28 +196,21 @@ final class AppUpdateService {
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
-
-    private static func uniqueDestination(in directory: URL, named name: String) -> URL {
-        let original = directory.appendingPathComponent(name)
-        guard FileManager.default.fileExists(atPath: original.path) else { return original }
-        let nsName = name as NSString
-        let ext = nsName.pathExtension
-        let stem = nsName.deletingPathExtension
-        for number in 2...999 {
-            let candidateName = ext.isEmpty ? "\(stem) \(number)" : "\(stem) \(number).\(ext)"
-            let candidate = directory.appendingPathComponent(candidateName)
-            if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
-        }
-        return directory.appendingPathComponent("\(UUID().uuidString)-\(name)")
+    static func verifyDownload(_ url: URL, size: Int64, expected: String) throws {
+        let actualSize = Int64(try url.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0)
+        guard actualSize == size else { throw NetVistaUpdateError.downloadedSize(expected:size,actual:actualSize) }
+        let actual = try sha256(of:url)
+        guard actual.caseInsensitiveCompare(expected) == .orderedSame else { throw NetVistaUpdateError.checksum(expected:expected,actual:actual) }
     }
+
 }
 
-private struct NetVistaVersion: Comparable {
+struct NetVistaVersion: Comparable {
     let core: [Int]
     let prerelease: [String]?
 
     init(_ raw: String) {
-        let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines).drop(while: { $0 == "v" || $0 == "V" })
+        let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines).drop(while: { $0 == "v" || $0 == "V" }).split(separator:"+",maxSplits:1).first ?? ""
         let halves = cleaned.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: true)
         core = halves.first?.split(separator: ".").map { Int($0) ?? 0 } ?? [0]
         prerelease = halves.count > 1 ? halves[1].split(separator: ".").map(String.init) : nil
@@ -241,5 +240,48 @@ private struct NetVistaVersion: Comparable {
             }
             return false
         }
+    }
+    static func == (lhs: NetVistaVersion, rhs: NetVistaVersion) -> Bool { !(lhs < rhs) && !(rhs < lhs) }
+}
+
+/// A serial delegate queue owns completion/cancellation and byte progress.
+final class NetVistaUpdateDownload: NSObject, URLSessionDownloadDelegate {
+    private let expectedSize: Int64
+    private let progress: (Double) -> Void
+    private var completion: ((Result<URL, Error>) -> Void)?
+    private var session: URLSession?
+    private var task: URLSessionDownloadTask?
+    init(expectedSize: Int64, progress: @escaping (Double) -> Void, completion: @escaping (Result<URL, Error>) -> Void) {
+        self.expectedSize = expectedSize; self.progress = progress; self.completion = completion
+    }
+    func start(_ request: URLRequest) {
+        let queue = OperationQueue(); queue.maxConcurrentOperationCount = 1
+        let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForResource = 1800
+        let session = URLSession(configuration:config,delegate:self,delegateQueue:queue)
+        self.session = session; task = session.downloadTask(with:request); task?.resume()
+    }
+    func cancel() { task?.cancel() }
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        if totalBytesWritten > expectedSize { downloadTask.cancel(); return }
+        progress(min(1,Double(totalBytesWritten)/Double(expectedSize)))
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        let hosts = ["github.com","release-assets.githubusercontent.com","objects.githubusercontent.com"]
+        guard let url = request.url, url.scheme == "https", hosts.contains(url.host ?? ""), url.user == nil, url.password == nil else { completionHandler(nil); return }
+        completionHandler(request)
+    }
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        guard let http = downloadTask.response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            finish(.failure(NetVistaUpdateError.invalidResponse)); return
+        }
+        // Verification completes synchronously while URLSession's temporary file exists.
+        finish(.success(location))
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error { finish(.failure(error)) }
+        session.finishTasksAndInvalidate(); self.session = nil; self.task = nil
+    }
+    private func finish(_ result: Result<URL, Error>) {
+        let callback = completion; completion = nil; callback?(result)
     }
 }

@@ -860,6 +860,9 @@ enum NativeTimelineVisualPipeline {
         ])
         image = applyingThreeWayColorWheels(to: image, extras: clip.colorExtras)
         image = CubeLUTRuntime.applyOrPassThrough(clip.colorExtras.cubeLUT, to: image)
+        // Advanced node grades run after the legacy controls/LUT. An empty
+        // node stack is a no-op, preserving existing Beta projects exactly.
+        image = AdvancedGradeRuntime.apply(clip.colorExtras.gradeNodes, to: image)
 
         for effect in ClipEffects.normalizedOrder(clip.effects.effectOrder) {
             switch effect {
