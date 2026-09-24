@@ -4,7 +4,7 @@ NetVista Studio is a native desktop video editor. The macOS edition is built wit
 
 ## Project website
 
-The website is published at [video.netvistastudio.com](https://video.netvistastudio.com/). Its GitHub Pages source lives in [`docs/`](docs/), and the included workflow publishes changes after they reach `main` or `master`.
+The combined website is maintained separately in [netvistastudio.io](https://github.com/user1994g/netvistastudio.io), checked out locally at `/Volumes/Crucial X9/400.github.io`. Its editor pages live in `editor/`. This repository contains the desktop app source, packaging, and GitHub release downloads—not the public website.
 
 ## Public beta download
 
