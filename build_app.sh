@@ -11,6 +11,7 @@ cp assets/NetVistaStudio.icns "$APP/Contents/Resources/NetVistaStudio.icns"
 cp assets/welcome-studio-hero.png "$APP/Contents/Resources/welcome-studio-hero.png"
 cp assets/home-video-coast.png "$APP/Contents/Resources/home-video-coast.png"
 cp assets/home-photo-petals.png "$APP/Contents/Resources/home-photo-petals.png"
+cp assets/home-game-world.png "$APP/Contents/Resources/home-game-world.png"
 mkdir -p "$APP/Contents/Resources/game-runtime"
 for GAME_RUNTIME_FILE in assets/game-runtime/*; do
     if [ -f "$GAME_RUNTIME_FILE" ]; then

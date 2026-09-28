@@ -3,7 +3,10 @@ import Foundation
 private final class MemoryStore: StudioSessionStore {
     var data: Data?
     var failSave = false
-    func load() throws -> Data? { data }
+    var failLoad = false
+    var interactiveSaves = 0
+    func load() throws -> Data? { if failLoad { throw URLError(.userAuthenticationRequired) }; return data }
+    func saveAfterSignIn(_ data: Data) throws { interactiveSaves += 1; try save(data) }
     func save(_ data: Data) throws { if failSave { throw URLError(.cannotWriteToFile) }; self.data = data }
     func clear() throws { data = nil }
 }
@@ -25,6 +28,7 @@ private func sessionData(expiry: TimeInterval, refresh: String = "refresh-1") ->
         })
         account.start()
         precondition(calls.isEmpty)
+        precondition(store.interactiveSaves == 0)
         replies = [.success(sessionData(expiry: 20_000)), .success(user)]
         account.signIn(email: " test@example.invalid ", password: "test-password", remember: true)
         precondition(account.session != nil && account.lastVerified == time && store.data != nil)
@@ -35,6 +39,7 @@ private func sessionData(expiry: TimeInterval, refresh: String = "refresh-1") ->
         time += 1499; account.checkIfDue(); precondition(calls.count == count)
         time += 1; replies = [.success(user)]; account.checkIfDue()
         precondition(calls.count == count + 1 && account.lastVerified == time)
+        precondition(store.interactiveSaves == 1, "Only explicit successful sign-in can request Keychain UI")
         print("PASS: sign-in, secure session persistence, server user check, exact 25-minute boundary")
 
         replies = [.failure(URLError(.notConnectedToInternet))]; account.check(force: true)
@@ -81,6 +86,12 @@ private func sessionData(expiry: TimeInterval, refresh: String = "refresh-1") ->
             precondition(request.url!.path == "/auth/v1/user"); reply(.success(user))
         })
         restored.start(); precondition(restored.lastVerified == time)
+        precondition(restoredStore.interactiveSaves == 0, "Restoring a session must not request Keychain UI")
+        let lockedStore = MemoryStore(); lockedStore.failLoad = true
+        let locked = StudioAccount(store: lockedStore, transport: { _, _ in preconditionFailure("Unreadable session must not make an auth request") })
+        locked.start()
+        precondition(locked.session == nil && !locked.busy && lockedStore.interactiveSaves == 0)
+        print("PASS: locked Keychain startup stays signed out without an interactive save")
         print("PASS: restart restores saved session and verifies against server immediately")
     }
 }

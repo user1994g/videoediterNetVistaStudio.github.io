@@ -21,26 +21,39 @@ struct StudioAuthSession: Codable {
 protocol StudioSessionStore {
     func load() throws -> Data?
     func save(_ data: Data) throws
+    func saveAfterSignIn(_ data: Data) throws
     func clear() throws
 }
 
+extension StudioSessionStore {
+    func saveAfterSignIn(_ data: Data) throws { try save(data) }
+}
+
 struct StudioKeychainStore: StudioSessionStore {
-    private var query: [String: Any] {
+    private func query(allowInteraction: Bool = false) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: "com.netvistastudio.account",
-         kSecAttrAccount as String: "supabase-session"]
+         kSecAttrAccount as String: "supabase-session",
+         kSecUseAuthenticationUI as String: allowInteraction ? kSecUseAuthenticationUIAllow : kSecUseAuthenticationUIFail]
     }
     private func check(_ status: OSStatus) throws {
         guard status == errSecSuccess else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
     }
     func load() throws -> Data? {
-        var q = query; q[kSecReturnData as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var q = query(); q[kSecReturnData as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
         let status = SecItemCopyMatching(q as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         try check(status); return result as? Data
     }
     func save(_ data: Data) throws {
+        try save(data, allowInteraction: false)
+    }
+    func saveAfterSignIn(_ data: Data) throws {
+        try save(data, allowInteraction: true)
+    }
+    private func save(_ data: Data, allowInteraction: Bool) throws {
+        let query = query(allowInteraction: allowInteraction)
         let values: [String: Any] = [kSecValueData as String: data, kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
         let status = SecItemUpdate(query as CFDictionary, values as CFDictionary)
         if status == errSecItemNotFound {
@@ -48,7 +61,7 @@ struct StudioKeychainStore: StudioSessionStore {
         } else { try check(status) }
     }
     func clear() throws {
-        let status = SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query() as CFDictionary)
         if status != errSecItemNotFound { try check(status) }
     }
 }
@@ -149,7 +162,7 @@ final class StudioAccount {
             guard let self, ticket == self.generation else { return }
             do {
                 self.session = try self.decodeSession(result.get())
-                self.persist(); self.busy = false; self.check(force: true)
+                self.persist(afterSignIn: true); self.busy = false; self.check(force: true)
             } catch {
                 self.busy = false
                 if let failure = error as? StudioAuthFailure {
@@ -169,9 +182,13 @@ final class StudioAccount {
         return value
     }
 
-    private func persist() {
+    private func persist(afterSignIn: Bool = false) {
         do {
-            if remember, let session { try store.save(JSONEncoder().encode(session)) }
+            if remember, let session {
+                let data = try JSONEncoder().encode(session)
+                if afterSignIn { try store.saveAfterSignIn(data) }
+                else { try store.save(data) }
+            }
             else { try store.clear() }
             storageWarning = false
         } catch {

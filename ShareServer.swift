@@ -61,6 +61,8 @@ final class ShareKeychainDeviceStore: SharePairedDeviceStore {
 
     func loadTokenHashes() -> [String] {
         var query = baseQuery()
+        // Counting remembered devices during startup must never summon Keychain UI.
+        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?

@@ -147,6 +147,7 @@ final class WelcomeViewController: NSViewController {
     private let openButton = StudioHomeButton()
     private let videoCard = StudioHomeCard()
     private let photoCard = StudioHomeCard()
+    private let gameCard = StudioHomeCard()
     private let recentHeader = StudioHomeSurface()
     private let recentRows = StudioHomeSurface()
     private let recentTitle = homeLabel("Recent projects",size:20,weight:.semibold)
@@ -237,12 +238,13 @@ final class WelcomeViewController: NSViewController {
     }
     private func buildContent() {
         configure(openButton,title:"Open project…",action:#selector(openProjectPicker),style:.outlined)
-        openButton.toolTip = "Open a video or layered photo project"
-        [titleLabel,subtitle,openButton,videoCard,photoCard,recentHeader,recentRows].forEach { content.addSubview($0) }
+        openButton.toolTip = "Open a video, layered photo or game project"
+        [titleLabel,subtitle,openButton,videoCard,photoCard,gameCard,recentHeader,recentRows].forEach { content.addSubview($0) }
         makeCard(videoCard,title:"Video Editor",category:"C I N E M A",symbol:"film",asset:"home-video-coast",detail:"Timeline, colour, sound & 3D.",action:#selector(openVideoEditor))
         makeCard(photoCard,title:"Photo Editor",category:"I M A G E S",symbol:"photo",asset:"home-photo-petals",detail:"Layers, brushes & retouching.",action:#selector(openPhotoEditor))
+        makeCard(gameCard,title:"Game Maker",category:"W O R L D S",symbol:"gamecontroller",asset:"home-game-world",detail:"2D, 3D & visual scripting.",action:#selector(showGameMaker))
         recentHeader.addSubview(recentTitle)
-        for (index,title) in ["All","Video","Photos"].enumerated() {
+        for (index,title) in ["All","Video","Photos","Games"].enumerated() {
             let filter = button(title,action:#selector(selectKind(_:)),style:.pill)
             filter.tag = index; filter.active = index == 0; filters.append(filter); recentHeader.addSubview(filter)
         }
@@ -275,19 +277,21 @@ final class WelcomeViewController: NSViewController {
         titleLabel.frame = NSRect(x:x,y:31,width:bodyWidth-156,height:37)
         subtitle.frame = NSRect(x:x,y:76,width:bodyWidth,height:22)
         openButton.frame = NSRect(x:x+bodyWidth-137,y:34,width:137,height:34)
-        let cardWidth = (bodyWidth-20)/2
+        let columns = bodyWidth >= 1020 ? 3 : 2
+        let cardWidth = (bodyWidth-CGFloat(columns-1)*20)/CGFloat(columns)
         let imageHeight = min(320,max(168,cardWidth/1.73))
         let cardHeight = imageHeight+(cardWidth < 410 ? 126 : 94)
-        for (index,card) in [videoCard,photoCard].enumerated() {
+        for (index,card) in [videoCard,photoCard,gameCard].enumerated() {
             card.artworkHeight = imageHeight
-            card.frame = NSRect(x:x+CGFloat(index)*(cardWidth+20),y:124,width:cardWidth,height:cardHeight)
+            card.frame = NSRect(x:x+CGFloat(index % columns)*(cardWidth+20),y:124+CGFloat(index / columns)*(cardHeight+20),width:cardWidth,height:cardHeight)
             card.needsLayout = true
         }
-        recentOrigin = 124+cardHeight+36
+        let rows = (3+columns-1)/columns
+        recentOrigin = 124+CGFloat(rows)*cardHeight+CGFloat(rows-1)*20+36
         recentHeader.frame = NSRect(x:x,y:recentOrigin,width:bodyWidth,height:75)
         recentTitle.frame = NSRect(x:0,y:0,width:240,height:29)
         for (index,filter) in filters.enumerated() { filter.frame = NSRect(x:CGFloat(index)*67,y:41,width:60,height:28) }
-        search.frame = NSRect(x:bodyWidth-min(248,bodyWidth-218),y:40,width:min(248,bodyWidth-218),height:29)
+        search.frame = NSRect(x:bodyWidth-min(248,bodyWidth-285),y:40,width:min(248,bodyWidth-285),height:29)
         let rowsY = recentOrigin+85
         recentRows.frame = NSRect(x:x,y:rowsY,width:bodyWidth,height:listedURLs.isEmpty ? 174 : CGFloat(listedURLs.count)*64)
         layoutRecentRows()
@@ -304,8 +308,8 @@ final class WelcomeViewController: NSViewController {
     }
     @objc private func filterRecent() {
         listedURLs = Array(urls.filter { url in
-            let isPhoto = url.pathExtension.lowercased() == "netvistaphoto"
-            return (selectedKind == 0 || (selectedKind == 2 ? isPhoto : url.pathExtension.lowercased() == "netvistastudio")) && (search.stringValue.isEmpty || url.lastPathComponent.localizedCaseInsensitiveContains(search.stringValue))
+            let extensions = ["", "netvistastudio", "netvistaphoto", "netvistagame"]
+            return (selectedKind == 0 || url.pathExtension.lowercased() == extensions[selectedKind]) && (search.stringValue.isEmpty || url.lastPathComponent.localizedCaseInsensitiveContains(search.stringValue))
         }.prefix(20))
         recentRows.subviews.forEach { $0.removeFromSuperview() }
         if listedURLs.isEmpty {
@@ -397,18 +401,19 @@ final class WelcomeViewController: NSViewController {
 
     #if STUDIO_HOME_CHECKS
     func checkHomeActions() {
-        var video = 0, photo = 0, updates = 0
+        var video = 0, photo = 0, game = 0, updates = 0
+        onOpenGameMaker = { game += 1 }
         onOpenVideoEditor = { video += 1 }; onOpenPhotoEditor = { photo += 1 }
         onCheckForUpdates = { updates += 1 }
         updateButton.performClick(nil); precondition(updates == 1,"Home Update must route to the shared updater")
         precondition(updateButton.frame.maxX <= header.bounds.width && beta.frame.maxX < updateButton.frame.minX)
-        videoCard.launch.performClick(nil); photoCard.launch.performClick(nil)
-        precondition(video == 1 && photo == 1,"Editor launches must route independently")
-        for node in [sidebar,scroll,header,videoCard,photoCard,recentHeader,recentRows] {
+        videoCard.launch.performClick(nil); photoCard.launch.performClick(nil); gameCard.launch.performClick(nil)
+        precondition(video == 1 && photo == 1 && game == 1,"Editor launches must route independently")
+        for node in [sidebar,scroll,header,videoCard,photoCard,gameCard,recentHeader,recentRows] {
             precondition(node.frame.width > 0 && node.frame.height > 0)
         }
         precondition(photoCard.frame.maxX <= content.bounds.width,"Content must not overflow")
-        for parent in [videoCard,photoCard] {
+        for parent in [videoCard,photoCard,gameCard] {
             precondition(parent.artwork.artwork != nil,"Production artwork must be bundled")
             for child in parent.subviews {
                 precondition(child.frame.minX >= 0 && child.frame.maxX <= parent.bounds.width && child.frame.minY >= 0 && child.frame.maxY <= parent.bounds.height,"Tile content must stay in bounds: \(child.frame)")
@@ -420,8 +425,9 @@ final class WelcomeViewController: NSViewController {
         showHome(); precondition(homeButton.active && scroll.contentView.bounds.minY == 0)
     }
     func checkRecentFiltering() {
-        urls = [URL(fileURLWithPath:"/private/tmp/check-video.netvistastudio"),URL(fileURLWithPath:"/private/tmp/check-photo.netvistaphoto")]
-        filterRecent(); precondition(listedURLs.count == 2)
+        urls = [URL(fileURLWithPath:"/private/tmp/check-video.netvistastudio"),URL(fileURLWithPath:"/private/tmp/check-photo.netvistaphoto"),URL(fileURLWithPath:"/private/tmp/check-game.netvistagame")]
+        filterRecent(); precondition(listedURLs.count == 3)
+        filters[3].performClick(nil); precondition(listedURLs.count == 1 && listedURLs[0].pathExtension == "netvistagame")
         filters[2].performClick(nil); precondition(listedURLs.count == 1 && listedURLs[0].pathExtension == "netvistaphoto")
         filters[1].performClick(nil); precondition(listedURLs.count == 1 && listedURLs[0].pathExtension == "netvistastudio")
         filters[0].performClick(nil); search.stringValue = "PHOTO"; filterRecent(); precondition(listedURLs.count == 1)
