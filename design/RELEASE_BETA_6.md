@@ -7,3 +7,5 @@ macOS improvements:
 - Saving a remembered account may request Keychain access after successful sign-in; background checks remain non-interactive.
 
 This is beta software. Back up projects before updating. Windows and Linux use the existing portable editor; the native Studio Home and Keychain changes are macOS-specific.
+
+The macOS download is for Apple Silicon and has a local ad-hoc signature. It is not Apple-notarized, so Gatekeeper may show an unverified-developer warning. No Apple signing credentials are configured for this repository.
