@@ -7,6 +7,8 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
 
 
 def new_id() -> str:
@@ -23,7 +25,11 @@ def finite(value: Any, fallback: float = 0.0) -> float:
 
 def path_from_url(value: Any) -> str:
     if isinstance(value, str):
-        return value[7:] if value.startswith("file://") else value
+        if value.startswith("file://"):
+            url = urlsplit(value)
+            path = url2pathname(url.path)
+            return f"//{url.netloc}{path}" if url.netloc and url.netloc != "localhost" else path
+        return value
     if isinstance(value, dict):
         return str(value.get("relative") or value.get("absolute") or value.get("url") or "")
     return ""
@@ -82,17 +88,27 @@ class TimelineClip:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TimelineClip":
+        transform = deepcopy(data.get("transform") or {})
+        effects = deepcopy(data.get("effects") or {})
+        if not isinstance(transform, dict) or not isinstance(effects, dict):
+            raise ValueError("Clip motion and effects must be property objects, not lists or text.")
+        for key, fallback in [("positionX", 0), ("positionY", 0), ("rotation", 0), ("scale", 1), ("opacity", 1)]:
+            if key in transform:
+                transform[key] = finite(transform[key], fallback)
+        for key in ["blurRadius", "sharpenAmount"]:
+            if key in effects:
+                effects[key] = finite(effects[key])
         return cls(
             id=str(data.get("id") or new_id()), asset_id=str(data.get("assetID") or new_id()),
             name=str(data.get("name") or Path(path_from_url(data.get("url"))).name or "Clip"),
             url=path_from_url(data.get("url")), kind=str(data.get("kind") or "video"),
             in_point=max(0.0, finite(data.get("inPoint"))), out_point=max(0.0, finite(data.get("outPoint"))),
-            timeline_start=max(0.0, finite(data.get("timelineStart"))), track=max(0, int(data.get("track") or 0)),
+            timeline_start=max(0.0, finite(data.get("timelineStart"))), track=max(0, min(4096, int(finite(data.get("track"))))),
             group_id=str(data["groupID"]) if data.get("groupID") else None,
             brightness=finite(data.get("brightness")), contrast=finite(data.get("contrast"), 1.0),
             saturation=finite(data.get("saturation"), 1.0), gamma=finite(data.get("gamma"), 1.0),
             temperature=finite(data.get("temperature"), 6500.0), volume=finite(data.get("volume"), 1.0),
-            transform=deepcopy(data.get("transform") or {}), effects=deepcopy(data.get("effects") or {}),
+            transform=transform, effects=effects,
             raw=deepcopy(data),
         )
 
@@ -222,10 +238,14 @@ class Project:
             deleting.update(c.id for c in self.timeline if c.group_id in groups)
         self.timeline = [c for c in self.timeline if c.id not in deleting]
 
-    def split_at(self, time: float, ids: Iterable[str] | None = None) -> list[str]:
+    def split_at(self, time: float, ids: Iterable[str] | None = None, linked: bool = True) -> list[str]:
         selected = set(ids or [])
+        if linked and selected:
+            groups = {c.group_id for c in self.timeline if c.id in selected and c.group_id}
+            selected.update(c.id for c in self.timeline if c.group_id in groups)
         created: list[str] = []
         additions: list[TimelineClip] = []
+        right_groups: dict[str, str] = {}
         for clip in list(self.timeline):
             if selected and clip.id not in selected:
                 continue
@@ -235,6 +255,8 @@ class Project:
             local = time - clip.timeline_start
             right = deepcopy(clip)
             right.id = new_id()
+            if right.group_id:
+                right.group_id = right_groups.setdefault(right.group_id, new_id())
             right.timeline_start = time
             right.in_point = clip.in_point + local
             right.out_point = clip.out_point if clip.out_point > clip.in_point else clip.in_point + self.clip_duration(clip)
@@ -243,3 +265,48 @@ class Project:
             created.append(right.id)
         self.timeline.extend(additions)
         return created
+
+    def duplicate_clip(self, clip_id: str, linked: bool = True) -> list[str]:
+        anchor = self.clip(clip_id)
+        if anchor is None:
+            return []
+        originals = [anchor]
+        if linked and anchor.group_id:
+            originals = [c for c in self.timeline if c.group_id == anchor.group_id]
+        offset = self.clip_duration(anchor)
+        group = new_id() if len(originals) > 1 else None
+        copies = []
+        for original in originals:
+            copy = deepcopy(original)
+            copy.id = new_id()
+            copy.group_id = group
+            copy.timeline_start += offset
+            copies.append(copy)
+        self.timeline.extend(copies)
+        return [c.id for c in copies]
+
+
+class ProjectHistory:
+    """Bounded edit history; stores models, never preview movies or media bytes."""
+
+    def __init__(self, limit: int = 50) -> None:
+        self.limit = max(1, limit)
+        self.undo_stack: list[Project] = []
+        self.redo_stack: list[Project] = []
+
+    def remember(self, project: Project) -> None:
+        self.undo_stack.append(deepcopy(project))
+        del self.undo_stack[:-self.limit]
+        self.redo_stack.clear()
+
+    def undo(self, project: Project) -> Project | None:
+        if not self.undo_stack:
+            return None
+        self.redo_stack.append(deepcopy(project))
+        return self.undo_stack.pop()
+
+    def redo(self, project: Project) -> Project | None:
+        if not self.redo_stack:
+            return None
+        self.undo_stack.append(deepcopy(project))
+        return self.redo_stack.pop()

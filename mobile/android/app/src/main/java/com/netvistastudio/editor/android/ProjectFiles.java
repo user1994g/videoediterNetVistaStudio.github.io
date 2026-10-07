@@ -15,6 +15,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.List;
 import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -37,7 +38,7 @@ public final class ProjectFiles {
 
     public File mediaFile(StudioProject.Clip clip) throws IOException {
         if (!StudioProject.validMediaPath(clip.id, clip.uri)) throw new IOException("Invalid media identifier.");
-        return new File(media, clip.id + ".video");
+        return new File(media, clip.sourceId() + ".video");
     }
 
     public File importVideo(Uri uri, String id) throws IOException {
@@ -66,8 +67,9 @@ public final class ProjectFiles {
     }
 
     public void saveArchive(StudioProject project, OutputStream output) throws Exception {
+        List<StudioProject.Clip> sources = project.sources();
         long total = 0;
-        for (StudioProject.Clip clip : project.clips) {
+        for (StudioProject.Clip clip : sources) {
             File source = mediaFile(clip);
             if (!source.isFile() || source.length() < 1 || source.length() > MAX_VIDEO_BYTES) throw new IOException("A source video is missing or too large.");
             total = Math.addExact(total, source.length());
@@ -78,7 +80,7 @@ public final class ProjectFiles {
             zip.setLevel(0);
             zip.putNextEntry(new ZipEntry("project.json"));
             zip.write(ProjectCodec.encode(project).getBytes(StandardCharsets.UTF_8)); zip.closeEntry();
-            for (StudioProject.Clip clip : project.clips) {
+            for (StudioProject.Clip clip : sources) {
                 zip.putNextEntry(new ZipEntry(clip.uri));
                 try (InputStream input = new FileInputStream(mediaFile(clip))) { copy(input, zip, MAX_VIDEO_BYTES); }
                 zip.closeEntry();
@@ -97,7 +99,7 @@ public final class ProjectFiles {
                 ZipEntry entry;
                 while ((entry = zip.getNextEntry()) != null) {
                     String name = entry.getName();
-                    if (!names.add(name) || entry.isDirectory() || names.size() > StudioProject.MAX_CLIPS + 1) throw new IOException("Duplicate or invalid project entry.");
+                    if (!names.add(name) || entry.isDirectory() || names.size() > StudioProject.MAX_ASSETS + 1) throw new IOException("Duplicate or invalid project entry.");
                     if ("project.json".equals(name)) { manifest = readText(zip); total += manifest.getBytes(StandardCharsets.UTF_8).length; }
                     else {
                         if (!name.matches("media/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.video")) throw new IOException("Unsafe project media path.");
@@ -114,16 +116,25 @@ public final class ProjectFiles {
             }
             if (manifest == null) throw new IOException("Project manifest is missing.");
             StudioProject decoded = ProjectCodec.decode(manifest);
-            if (assets.size() != decoded.clips.size()) throw new IOException("Project media does not match its manifest.");
+            List<StudioProject.Clip> decodedSources = decoded.sources();
+            if (assets.size() != decodedSources.size()) throw new IOException("Project media does not match its manifest.");
             StudioProject result = new StudioProject();
             result.title = decoded.title; result.width = decoded.width; result.height = decoded.height;
-            for (StudioProject.Clip clip : decoded.clips) {
+            Map<String, String> remappedSources = new HashMap<>();
+            for (StudioProject.Clip clip : decodedSources) {
                 File source = assets.get(clip.uri);
                 if (source == null) throw new IOException("Project is missing " + clip.name);
                 String id = UUID.randomUUID().toString(); File destination = new File(media, id + ".video");
                 if (destination.exists() || !source.renameTo(destination)) throw new IOException("Cannot install project media.");
                 installed.add(destination);
-                result.clips.add(new StudioProject.Clip(id, "media/" + id + ".video", clip.name, clip.durationMs, clip.inMs, clip.outMs));
+                String path = "media/" + id + ".video"; remappedSources.put(clip.uri, path);
+                result.assets.add(new StudioProject.Clip(id, path, clip.name, clip.durationMs, 0, clip.durationMs));
+            }
+            for (StudioProject.Clip clip : decoded.clips) {
+                String path = remappedSources.get(clip.uri);
+                if (path == null) throw new IOException("Missing timeline source.");
+                result.clips.add(new StudioProject.Clip(UUID.randomUUID().toString(), path, clip.name, clip.durationMs,
+                        clip.inMs, clip.outMs, clip.settings.copy()));
             }
             return result;
         } catch (Exception failure) {

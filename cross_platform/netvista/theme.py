@@ -7,18 +7,18 @@ from typing import Any, Mapping
 # These names intentionally match StudioTheme.swift so one declarative theme
 # package can be installed on macOS, Windows, and Linux.
 DEFAULT_THEME: dict[str, Any] = {
-    "windowBackground": "#0d1015",
-    "topBarBackground": "#171b22",
-    "panelBackground": "#12151b",
-    "workspaceBackground": "#101318",
-    "cardBackground": "#171b22",
-    "controlBackground": "#262c36",
-    "primaryText": "#e9edf2",
-    "secondaryText": "#96a0ae",
-    "accent": "#3d89d4",
+    "windowBackground": "#17191E",
+    "topBarBackground": "#111317",
+    "panelBackground": "#20232A",
+    "workspaceBackground": "#181B21",
+    "cardBackground": "#202833",
+    "controlBackground": "#242A33",
+    "primaryText": "#FFFFFF",
+    "secondaryText": "#9DA6B5",
+    "accent": "#F05B5E",
     "danger": "#ff7a84",
-    "separator": "#353d49",
-    "cornerRadius": 5.0,
+    "separator": "#363B46",
+    "cornerRadius": 7.0,
 }
 
 _SAFE_COLOUR = re.compile(r"^#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?$")
@@ -38,10 +38,11 @@ def build_app_style(overrides: Mapping[str, Any] | None = None) -> str:
 QWidget {{ background: {theme['panelBackground']}; color: {theme['primaryText']}; font-family: Arial; font-size: 12px; }}
 QMainWindow, QDialog {{ background: {theme['windowBackground']}; }}
 QFrame#topBar, QFrame#dock, QFrame#timelineTools {{ background: {theme['topBarBackground']}; border-bottom: 1px solid {theme['separator']}; }}
-QLabel#brand {{ color: {theme['accent']}; font-size: 19px; font-weight: 700; }}
+QLabel#brand {{ color: {theme['primaryText']}; font-size: 17px; font-weight: 700; }}
+QLabel#studio {{ color: {theme['accent']}; font-size: 10px; font-weight: 700; }}
 QLabel#panelTitle {{ color: {theme['secondaryText']}; font-size: 10px; font-weight: 700; }}
 QLabel#status {{ color: {theme['secondaryText']}; padding: 6px 10px; }}
-QPushButton, QToolButton {{ background: {theme['controlBackground']}; border: 1px solid {theme['separator']}; border-radius: {radius}px; padding: 7px 11px; }}
+QPushButton, QToolButton {{ background: {theme['controlBackground']}; border: 1px solid {theme['separator']}; border-radius: {radius}px; padding: 5px 9px; }}
 QPushButton:hover, QToolButton:hover {{ background: {theme['cardBackground']}; border-color: {theme['accent']}; }}
 QPushButton:checked {{ background: {theme['accent']}; border-color: {theme['accent']}; color: {theme['primaryText']}; }}
 QPushButton:disabled {{ color: {theme['secondaryText']}; }}

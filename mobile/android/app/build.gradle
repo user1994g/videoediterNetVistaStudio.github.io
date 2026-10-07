@@ -21,7 +21,21 @@ android {
         release { minifyEnabled false }
     }
     lint { abortOnError true }
+    sourceSets.main.res.srcDir(layout.buildDirectory.dir('generated/netvistaArtwork'))
 }
+
+// Reuse the original Mac Studio Home artwork without duplicating its source PNG.
+def prepareStudioArtwork = tasks.register('prepareStudioArtwork', Copy) {
+    from(rootProject.file('../../assets/home-video-coast.png'))
+    into(layout.buildDirectory.dir('generated/netvistaArtwork/drawable'))
+    rename { 'home_video_coast.png' }
+    doFirst {
+        if (!rootProject.file('../../assets/home-video-coast.png').isFile()) {
+            throw new GradleException('Missing shared NetVista Studio Home artwork')
+        }
+    }
+}
+tasks.named('preBuild').configure { dependsOn(prepareStudioArtwork) }
 
 dependencies {
     def media3Version = '1.11.1'

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QKeyEvent, QMouseEvent, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QKeyEvent, QMouseEvent, QPainter, QPen, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import QWidget
 
 from .model import Project, TimelineClip
@@ -10,10 +10,12 @@ from .model import Project, TimelineClip
 class TimelineWidget(QWidget):
     selection_changed = Signal(str)
     clips_changed = Signal()
+    edit_started = Signal()
     playhead_changed = Signal(float)
+    asset_dropped = Signal(str, float, str, int)
 
     ruler_height = 30
-    header_width = 74
+    header_width = 100
     track_height = 46
 
     def __init__(self, parent=None) -> None:
@@ -25,6 +27,11 @@ class TimelineWidget(QWidget):
         self.drag_origin: QPoint | None = None
         self.drag_clip_start = 0.0
         self.drag_clip_track = 0
+        self.drag_started = False
+        self.scrubbing = False
+        self.linked = True
+        self.snapping = True
+        self.setAcceptDrops(True)
         self.setMinimumHeight(250)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
@@ -79,14 +86,15 @@ class TimelineWidget(QWidget):
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#101318"))
-        painter.fillRect(0, 0, self.width(), self.ruler_height, QColor("#161a21"))
-        painter.fillRect(0, 0, self.header_width, self.height(), QColor("#171b22"))
+        painter.fillRect(self.rect(), QColor("#181B21"))
+        painter.fillRect(0, 0, self.width(), self.ruler_height, QColor("#111317"))
+        painter.fillRect(0, 0, self.header_width, self.height(), QColor("#20232A"))
         painter.setFont(QFont("Arial", 8))
         duration = max(self.project.duration() + 12, (self.width() - self.header_width) / self.zoom)
         tick = 1 if self.zoom >= 50 else 5 if self.zoom >= 16 else 10
         painter.setPen(QPen(QColor("#343a45"), 1))
-        second = 0
+        second = max(0, int((_event.rect().left() - self.header_width) / self.zoom / tick) * tick)
+        duration = min(duration, (_event.rect().right() - self.header_width) / self.zoom + tick)
         while second <= duration:
             x = self.header_width + second * self.zoom
             painter.drawLine(int(x), self.ruler_height, int(x), self.height())
@@ -104,11 +112,13 @@ class TimelineWidget(QWidget):
             painter.setPen(QColor("#303641"))
             painter.drawLine(0, y + self.track_height, self.width(), y + self.track_height)
             painter.setPen(QColor("#d1d5dc"))
-            painter.drawText(14, y + 28, f"{kind}{track + 1}")
+            painter.drawText(12, y + 28, f"{kind}{track + 1}   {'Video' if kind == 'V' else 'Audio'}")
         for clip in self.project.timeline:
             rect = self.clip_rect(clip)
+            if not rect.intersects(QRectF(_event.rect())):
+                continue
             selected = clip.id == self.selected_id
-            color = QColor("#1f8a68") if clip.kind == "audio" else QColor("#397eaf")
+            color = QColor("#188B74") if clip.kind == "audio" else QColor("#356F9F")
             if selected:
                 color = color.lighter(135)
             painter.setPen(QPen(QColor("#d8efff") if selected else color.lighter(125), 2 if selected else 1))
@@ -125,6 +135,8 @@ class TimelineWidget(QWidget):
         painter.drawPolygon([QPoint(int(x - 6), 0), QPoint(int(x + 6), 0), QPoint(int(x), 9)])
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
         self.setFocus()
         clip = self.clip_at(event.position().toPoint())
         if clip:
@@ -132,37 +144,79 @@ class TimelineWidget(QWidget):
             self.drag_origin = event.position().toPoint()
             self.drag_clip_start = clip.timeline_start
             self.drag_clip_track = clip.track
+            self.drag_started = False
             self.selection_changed.emit(clip.id)
             self.update()
             return
         self.drag_origin = None
-        self.playhead = max(0.0, (event.position().x() - self.header_width) / self.zoom)
+        self.scrubbing = True
+        self.playhead = min(self.project.duration(), max(0.0, (event.position().x() - self.header_width) / self.zoom))
         self.playhead_changed.emit(self.playhead)
         self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self.scrubbing and event.buttons() & Qt.MouseButton.LeftButton:
+            self.playhead = min(self.project.duration(), max(0.0, (event.position().x() - self.header_width) / self.zoom))
+            self.playhead_changed.emit(self.playhead)
+            self.update()
+            return
         if not self.drag_origin or not self.selected_id or not (event.buttons() & Qt.MouseButton.LeftButton):
             return
         clip = self.project.clip(self.selected_id)
         if not clip:
             return
+        if not self.drag_started:
+            if (event.position().toPoint() - self.drag_origin).manhattanLength() < 4:
+                return
+            self.edit_started.emit()
+            self.drag_started = True
         delta = (event.position().x() - self.drag_origin.x()) / self.zoom
         kind, track = self.lane_for_y(event.position().y())
         if kind != clip.kind:
             track = self.drag_clip_track
         start = max(0.0, round((self.drag_clip_start + delta) * 30) / 30)
-        self.project.move_clip(clip.id, start, track, linked=True)
+        if self.snapping:
+            ends = [0.0, self.playhead]
+            for other in self.project.timeline:
+                if other.id == clip.id or (self.linked and clip.group_id and other.group_id == clip.group_id):
+                    continue
+                ends.extend([other.timeline_start, other.timeline_start + self.project.clip_duration(other)])
+            candidates = ends + [end - self.project.clip_duration(clip) for end in ends]
+            nearest = min(candidates, key=lambda boundary: abs(boundary - start))
+            if abs(nearest - start) * self.zoom <= 8:
+                start = max(0.0, nearest)
+        self.project.move_clip(clip.id, start, track, linked=self.linked)
         self.update_size()
         self.update()
 
     def mouseReleaseEvent(self, _event: QMouseEvent) -> None:
-        if self.drag_origin:
+        if self.drag_started:
             self.clips_changed.emit()
         self.drag_origin = None
+        self.drag_started = False
+        self.scrubbing = False
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasFormat("application/x-netvista-source"):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:
+        if event.mimeData().hasFormat("application/x-netvista-source"):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        if not event.mimeData().hasFormat("application/x-netvista-source"):
+            return
+        asset_id = bytes(event.mimeData().data("application/x-netvista-source")).decode("utf-8", errors="replace")
+        start = max(0.0, (event.position().x() - self.header_width) / self.zoom)
+        kind, track = self.lane_for_y(event.position().y())
+        self.asset_dropped.emit(asset_id, round(start * 30) / 30, kind, track)
+        event.acceptProposedAction()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() in {Qt.Key.Key_Delete, Qt.Key.Key_Backspace} and self.selected_id:
-            self.project.delete_clips([self.selected_id], linked=True)
+            self.edit_started.emit()
+            self.project.delete_clips([self.selected_id], linked=self.linked)
             self.selected_id = None
             self.update_size()
             self.update()

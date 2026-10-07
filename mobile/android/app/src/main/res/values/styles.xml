@@ -2,10 +2,10 @@
 <resources>
     <style name="StudioTheme" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#C6A978</item>
+        <item name="android:colorAccent">#F05B5E</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:statusBarColor">#0C0E12</item>
-        <item name="android:navigationBarColor">#0C0E12</item>
-        <item name="android:windowBackground">#0C0E12</item>
+        <item name="android:statusBarColor">#111317</item>
+        <item name="android:navigationBarColor">#111317</item>
+        <item name="android:windowBackground">#17191E</item>
     </style>
 </resources>

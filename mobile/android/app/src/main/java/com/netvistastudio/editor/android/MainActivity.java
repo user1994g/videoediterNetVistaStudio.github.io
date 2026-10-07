@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.res.Configuration;
+import android.content.res.ColorStateList;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -16,6 +17,8 @@ import android.os.Looper;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.text.InputType;
+import android.text.TextUtils;
+import android.view.inputmethod.EditorInfo;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -23,20 +26,21 @@ import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
-import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.exoplayer.ExoPlayer;
-import androidx.media3.effect.Presentation;
 import androidx.media3.ui.AspectRatioFrameLayout;
 import androidx.media3.ui.PlayerView;
 import androidx.media3.transformer.Composition;
+import androidx.media3.transformer.CompositionPlayer;
 import androidx.media3.transformer.ExportException;
 import androidx.media3.transformer.ExportResult;
 import androidx.media3.transformer.ProgressHolder;
@@ -48,6 +52,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -59,8 +64,9 @@ import java.util.concurrent.atomic.AtomicLong;
 @UnstableApi
 public final class MainActivity extends Activity {
     private static final int IMPORT_VIDEO = 100, OPEN_PROJECT = 101, SAVE_PROJECT = 102, SAVE_MOVIE = 103;
-    private static final int BACKGROUND = Color.rgb(12, 14, 18), PANEL = Color.rgb(23, 27, 33);
-    private static final int TEXT = Color.rgb(240, 241, 244), MUTED = Color.rgb(155, 165, 181), GOLD = Color.rgb(198, 169, 120);
+    private static final int BACKGROUND = Color.rgb(23, 25, 30), PANEL = Color.rgb(32, 35, 42);
+    private static final int TOP = Color.rgb(17, 19, 23), WORKSPACE = Color.rgb(24, 27, 33), CONTROL = Color.rgb(36, 42, 51), CARD = Color.rgb(32, 40, 51);
+    private static final int TEXT = Color.WHITE, MUTED = Color.rgb(157, 166, 181), ACCENT = Color.rgb(240, 91, 94), SEPARATOR = Color.rgb(54, 59, 70);
     private static final Object DRAFT_LOCK = new Object();
     private static final AtomicLong ACTIVE_ACTIVITY = new AtomicLong();
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -69,20 +75,32 @@ public final class MainActivity extends Activity {
     private StudioAccount account;
     private ProjectFiles files;
     private StudioProject project = new StudioProject();
-    private ExoPlayer player;
+    private CompositionPlayer player;
     private Transformer transformer;
     private File renderingFile, completedMovie;
-    private LinearLayout root, timeline, inspector;
+    private LinearLayout root, mediaList, inspector, inspectorPanel, mediaPanel, monitorPanel, compactDrawer;
+    private StudioTimelineView timeline;
+    private TextView projectTitle, timecode, mediaSummary;
+    private Button playButton, undoButton, redoButton;
     private TextView status, summary, accountStatus, loginStatus;
     private Button signInButton, cancelExport;
     private EditText inField, outField;
     private PlayerView playerView;
+    private AlertDialog compactDialog;
     private ProgressBar progress;
     private int selected = -1;
-    private boolean editorVisible, operationBusy, foreground;
+    private boolean editorVisible, homeVisible, operationBusy, foreground, wideLayout, pendingLayoutRebuild;
     private volatile boolean destroyed;
     private long activityGeneration, operationGeneration;
     private boolean draftReady;
+    private int inspectorTab, compactPanel = 1;
+    private String selectedSource;
+    private long playheadMs;
+    private final ArrayDeque<EditState> undo = new ArrayDeque<>(), redo = new ArrayDeque<>();
+    private static final class EditState {
+        final StudioProject project; final int selected; final long playhead;
+        EditState(StudioProject project, int selected, long playhead) { this.project = project.copy(); this.selected = selected; this.playhead = playhead; }
+    }
     private StudioProject pendingSave;
     private final StudioAccount.Listener accountListener = this::accountChanged;
     private final Runnable accountTimer = new Runnable() {
@@ -99,6 +117,21 @@ public final class MainActivity extends Activity {
             main.postDelayed(this, 500);
         }
     };
+    private final Runnable playheadTimer = new Runnable() {
+        @Override public void run() {
+            if (!liveUi() || !editorVisible || !foreground) return;
+            if (player != null && !project.clips.isEmpty()) {
+                playheadMs = Math.max(0, Math.min(project.durationMs(), player.getCurrentPosition()));
+                if (player.isPlaying()) {
+                    int index = clipAt(playheadMs);
+                    if (index != selected) { selected = index; refreshInspector(); refreshPool(); timeline.setProject(project, selected); }
+                }
+                updatePlayhead(player.isPlaying());
+            }
+            main.postDelayed(this, 50);
+        }
+    };
+    private final Runnable effectsPreview = () -> { if (liveUi() && editorVisible && !operationBusy) preview(false); };
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -117,7 +150,7 @@ public final class MainActivity extends Activity {
             try {
                 StudioProject restored;
                 synchronized (DRAFT_LOCK) { restored = files.loadDraft(); }
-                postUi(() -> { project = restored; draftReady = true; selected = project.clips.isEmpty() ? -1 : 0; updateEnabled(); if (editorVisible) refreshTimeline(true); });
+                postUi(() -> { project = restored; draftReady = true; selected = project.clips.isEmpty() ? -1 : 0; updateEnabled(); if (editorVisible) refreshTimeline(true); else if (homeVisible) showHome(); });
             } catch (Exception e) { postUi(() -> { draftReady = true; updateEnabled(); message("Previous edit could not be restored. Your saved project files are untouched."); }); }
         });
     }
@@ -125,10 +158,10 @@ public final class MainActivity extends Activity {
     private void accountChanged(StudioAccount.Snapshot state) {
         if (!liveUi()) return;
         if (state.canEdit) {
-            if (!editorVisible) showEditor();
-            accountStatus.setText((state.email.isEmpty() ? "NetVista account" : state.email) + "\n" + state.status);
+            if (!editorVisible && !homeVisible) showHome();
+            if (accountStatus != null) { accountStatus.setText(state.email.isEmpty() ? "Account verified" : state.email); accountStatus.setContentDescription(state.status); }
         } else {
-            if (editorVisible) {
+            if (editorVisible || homeVisible) {
                 if (transformer != null || renderingFile != null) cancelRendering("Account unavailable. Export cancelled; your project remains saved locally.");
                 autosave(); showLogin();
             }
@@ -138,33 +171,49 @@ public final class MainActivity extends Activity {
     }
 
     private LinearLayout screen() {
+        dismissCompactDialog();
         editActions.clear();
-        root = column(); root.setPadding(dp(16), dp(12), dp(16), dp(12)); root.setBackgroundColor(BACKGROUND);
+        root = column(); root.setPadding(dp(8), dp(4), dp(8), dp(4)); root.setBackgroundColor(BACKGROUND);
         root.setOnApplyWindowInsetsListener((view, insets) -> {
-            view.setPadding(dp(16) + insets.getSystemWindowInsetLeft(), dp(12) + insets.getSystemWindowInsetTop(),
-                    dp(16) + insets.getSystemWindowInsetRight(), dp(12) + insets.getSystemWindowInsetBottom());
+            view.setPadding(dp(8) + insets.getSystemWindowInsetLeft(), dp(4) + insets.getSystemWindowInsetTop(),
+                    dp(8) + insets.getSystemWindowInsetRight(), dp(4) + insets.getSystemWindowInsetBottom());
             return insets;
         });
         setContentView(root); root.requestApplyInsets(); return root;
     }
     private void header(LinearLayout parent) {
-        LinearLayout row = row(); row.setGravity(Gravity.CENTER_VERTICAL);
+        int toolbarHeight = dp(Math.max(44, Math.round(30 * getResources().getConfiguration().fontScale)));
+        LinearLayout row = row(); row.setGravity(Gravity.CENTER_VERTICAL); row.setBackgroundColor(TOP);
         ImageView logo = new ImageView(this); logo.setImageResource(R.drawable.netvista_logo);
         logo.setContentDescription("NetVista Studio logo"); logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        row.addView(logo, new LinearLayout.LayoutParams(dp(52), dp(52)));
-        LinearLayout words = column(); words.setPadding(dp(12), 0, 0, 0);
-        words.addView(label("NETVISTA STUDIO", 18, TEXT, true));
-        words.addView(label("ANDROID · BETA 7 · FIRST MOBILE EDITION", 10, GOLD, true));
-        row.addView(words, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        Button info = button("About", this::about, false); row.addView(info); parent.addView(row);
+        row.addView(logo, new LinearLayout.LayoutParams(dp(24), dp(24)));
+        LinearLayout words = column(); words.setPadding(dp(6), 0, dp(8), 0);
+        TextView brand = label("NetVista", 17, TEXT, true); brand.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); brand.setPadding(0, 0, 0, 0);
+        TextView studio = label("STUDIO", 10, ACCENT, true); studio.setPadding(0, 0, 0, 0); words.addView(brand); words.addView(studio);
+        row.addView(words);
+        boolean narrowToolbar = getResources().getConfiguration().screenWidthDp < 600;
+        if (editorVisible) {
+            Button home = button(narrowToolbar ? "⌂" : "Home", this::showHome, true); home.setContentDescription("Studio Home");
+            if (narrowToolbar) home.setTextSize(17); row.addView(home);
+        }
+        projectTitle = label(homeVisible ? "Studio Home" : editorVisible ? project.title : "Account", 12, TEXT, false);
+        projectTitle.setSingleLine(true); projectTitle.setEllipsize(TextUtils.TruncateAt.END);
+        row.addView(projectTitle, new LinearLayout.LayoutParams(0, toolbarHeight, 1));
+        if (editorVisible) {
+            if (wideLayout) { row.addView(button("Open", this::pickOpenProject, true)); row.addView(button("Save", this::pickSaveProject, true)); }
+            if (!narrowToolbar) { Button export = button("Export", this::exportSettings, true); export.setTextColor(ACCENT); row.addView(export); }
+        }
+        row.addView(button("⋮", this::overflow, false)); parent.addView(row, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, toolbarHeight));
     }
     private void showLogin() {
-        editorVisible = false;
+        flushFocusedEditor();
+        editorVisible = false; homeVisible = false; main.removeCallbacks(playheadTimer); main.removeCallbacks(effectsPreview);
         if (player != null) { player.release(); player = null; }
+        status = null; progress = null; accountStatus = null; timeline = null;
         LinearLayout container = screen(); header(container);
-        ScrollView scroll = new ScrollView(this); LinearLayout form = column(); form.setPadding(0, dp(32), 0, dp(24)); scroll.addView(form);
-        form.addView(label("Your next cut starts here.", 28, TEXT, true));
-        form.addView(label("Sign in with your NetVista account. Video editing and exports run on this device—no Mac or website required.", 15, MUTED, false));
+        ScrollView scroll = new ScrollView(this); LinearLayout form = column(); form.setPadding(dp(12), dp(24), dp(12), dp(16)); scroll.addView(form);
+        form.addView(label("Sign in to NetVista Studio", 17, TEXT, true));
+        form.addView(label("Your existing account. Native video editing, projects and exports run on this device.", 13, MUTED, false));
         EditText email = field("Email address", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
         EditText password = field("Password", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         password.setSaveEnabled(false); password.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
@@ -176,125 +225,394 @@ public final class MainActivity extends Activity {
         }, false); form.addView(signInButton);
         form.addView(button("Create or manage account", () -> startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(StudioAccount.ACCOUNT_URL))), false));
         loginStatus = label("Checking saved sign-in…", 13, MUTED, false); form.addView(loginStatus);
-        form.addView(label("First mobile beta: import videos, preview your sequence, trim and reorder clips, save a self-contained project, and export MP4. Desktop colour, photo, 3D, Game Maker and mods are not included.", 12, MUTED, false));
+        form.addView(label("Native Video, Motion/Effects and Colour workspaces. Desktop photo, 3D, Game Maker and mods are not implemented on Android.", 12, MUTED, false));
         container.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+    }
+    private void showHome() {
+        if (!liveUi() || transformer != null || account == null || !account.state().canEdit) return;
+        flushFocusedEditor();
+        main.removeCallbacks(playheadTimer); main.removeCallbacks(effectsPreview);
+        if (player != null) { player.release(); player = null; }
+        editorVisible = false; homeVisible = true; loginStatus = null; signInButton = null;
+        LinearLayout container = screen(); header(container);
+        accountStatus = label(account.state().email, 11, MUTED, false); container.addView(accountStatus);
+        ScrollView scroll = new ScrollView(this); LinearLayout content = column(); content.setPadding(dp(12), dp(16), dp(12), dp(12)); scroll.addView(content);
+        content.addView(label("Studio Home", 20, TEXT, true));
+        content.addView(label("Create, continue or open a native video project.", 13, MUTED, false));
+        LinearLayout card = panel("VIDEO EDITOR"); card.setBackground(shape(CARD, SEPARATOR)); card.addView(label("Video editing workspace", 17, TEXT, true));
+        ImageView artwork = new ImageView(this); artwork.setImageResource(R.drawable.home_video_coast); artwork.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        artwork.setContentDescription("NetVista Video Editor coast artwork"); card.addView(artwork, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(160)));
+        card.addView(label("Media Pool · Program Monitor · Motion/Effects · Colour · Timeline", 12, MUTED, false));
+        LinearLayout actions = row(); actions.addView(weighted(button("Continue edit", this::showEditor, true)));
+        actions.addView(weighted(button("New project", this::newProject, true))); actions.addView(weighted(button("Open", this::pickOpenProject, true))); card.addView(actions); content.addView(card);
+        content.addView(label("CURRENT LOCAL EDIT", 11, MUTED, true));
+        content.addView(label(project.title + " · " + project.clips.size() + " clips · " + project.sources().size() + " sources", 13, TEXT, true));
+        content.addView(label("Private draft autosave. Save a portable project to keep a separate backup.", 12, MUTED, false));
+        content.addView(label("This Android edition implements Video, Motion/Effects and Colour. Photo, 3D, Game Maker, mods and desktop project compatibility are not included.", 12, MUTED, false));
+        container.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        status = label(operationBusy ? "Working with local media…" : "Private local draft · save a portable backup", 11, MUTED, false);
+        status.setSingleLine(); status.setEllipsize(TextUtils.TruncateAt.END); container.addView(status);
+        progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); progress.setIndeterminate(true);
+        progress.setVisibility(operationBusy ? View.VISIBLE : View.GONE); container.addView(progress, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(5)));
+        cancelExport = null; summary = status; timeline = null; inspector = null; mediaList = null; playButton = null; undoButton = null; redoButton = null; updateEnabled();
     }
     private void showEditor() {
-        editorVisible = true; loginStatus = null; signInButton = null;
+        if (!liveUi() || account == null || !account.state().canEdit) return;
+        flushFocusedEditor();
+        main.removeCallbacks(playheadTimer); main.removeCallbacks(effectsPreview);
+        if (player != null) { playheadMs = player.getCurrentPosition(); player.release(); }
+        editorVisible = true; homeVisible = false; loginStatus = null; signInButton = null;
+        wideLayout = getResources().getConfiguration().screenWidthDp >= 900 && getResources().getConfiguration().screenHeightDp >= 420;
         LinearLayout container = screen(); header(container);
-        ScrollView scroll = new ScrollView(this); LinearLayout editor = column(); scroll.setFillViewport(true); scroll.addView(editor);
-        accountStatus = label("Account verified", 11, MUTED, false); editor.addView(accountStatus);
-        LinearLayout tools = row(); tools.addView(weighted(button("＋ Import", this::pickVideos, true)));
-        tools.addView(weighted(button("Save", this::pickSaveProject, true))); tools.addView(weighted(button("Open", this::pickOpenProject, true))); editor.addView(tools);
-        LinearLayout projectTools = row(); projectTools.addView(weighted(button("Project", this::projectMenu, true)));
-        projectTools.addView(weighted(button("Preview ▶", () -> preview(true), true)));
-        projectTools.addView(weighted(button("Export MP4", this::export, true))); editor.addView(projectTools);
-        player = new ExoPlayer.Builder(this).build();
-        playerView = new PlayerView(this); playerView.setPlayer(player); playerView.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT);
-        playerView.setBackgroundColor(Color.BLACK); playerView.setShowNextButton(true); playerView.setShowPreviousButton(true);
-        editor.addView(playerView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, previewHeight()));
+        mediaPanel = panel("MEDIA POOL"); LinearLayout sourceActions = row();
+        sourceActions.addView(weighted(button("Import", this::pickVideos, false)));
+        sourceActions.addView(weighted(button("Add", () -> addSources(false), false)));
+        sourceActions.addView(weighted(button("Add all", () -> addSources(true), false))); mediaPanel.addView(sourceActions);
+        mediaSummary = label("0 sources", 11, MUTED, false); mediaPanel.addView(mediaSummary);
+        ScrollView poolScroll = new ScrollView(this); mediaList = column(); poolScroll.addView(mediaList); mediaPanel.addView(poolScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        inspectorPanel = panel("INSPECTOR"); LinearLayout inspectorTabs = row();
+        inspectorTabs.addView(weighted(button("Trim", () -> selectWorkspace(0), false)));
+        inspectorTabs.addView(weighted(button("Motion", () -> selectWorkspace(1), false)));
+        inspectorTabs.addView(weighted(button("Colour", () -> selectWorkspace(2), false))); inspectorPanel.addView(inspectorTabs);
+        ScrollView settingsScroll = new ScrollView(this); inspector = column(); settingsScroll.addView(inspector); inspectorPanel.addView(settingsScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        monitorPanel = panel("PROGRAM MONITOR");
+        player = new CompositionPlayer.Builder(this).build();
+        playerView = new PlayerView(this); playerView.setPlayer(player); playerView.setUseController(false);
+        playerView.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT); playerView.setBackgroundColor(Color.BLACK); playerView.setKeepContentOnPlayerReset(true);
+        monitorPanel.addView(playerView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         player.addListener(new Player.Listener() {
-            @Override public void onMediaItemTransition(MediaItem mediaItem, int reason) {
-                if (liveUi() && mediaItem != null) {
-                    for (int i = 0; i < project.clips.size(); i++) if (project.clips.get(i).id.equals(mediaItem.mediaId) && i != selected) {
-                        selected = i; refreshTimeline(false); break;
-                    }
-                }
-            }
-            @Override public void onPlayerError(PlaybackException error) { message("Preview unavailable for this video/codec. Try a standard H.264 MP4. " + error.getErrorCodeName()); }
+            @Override public void onIsPlayingChanged(boolean playing) { if (liveUi() && playButton != null) playButton.setText(playing ? "Ⅱ" : "▶"); }
+            @Override public void onPlayerError(PlaybackException error) { message("Preview unavailable: " + error.getErrorCodeName() + ". Try a standard H.264 MP4."); }
         });
-        progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); progress.setMax(100); progress.setVisibility(View.GONE); editor.addView(progress);
-        cancelExport = button("Cancel export", () -> cancelRendering("Export cancelled. Your source videos and project are untouched."), false);
-        cancelExport.setVisibility(View.GONE); editor.addView(cancelExport);
-        status = label("Import local videos to start editing.", 12, GOLD, false); editor.addView(status);
-        summary = label("TIMELINE", 12, TEXT, true); editor.addView(summary);
-        timeline = column(); editor.addView(timeline);
-        inspector = column(); editor.addView(inspector);
-        editor.addView(label("Cuts-only mobile timeline · MP4 H.264/AAC at 30 fps · selected canvas fits mixed source orientations", 11, MUTED, false));
-        container.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-        refreshTimeline(true); updateEnabled();
+        LinearLayout transport = row(); transport.setGravity(Gravity.CENTER_VERTICAL);
+        Button previous = button("|◀", () -> seekTimeline(startOf(Math.max(0, clipAt(playheadMs) - 1)), false), true); previous.setContentDescription("Previous clip"); transport.addView(previous);
+        playButton = button("▶", this::togglePlay, true); playButton.setTextSize(17); playButton.setContentDescription("Play or pause"); transport.addView(playButton);
+        Button stop = button("■", () -> seekTimeline(0, false), true); stop.setContentDescription("Stop and return to start"); transport.addView(stop);
+        Button next = button("▶|", () -> seekTimeline(startOf(Math.min(project.clips.size() - 1, clipAt(playheadMs) + 1)), false), true); next.setContentDescription("Next clip"); transport.addView(next);
+        timecode = label("00:00:00:00", 11, TEXT, false); timecode.setTypeface(Typeface.MONOSPACE); timecode.setGravity(Gravity.END); transport.addView(timecode, new LinearLayout.LayoutParams(0, dp(44), 1)); monitorPanel.addView(transport);
+        LinearLayout workspace = row(); workspace.setBackgroundColor(WORKSPACE);
+        if (wideLayout) {
+            workspace.addView(mediaPanel, new LinearLayout.LayoutParams(dp(210), ViewGroup.LayoutParams.MATCH_PARENT));
+            workspace.addView(monitorPanel, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
+            workspace.addView(inspectorPanel, new LinearLayout.LayoutParams(dp(240), ViewGroup.LayoutParams.MATCH_PARENT));
+        } else {
+            LinearLayout adaptive = column(); LinearLayout toggles = row();
+            toggles.addView(weighted(button("Media", () -> switchCompactPanel(0), true)));
+            toggles.addView(weighted(button("Monitor", () -> switchCompactPanel(1), true)));
+            toggles.addView(weighted(button("Inspector", () -> switchCompactPanel(2), true)));
+            if (!shortWindow()) adaptive.addView(toggles);
+            adaptive.addView(monitorPanel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+            compactDrawer = column(); adaptive.addView(compactDrawer, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, drawerHeight()));
+            workspace.addView(adaptive, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        }
+        container.addView(workspace, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        LinearLayout timelinePanel = column(); timelinePanel.setBackgroundColor(WORKSPACE); LinearLayout timelineTools = row(); timelineTools.setGravity(Gravity.CENTER_VERTICAL);
+        HorizontalScrollView toolScroll = new HorizontalScrollView(this); toolScroll.setHorizontalScrollBarEnabled(false); LinearLayout timelineActions = row();
+        undoButton = button("Undo", this::undoEdit, true); redoButton = button("Redo", this::redoEdit, true); timelineActions.addView(undoButton); timelineActions.addView(redoButton);
+        timelineActions.addView(button("Split", this::splitAtPlayhead, true)); timelineActions.addView(button("Duplicate", this::duplicateClip, true)); timelineActions.addView(button("Delete", this::deleteClip, true));
+        timelineActions.addView(button("Earlier", () -> move(selected, -1), true)); timelineActions.addView(button("Later", () -> move(selected, 1), true)); toolScroll.addView(timelineActions);
+        timelineTools.addView(toolScroll, new LinearLayout.LayoutParams(0, dp(44), 1));
+        timelineTools.addView(button("−", () -> timeline.zoomOut(), true)); timelineTools.addView(button("+", () -> timeline.zoomIn(), true)); timelineTools.addView(button("Fit", () -> timeline.fit(), true)); timelinePanel.addView(timelineTools);
+        timeline = new StudioTimelineView(this); timeline.setListener(new StudioTimelineView.Listener() {
+            @Override public void selected(int index, long position) { selected = index; seekTimeline(position, false); refreshTimeline(false); }
+            @Override public void scrubbed(long position) { seekTimeline(position, false); }
+            @Override public void reordered(int from, int to) { if (!operationBusy) { recordEdit(); project.move(from, to); selected = to; changedEdit(); } }
+        });
+        timelinePanel.addView(timeline, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        container.addView(timelinePanel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, timelineHeight()));
+        LinearLayout footerNavigation = row(); footerNavigation.addView(weighted(button("Edit", () -> selectWorkspace(0), true)));
+        footerNavigation.addView(weighted(button("Effects", () -> selectWorkspace(1), true))); footerNavigation.addView(weighted(button("Colour", () -> selectWorkspace(2), true)));
+        footerNavigation.addView(weighted(button("Export", this::exportSettings, true))); if (!shortWindow()) container.addView(footerNavigation);
+        LinearLayout bottom = row(); bottom.setGravity(Gravity.CENTER_VERTICAL);
+        status = label("Native local editor · select a clip to inspect", 11, MUTED, false); status.setSingleLine(); status.setEllipsize(TextUtils.TruncateAt.END); bottom.addView(status, new LinearLayout.LayoutParams(0, dp(24), 1));
+        accountStatus = label(account.state().email, 10, MUTED, false); accountStatus.setSingleLine(); accountStatus.setMaxWidth(dp(180)); accountStatus.setEllipsize(TextUtils.TruncateAt.END); bottom.addView(accountStatus); container.addView(bottom);
+        progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); progress.setMax(100); progress.setVisibility(View.GONE); container.addView(progress, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(5)));
+        cancelExport = button("Cancel export", () -> cancelRendering("Export cancelled. Source media and project are unchanged."), false); cancelExport.setVisibility(View.GONE); container.addView(cancelExport);
+        summary = status; refreshTimeline(true); updateEnabled(); if (!wideLayout) switchCompactPanel(compactPanel);
+        main.post(playheadTimer);
     }
 
+    private LinearLayout panel(String title) {
+        LinearLayout panel = column(); panel.setPadding(dp(8), dp(4), dp(8), dp(4)); panel.setBackground(shape(PANEL, SEPARATOR));
+        TextView heading = label(title, 10, MUTED, true); heading.setSingleLine(); heading.setContentDescription(title); panel.addView(heading); return panel;
+    }
+    private boolean shortWindow() { return getResources().getConfiguration().screenHeightDp < 500; }
+    private int timelineHeight() { return dp(shortWindow() ? 140 : wideLayout ? 238 : getResources().getConfiguration().screenHeightDp < 700 ? 180 : 210); }
+    private int drawerHeight() { return dp(getResources().getConfiguration().screenHeightDp < 500 ? 90 : 160); }
+    private boolean panelDialogLayout() { return getResources().getConfiguration().screenHeightDp < 700; }
+    private void switchCompactPanel(int panel) {
+        int previousPanel = compactPanel; compactPanel = panel; if (wideLayout || compactDrawer == null) return;
+        compactDrawer.removeAllViews();
+        // A panel must not consume the monitor on short portrait phone windows.
+        if (panelDialogLayout()) {
+            compactDrawer.setVisibility(View.GONE);
+            if (compactDialog != null && compactDialog.isShowing() && previousPanel == panel) return;
+            dismissCompactDialog();
+            if (panel != 1) {
+                LinearLayout content = panel == 0 ? mediaPanel : inspectorPanel;
+                if (content.getParent() instanceof ViewGroup) ((ViewGroup) content.getParent()).removeView(content);
+                FrameLayout holder = new FrameLayout(this); holder.addView(content, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(Math.max(150, Math.min(250, getResources().getConfiguration().screenHeightDp - 130)))));
+                AlertDialog dialog = new AlertDialog.Builder(this).setTitle(panel == 0 ? "Media Pool" : "Inspector").setView(holder).setPositiveButton("Close", null).create();
+                dialog.setOnDismissListener(d -> {
+                    View focus = holder.findFocus(); if (focus instanceof EditText) focus.clearFocus();
+                    holder.removeAllViews(); if (compactDialog == dialog) { compactDialog = null; compactPanel = 1; }
+                });
+                compactDialog = dialog; dialog.show();
+            }
+            return;
+        }
+        if (panel == 1) compactDrawer.setVisibility(View.GONE);
+        else { compactDrawer.setVisibility(View.VISIBLE); compactDrawer.addView(panel == 0 ? mediaPanel : inspectorPanel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)); }
+    }
+    private void selectWorkspace(int tab) { flushFocusedEditor(); inspectorTab = tab; refreshInspector(); if (!wideLayout) switchCompactPanel(2); }
+    private void dismissCompactDialog() { if (compactDialog != null) { AlertDialog old = compactDialog; compactDialog = null; old.dismiss(); } }
     private void refreshTimeline(boolean updatePreview) {
         if (!liveUi() || !editorVisible || timeline == null) return;
         selected = project.clips.isEmpty() ? -1 : Math.max(0, Math.min(selected, project.clips.size() - 1));
-        summary.setText(project.title + " · " + project.clips.size() + " clips · " + time(project.durationMs())
-                + " · " + project.width + "×" + project.height);
-        timeline.removeAllViews(); inspector.removeAllViews();
-        long start = 0;
-        for (int i = 0; i < project.clips.size(); i++) {
-            StudioProject.Clip clip = project.clips.get(i); final int index = i;
-            LinearLayout item = column(); item.setPadding(dp(12), dp(10), dp(12), dp(10));
-            GradientDrawable background = new GradientDrawable(); background.setColor(i == selected ? Color.rgb(44, 41, 34) : PANEL);
-            background.setCornerRadius(dp(8)); background.setStroke(dp(1), i == selected ? GOLD : PANEL); item.setBackground(background);
-            TextView name = label(String.format(Locale.ROOT, "%02d  %s", i + 1, clip.name), 14, TEXT, true);
-            name.setMaxLines(2); item.addView(name); item.addView(label(time(start) + " → " + time(start + clip.lengthMs())
-                    + "   |   source " + time(clip.inMs) + "–" + time(clip.outMs), 11, MUTED, false));
-            item.setOnClickListener(v -> { if (!operationBusy) { selected = index; refreshTimeline(false); preview(false); } });
-            LinearLayout reorder = row(); Button up = button("↑ Earlier", () -> move(index, -1), false);
-            Button down = button("↓ Later", () -> move(index, 1), false);
-            up.setEnabled(!operationBusy && index > 0); down.setEnabled(!operationBusy && index + 1 < project.clips.size());
-            reorder.addView(weighted(up)); reorder.addView(weighted(down));
-            Button remove = button("Remove", () -> { if (!operationBusy) { project.clips.remove(index); autosave(); refreshTimeline(true); } }, false);
-            remove.setEnabled(!operationBusy); reorder.addView(weighted(remove)); item.addView(reorder);
-            LinearLayout.LayoutParams bounds = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            bounds.topMargin = dp(6); timeline.addView(item, bounds); start += clip.lengthMs();
-        }
-        if (selected >= 0) {
-            StudioProject.Clip clip = project.clips.get(selected);
-            inspector.addView(label("TRIM SELECTED CLIP · seconds", 12, GOLD, true));
-            LinearLayout values = row(); inField = field("In (seconds)", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
-            outField = field("Out (seconds)", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
-            inField.setText(seconds(clip.inMs)); outField.setText(seconds(clip.outMs));
-            values.addView(weighted(inField)); values.addView(weighted(outField)); inspector.addView(values);
-            LinearLayout marks = row(); marks.addView(weighted(button("Set In here", () -> mark(true), false)));
-            marks.addView(weighted(button("Set Out here", () -> mark(false), false)));
-            marks.addView(weighted(button("Apply trim", this::applyTrim, false))); inspector.addView(marks);
-            inField.setEnabled(!operationBusy); outField.setEnabled(!operationBusy);
-        } else timeline.addView(label("No clips yet. Import one or several videos from Files.", 15, MUTED, false));
+        playheadMs = Math.max(0, Math.min(playheadMs, project.durationMs()));
+        projectTitle.setText(project.title); timeline.setProject(project, selected); timeline.setInteractive(!operationBusy && draftReady);
+        refreshPool(); refreshInspector(); updatePlayhead(false); updateEnabled();
         if (updatePreview) preview(false);
     }
-    private void preview(boolean play) {
-        if (!liveUi() || operationBusy || player == null) return;
-        try {
-            if (project.clips.isEmpty()) { player.clearMediaItems(); return; }
-            List<MediaItem> items = MobileExport.previewItems(project, files);
-            player.setVideoEffects(java.util.Collections.singletonList(Presentation.createForWidthAndHeight(
-                    project.width, project.height, Presentation.LAYOUT_SCALE_TO_FIT)));
-            player.setMediaItems(items, Math.max(0, selected), 0); player.prepare(); player.setPlayWhenReady(play);
-        } catch (Exception e) { message(e.getMessage()); }
+    private void refreshPool() {
+        if (!editorVisible || mediaList == null) return;
+        mediaList.removeAllViews(); List<StudioProject.Clip> sources = project.sources(); mediaSummary.setText(sources.size() + " sources · " + project.clips.size() + " timeline clips");
+        if (selectedSource == null && !sources.isEmpty()) selectedSource = sources.get(0).uri;
+        for (StudioProject.Clip source : sources) {
+            LinearLayout item = row(); item.setGravity(Gravity.CENTER_VERTICAL); item.setPadding(dp(6), dp(2), dp(6), dp(2)); item.setMinimumHeight(dp(44));
+            item.setBackground(shape(source.uri.equals(selectedSource) ? CONTROL : PANEL, source.uri.equals(selectedSource) ? ACCENT : PANEL));
+            TextView icon = label("▣", 16, Color.rgb(53, 111, 159), true); item.addView(icon, new LinearLayout.LayoutParams(dp(25), dp(40)));
+            LinearLayout words = column(); TextView name = label(source.name, 12, TEXT, false); name.setSingleLine(); name.setEllipsize(TextUtils.TruncateAt.END); words.addView(name);
+            TextView duration = label(time(source.durationMs), 10, MUTED, false); duration.setTypeface(Typeface.MONOSPACE); words.addView(duration); item.addView(words, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            item.setContentDescription(source.name + ", " + seconds(source.durationMs) + " seconds. Hold to add to timeline."); item.setFocusable(true);
+            item.setOnClickListener(v -> { if (!operationBusy) { selectedSource = source.uri; refreshPool(); } });
+            item.setOnLongClickListener(v -> { selectedSource = source.uri; addSources(false); return true; }); mediaList.addView(item);
+        }
+        if (sources.isEmpty()) mediaList.addView(label("Import local videos. Select a source and Add it to the timeline.", 12, MUTED, false));
+        setEnabledChildren(mediaPanel, !operationBusy && draftReady);
     }
+    private void refreshInspector() {
+        if (!editorVisible || inspector == null) return;
+        inspector.removeAllViews();
+        if (selected < 0 || selected >= project.clips.size()) { inspector.addView(label("Select a timeline clip to edit its trim, motion or colour.", 12, MUTED, false)); return; }
+        StudioProject.Clip clip = project.clips.get(selected); inspector.addView(label(clip.name, 12, TEXT, true));
+        inspector.addView(label("Clip " + (selected + 1) + " · " + seconds(clip.lengthMs()) + "s", 11, MUTED, false));
+        if (inspectorTab == 0) {
+            inspector.addView(label("SOURCE TRIM · SECONDS", 10, MUTED, true));
+            inField = field("In", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL); outField = field("Out", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+            inField.setText(seconds(clip.inMs)); outField.setText(seconds(clip.outMs)); inspector.addView(propertyRow("In", inField)); inspector.addView(propertyRow("Out", outField));
+            LinearLayout marks = row(); marks.addView(weighted(button("Mark In", () -> mark(true), false))); marks.addView(weighted(button("Mark Out", () -> mark(false), false))); inspector.addView(marks);
+            inspector.addView(button("Apply trim", this::applyTrim, false)); inspector.addView(label("Ripple timeline: trimming changes the sequence length. Full source media is retained.", 11, MUTED, false));
+        } else if (inspectorTab == 1) {
+            inspector.addView(label("MOTION & EFFECTS", 10, MUTED, true));
+            effectControl(clip, "Scale %", 0, 5, 800, 100); effectControl(clip, "Rotation °", 1, -360, 360, 1);
+            effectControl(clip, "Position X %", 2, -100, 100, 100); effectControl(clip, "Position Y %", 3, -100, 100, 100); effectControl(clip, "Opacity %", 4, 0, 100, 100);
+            inspector.addView(label("100% scale fits the full source first. X/Y use half-canvas offsets; +Y moves up. Opacity fades to the black single-track canvas.", 11, MUTED, false));
+            inspector.addView(button("Reset motion", () -> resetSettings(false), false));
+        } else {
+            inspector.addView(label("PRIMARY COLOUR", 10, MUTED, true));
+            effectControl(clip, "Brightness %", 5, -100, 100, 100); effectControl(clip, "Contrast %", 6, -100, 100, 100); effectControl(clip, "Saturation %", 7, 0, 200, 100);
+            inspector.addView(label("Adjustments are saved per timeline instance and use the same Media3 composition for monitor and export.", 11, MUTED, false));
+            inspector.addView(button("Reset colour", () -> resetSettings(true), false));
+        }
+        setEnabledChildren(inspector, !operationBusy && draftReady);
+    }
+    private LinearLayout propertyRow(String name, View control) {
+        LinearLayout row = row(); row.setGravity(Gravity.CENTER_VERTICAL); TextView title = label(name, 12, MUTED, false); title.setSingleLine();
+        row.addView(title, new LinearLayout.LayoutParams(dp(64), dp(44))); row.addView(control, new LinearLayout.LayoutParams(0, dp(44), 1)); return row;
+    }
+    private void effectControl(StudioProject.Clip clip, String name, int parameter, float min, float max, float multiplier) {
+        LinearLayout row = row(); row.setGravity(Gravity.CENTER_VERTICAL);
+        float fontScale = Math.max(1f, getResources().getConfiguration().fontScale);
+        TextView title = label(name, 11, MUTED, false); title.setSingleLine();
+        if (fontScale > 1.3f) inspector.addView(title);
+        else row.addView(title, new LinearLayout.LayoutParams(dp(78), dp(44)));
+        EditText value = field(name, InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED);
+        value.setText(number(setting(clip.settings, parameter) * multiplier)); value.setSelectAllOnFocus(true); value.setImeOptions(EditorInfo.IME_ACTION_DONE); value.setContentDescription(name);
+        SeekBar slider = new SeekBar(this); slider.setMax(1000); slider.setMinimumHeight(dp(44)); slider.setContentDescription(name + " slider");
+        slider.setProgress(Math.round((setting(clip.settings, parameter) * multiplier - min) / (max - min) * 1000));
+        row.addView(slider, new LinearLayout.LayoutParams(0, dp(44), 1)); row.addView(value, new LinearLayout.LayoutParams(dp(Math.round(58 * fontScale)), dp(44))); inspector.addView(row);
+        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onStartTrackingTouch(SeekBar bar) { if (!operationBusy) { if (player != null) player.pause(); recordEdit(); } }
+            @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                if (!fromUser || operationBusy || !project.clips.contains(clip)) return;
+                float amount = min + (max - min) * progress / 1000f; value.setText(number(amount)); setSetting(clip, parameter, amount / multiplier); scheduleEffectsPreview();
+            }
+            @Override public void onStopTrackingTouch(SeekBar bar) { autosave(); preview(false); updateEnabled(); }
+        });
+        Runnable commit = () -> {
+            if (operationBusy || !project.clips.contains(clip)) return;
+            try {
+                float amount = Float.parseFloat(value.getText().toString()); if (!Float.isFinite(amount) || amount < min || amount > max) throw new IllegalArgumentException();
+                // Controls display one decimal. A blur without an edit must not
+                // round a slider value or create an extra Undo snapshot.
+                if (!value.getText().toString().equals(number(setting(clip.settings, parameter) * multiplier))) {
+                    if (player != null) player.pause(); recordEdit(); setSetting(clip, parameter, amount / multiplier);
+                    slider.setProgress(Math.round((amount - min) / (max - min) * 1000)); autosave(); preview(false); updateEnabled();
+                }
+            } catch (Exception e) { message(name + " must be between " + number(min) + " and " + number(max) + "."); value.setText(number(setting(clip.settings, parameter) * multiplier)); }
+        };
+        value.setOnFocusChangeListener((field, focused) -> { if (!focused) commit.run(); });
+        value.setOnEditorActionListener((field, action, event) -> {
+            if (action != EditorInfo.IME_ACTION_DONE) return false;
+            commit.run(); value.clearFocus(); return true;
+        });
+    }
+    private static float setting(StudioProject.ClipSettings settings, int parameter) {
+        switch (parameter) { case 0: return settings.scale; case 1: return settings.rotationDegrees; case 2: return settings.positionX; case 3: return settings.positionY; case 4: return settings.opacity; case 5: return settings.brightness; case 6: return settings.contrast; default: return settings.saturation; }
+    }
+    private void setSetting(StudioProject.Clip clip, int parameter, float value) {
+        StudioProject.ClipSettings s = clip.settings;
+        clip.settings = new StudioProject.ClipSettings(parameter == 0 ? value : s.scale, parameter == 1 ? value : s.rotationDegrees,
+                parameter == 2 ? value : s.positionX, parameter == 3 ? value : s.positionY, parameter == 4 ? value : s.opacity,
+                parameter == 5 ? value : s.brightness, parameter == 6 ? value : s.contrast, parameter == 7 ? value : s.saturation);
+    }
+    private void resetSettings(boolean colour) {
+        if (operationBusy || selected < 0) return; recordEdit(); StudioProject.Clip clip = project.clips.get(selected); StudioProject.ClipSettings s = clip.settings;
+        clip.settings = colour ? new StudioProject.ClipSettings(s.scale, s.rotationDegrees, s.positionX, s.positionY, s.opacity, 0, 0, 1)
+                : new StudioProject.ClipSettings(1, 0, 0, 0, 1, s.brightness, s.contrast, s.saturation); changedEdit();
+    }
+    private void scheduleEffectsPreview() { main.removeCallbacks(effectsPreview); main.postDelayed(effectsPreview, 120); }
+    private void preview(boolean play) {
+        if (!liveUi() || !editorVisible || operationBusy || player == null) return;
+        main.removeCallbacks(effectsPreview);
+        try {
+            if (project.clips.isEmpty()) { player.stop(); playerView.setPlayer(null); updatePlayhead(false); return; }
+            playerView.setPlayer(player); player.setComposition(MobileExport.composition(project.copy(), files), Math.min(playheadMs, Math.max(0, project.durationMs() - 1)));
+            player.prepare(); player.setPlayWhenReady(play); updatePlayhead(false);
+        } catch (Exception e) { message("Preview unavailable: " + e.getMessage()); }
+    }
+    private void togglePlay() {
+        if (operationBusy || project.clips.isEmpty() || player == null) { message("Add a source to the timeline first."); return; }
+        flushFocusedEditor();
+        if (player.isPlaying()) player.pause(); else {
+            if (playheadMs >= project.durationMs()) { playheadMs = 0; player.seekTo(0); }
+            if (player.getPlaybackState() == Player.STATE_IDLE) preview(true); else player.play();
+        }
+    }
+    private void seekTimeline(long position, boolean play) {
+        if (operationBusy || project.clips.isEmpty()) return;
+        flushFocusedEditor();
+        playheadMs = Math.max(0, Math.min(position, project.durationMs())); int index = clipAt(playheadMs);
+        if (selected != index) { selected = index; refreshInspector(); timeline.setProject(project, selected); }
+        if (player != null) {
+            if (player.getPlaybackState() == Player.STATE_IDLE) preview(play);
+            else { player.pause(); player.seekTo(Math.min(playheadMs, Math.max(0, project.durationMs() - 1))); if (play) player.play(); }
+        }
+        updatePlayhead(false);
+    }
+    private void updatePlayhead(boolean follow) {
+        if (timecode != null) timecode.setText(frameTime(playheadMs));
+        if (timeline != null) timeline.setPlayhead(playheadMs, follow);
+    }
+    private long startOf(int index) { long value = 0; for (int i = 0; i < Math.max(0, index) && i < project.clips.size(); i++) value += project.clips.get(i).lengthMs(); return value; }
+    private int clipAt(long position) { long end = 0; for (int i = 0; i < project.clips.size(); i++) { end += project.clips.get(i).lengthMs(); if (position < end) return i; } return project.clips.size() - 1; }
     private void move(int index, int direction) {
-        if (operationBusy) return;
-        int target = index + direction;
-        if (target < 0 || target >= project.clips.size()) return;
-        project.move(index, target); selected = target; autosave(); refreshTimeline(true);
+        int target = index + direction; if (operationBusy || index < 0 || target < 0 || target >= project.clips.size()) return;
+        recordEdit(); project.move(index, target); selected = target; playheadMs = startOf(selected); changedEdit();
     }
     private void mark(boolean in) {
-        if (operationBusy || selected < 0 || player == null || player.getCurrentMediaItem() == null) return;
-        StudioProject.Clip clip = project.clips.get(selected);
-        if (!clip.id.equals(player.getCurrentMediaItem().mediaId)) { message("Preview the selected clip first."); return; }
-        long position = Math.min(clip.outMs, clip.inMs + player.getCurrentPosition());
+        if (operationBusy || selected < 0 || clipAt(playheadMs) != selected) return;
+        StudioProject.Clip clip = project.clips.get(selected); long position = Math.min(clip.outMs, clip.inMs + playheadMs - startOf(selected));
         (in ? inField : outField).setText(seconds(position));
     }
     private void applyTrim() {
         if (operationBusy || selected < 0) return;
         try {
             double in = Double.parseDouble(inField.getText().toString()), out = Double.parseDouble(outField.getText().toString());
-            if (!Double.isFinite(in) || !Double.isFinite(out) || in < 0 || out > project.clips.get(selected).durationMs / 1000.0) throw new IllegalArgumentException("Trim times must be inside the source video.");
-            project.clips.get(selected).trim(Math.round(in * 1000), Math.round(out * 1000));
-            autosave(); refreshTimeline(true); message("Trim applied to preview and export.");
-        } catch (Exception e) { message("Invalid trim: Out must be after In, within the source duration."); }
+            if (!Double.isFinite(in) || !Double.isFinite(out) || in < 0 || out > project.clips.get(selected).durationMs / 1000.0 || out <= in) throw new IllegalArgumentException();
+            recordEdit(); project.clips.get(selected).trim(Math.round(in * 1000), Math.round(out * 1000)); playheadMs = startOf(selected); changedEdit(); message("Trim applied to monitor and export.");
+        } catch (Exception e) { message("Out must be after In, inside the source video."); }
+    }
+    private void addSources(boolean all) {
+        if (operationBusy || !draftReady) return; List<StudioProject.Clip> sources = project.sources();
+        if (sources.isEmpty()) { message("Import sources first."); return; }
+        recordEdit(); int first = project.clips.size();
+        for (StudioProject.Clip source : sources) if (all || source.uri.equals(selectedSource)) {
+            if (project.clips.size() >= StudioProject.MAX_CLIPS) { message("Timeline limit: 500 clips."); break; }
+            project.clips.add(new StudioProject.Clip(UUID.randomUUID().toString(), source.uri, source.name, source.durationMs, 0, source.durationMs));
+        }
+        if (project.clips.size() > first) { selected = first; playheadMs = startOf(first); changedEdit(); }
+    }
+    private void splitAtPlayhead() {
+        if (operationBusy || selected < 0) return;
+        StudioProject.Clip clip = project.clips.get(selected); long sourcePosition = clip.inMs + playheadMs - startOf(selected);
+        if (sourcePosition <= clip.inMs || sourcePosition >= clip.outMs) { message("Place the playhead inside a clip before splitting."); return; }
+        try { recordEdit(); project.split(selected, sourcePosition); selected++; changedEdit(); message("Split at playhead. Source media is shared, not copied."); }
+        catch (IllegalArgumentException e) { message(e.getMessage()); }
+    }
+    private void duplicateClip() { if (operationBusy || selected < 0) return; try { recordEdit(); project.duplicate(selected); selected++; playheadMs = startOf(selected); changedEdit(); } catch (IllegalArgumentException e) { message(e.getMessage()); } }
+    private void deleteClip() { if (operationBusy || selected < 0) return; recordEdit(); project.clips.remove(selected); playheadMs = Math.min(playheadMs, project.durationMs()); changedEdit(); }
+    private void recordEdit() { undo.addLast(new EditState(project, selected, playheadMs)); while (undo.size() > 80) undo.removeFirst(); redo.clear(); }
+    private void undoEdit() { if (operationBusy || undo.isEmpty()) return; redo.addLast(new EditState(project, selected, playheadMs)); restoreEdit(undo.removeLast()); }
+    private void redoEdit() { if (operationBusy || redo.isEmpty()) return; undo.addLast(new EditState(project, selected, playheadMs)); restoreEdit(redo.removeLast()); }
+    private void restoreEdit(EditState edit) { project = edit.project.copy(); selected = edit.selected; playheadMs = edit.playhead; changedEdit(); }
+    private void changedEdit() { autosave(); if (editorVisible) refreshTimeline(true); else if (homeVisible) showHome(); }
+
+    private void newProject() {
+        if (operationBusy || !draftReady) return;
+        new AlertDialog.Builder(this).setTitle("New video project")
+                .setMessage("Save a portable backup first if needed. Current imported media remains in private storage and can be restored with Undo.")
+                .setNegativeButton("Cancel", null).setPositiveButton("New project", (d, w) -> {
+                    if (!liveUi() || operationBusy || !account.state().canEdit) return;
+                    recordEdit(); project = new StudioProject(); selected = -1; selectedSource = null; playheadMs = 0;
+                    if (player != null) { player.release(); player = null; }
+                    autosave(); showEditor();
+                }).show();
+    }
+    private void overflow() {
+        String[] options = editorVisible ? new String[]{"Studio Home", "Import sources", "Media Pool", "Inspector", "Motion/Effects", "Colour", "Open project", "Save project", "Project settings", "Account", "Export MP4", "About & licenses"}
+                : new String[]{"Video Editor", "Open project", "Account", "About & licenses"};
+        new AlertDialog.Builder(this).setTitle("NetVista Studio").setItems(options, (dialog, index) -> {
+            if (editorVisible) {
+                switch (index) {
+                    case 0: showHome(); break; case 1: pickVideos(); break; case 2: switchCompactPanel(0); break;
+                    case 3: switchCompactPanel(2); break; case 4: selectWorkspace(1); break; case 5: selectWorkspace(2); break;
+                    case 6: pickOpenProject(); break; case 7: pickSaveProject(); break; case 8: projectMenu(); break;
+                    case 9: accountPanel(); break; case 10: exportSettings(); break; default: about(); break;
+                }
+            } else {
+                if (index == 0 && account.state().canEdit) showEditor();
+                else if (index == 1 && account.state().canEdit) pickOpenProject();
+                else if (index == 2) accountPanel(); else about();
+            }
+        }).show();
+    }
+    private void accountPanel() {
+        StudioAccount.Snapshot state = account.state();
+        new AlertDialog.Builder(this).setTitle("NetVista account")
+                .setMessage((state.email.isEmpty() ? "Sign in with your existing account." : state.email) + "\n\n" + state.status)
+                .setPositiveButton("Check now", (d, w) -> account.checkAsync(true))
+                .setNeutralButton("Manage account", (d, w) -> startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(StudioAccount.ACCOUNT_URL))))
+                .setNegativeButton(state.canEdit ? "Sign out" : "Close", (d, w) -> { if (state.canEdit) { autosave(); account.signOut(); } }).show();
+    }
+    private void exportSettings() {
+        if (operationBusy || !draftReady) return; flushFocusedEditor(); if (!editorVisible) showEditor();
+        LinearLayout options = column(); options.setPadding(dp(12), dp(8), dp(12), dp(8));
+        options.addView(label("MP4 · H.264 video · AAC audio · 30 fps", 12, TEXT, true));
+        options.addView(label("Fits each source to the selected canvas. Motion and colour match the monitor composition; sources stay local.", 12, MUTED, false));
+        Button canvas = button(project.width + " × " + project.height + " · change canvas", () -> canvasMenu(), false); options.addView(canvas);
+        new AlertDialog.Builder(this).setTitle("Export workspace").setView(options).setNegativeButton("Cancel", null)
+                .setPositiveButton("Render MP4", (d, w) -> export()).show();
+    }
+    private void canvasMenu() {
+        if (operationBusy) return;
+        new AlertDialog.Builder(this).setTitle("Output canvas · 30 fps")
+                .setItems(new String[]{"1920 × 1080 · landscape", "1280 × 720 · landscape", "1080 × 1920 · portrait"}, (dialog, size) -> {
+                    if (!liveUi() || operationBusy || !account.state().canEdit) return;
+                    recordEdit(); project.width = size == 1 ? 1280 : size == 2 ? 1080 : 1920;
+                    project.height = size == 1 ? 720 : size == 2 ? 1920 : 1080; changedEdit();
+                }).show();
     }
 
     private void pickVideos() {
-        if (operationBusy || project.clips.size() >= StudioProject.MAX_CLIPS) return;
+        if (operationBusy || !draftReady || project.sources().size() >= StudioProject.MAX_ASSETS) return;
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT); intent.setType("video/*");
         intent.addCategory(Intent.CATEGORY_OPENABLE); intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION); startActivityForResult(intent, IMPORT_VIDEO);
     }
     private void pickOpenProject() {
-        if (operationBusy) return;
+        if (operationBusy || !draftReady) return; flushFocusedEditor();
         new AlertDialog.Builder(this).setTitle("Open a mobile project?")
                 .setMessage("Your current edit is autosaved privately. Save a self-contained project first if you want to keep both edits.")
                 .setNegativeButton("Cancel", null).setPositiveButton("Open", (d, w) -> {
@@ -303,7 +621,7 @@ public final class MainActivity extends Activity {
                 }).show();
     }
     private void pickSaveProject() {
-        if (operationBusy) return;
+        if (operationBusy || !draftReady) return; flushFocusedEditor();
         pendingSave = project.copy(); createDocument("application/octet-stream", filename(project.title) + ".netvistamobile", SAVE_PROJECT);
     }
     private void createDocument(String type, String name, int request) {
@@ -339,10 +657,12 @@ public final class MainActivity extends Activity {
         } else if (request == SAVE_MOVIE && completedMovie != null) saveMovie(destination);
     }
     private void importVideos(List<Uri> uris) {
+        flushFocusedEditor();
+        recordEdit();
         setBusy(true, "Copying selected videos into private storage…");
         long ticket = ++operationGeneration;
         StudioProject target = project.copy();
-        int available = StudioProject.MAX_CLIPS - project.clips.size();
+        int available = StudioProject.MAX_ASSETS - project.sources().size();
         io.execute(() -> {
             List<StudioProject.Clip> imported = new ArrayList<>(); List<String> failures = new ArrayList<>();
             for (Uri uri : uris.subList(0, Math.min(available, uris.size()))) {
@@ -352,7 +672,7 @@ public final class MainActivity extends Activity {
                     imported.add(new StudioProject.Clip(id, "media/" + id + ".video", name, duration, 0, duration));
                 } catch (Exception e) { if (copy != null) copy.delete(); failures.add("One video was unreadable, unsupported or exceeded 4 GiB."); }
             }
-            target.clips.addAll(imported);
+            target.assets.addAll(imported);
             String saveWarning = "";
             try {
                 if (!saveDraftIfCurrent(target)) { removePrivateCopies(imported); return; }
@@ -360,14 +680,16 @@ public final class MainActivity extends Activity {
                 if (destroyed || ACTIVE_ACTIVITY.get() != activityGeneration) { removePrivateCopies(imported); return; }
                 saveWarning = " Private autosave failed—use Save to keep a project backup.";
             }
-            String result = imported.size() + " videos imported." + (failures.isEmpty() ? "" : " " + failures.size() + " could not be imported.") + saveWarning;
+            String result = imported.size() + " sources imported. Select Add or Add all." + (failures.isEmpty() ? "" : " " + failures.size() + " could not be imported.") + saveWarning;
             postResult(ticket, () -> {
-                project = target; selected = project.clips.isEmpty() ? -1 : project.clips.size() - imported.size();
-                setBusy(false, result); refreshTimeline(true);
+                project = target; if (!imported.isEmpty()) selectedSource = imported.get(0).uri;
+                setBusy(false, result); if (editorVisible) { refreshTimeline(false); if (!wideLayout) switchCompactPanel(0); } else if (homeVisible) showHome();
             });
         });
     }
     private void loadProject(Uri source) {
+        flushFocusedEditor();
+        recordEdit();
         setBusy(true, "Loading self-contained project…");
         long ticket = ++operationGeneration;
         io.execute(() -> {
@@ -378,17 +700,27 @@ public final class MainActivity extends Activity {
                     if (input == null) throw new IOException("Project cannot be read.");
                     loaded = files.loadArchive(input); imported = loaded;
                 }
-                // Validate the real video and duration instead of trusting archive metadata.
-                for (int i = 0; i < loaded.clips.size(); i++) {
-                    StudioProject.Clip clip = loaded.clips.get(i); long actual = videoDuration(files.mediaFile(clip));
-                    loaded.clips.set(i, new StudioProject.Clip(clip.id, clip.uri, clip.name, actual, clip.inMs, clip.outMs));
+                // Validate each real source once; shared instances retain separate effects.
+                java.util.Map<String, Long> durations = new java.util.HashMap<>();
+                for (StudioProject.Clip clip : loaded.sources()) durations.put(clip.uri, videoDuration(files.mediaFile(clip)));
+                for (int i = 0; i < loaded.assets.size(); i++) {
+                    StudioProject.Clip clip = loaded.assets.get(i); long actual = durations.get(clip.uri);
+                    loaded.assets.set(i, new StudioProject.Clip(clip.id, clip.uri, clip.name, actual, 0, actual));
                 }
-                if (!saveDraftIfCurrent(loaded)) { removePrivateCopies(loaded.clips); return; }
-                postResult(ticket, () -> { project = loaded; selected = loaded.clips.isEmpty() ? -1 : 0; setBusy(false, "Project loaded with its own video copies."); refreshTimeline(true); });
+                for (int i = 0; i < loaded.clips.size(); i++) {
+                    StudioProject.Clip clip = loaded.clips.get(i); long actual = durations.get(clip.uri);
+                    loaded.clips.set(i, new StudioProject.Clip(clip.id, clip.uri, clip.name, actual, clip.inMs, clip.outMs, clip.settings.copy()));
+                }
+                if (!saveDraftIfCurrent(loaded)) { removePrivateCopies(loaded.sources()); return; }
+                postResult(ticket, () -> {
+                    if (player != null) { player.release(); player = null; }
+                    project = loaded; selected = loaded.clips.isEmpty() ? -1 : 0; playheadMs = 0; selectedSource = null;
+                    setBusy(false, "Project loaded with its media, motion and colour."); showEditor();
+                });
             } catch (Exception e) {
                 // These are new private copies created by this failed import, not
                 // originals, current-project media, or files from the provider.
-                if (imported != null) removePrivateCopies(imported.clips);
+                if (imported != null) removePrivateCopies(imported.sources());
                 postResult(ticket, () -> setBusy(false, "Open failed: " + e.getMessage() + " Your current edit is unchanged."));
             }
         });
@@ -411,6 +743,7 @@ public final class MainActivity extends Activity {
     }
 
     private void export() {
+        flushFocusedEditor();
         if (operationBusy || project.clips.isEmpty()) { message("Import a video before exporting."); return; }
         if (completedMovie != null && completedMovie.isFile()) {
             new AlertDialog.Builder(this).setTitle("Rendered movie waiting to be saved")
@@ -423,7 +756,7 @@ public final class MainActivity extends Activity {
             renderingFile = File.createTempFile("netvista-export-", ".mp4", getCacheDir());
             // Transformer expects to create its own output, never an existing user movie.
             if (!renderingFile.delete()) throw new IOException("Export staging is unavailable.");
-            player.stop(); setBusy(true, "Rendering MP4 · keep the app open"); cancelExport.setVisibility(View.VISIBLE);
+            if (player != null) player.stop(); setBusy(true, "Rendering MP4 · keep the app open"); cancelExport.setVisibility(View.VISIBLE);
             long ticket = ++operationGeneration;
             File outputFile = renderingFile;
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -499,24 +832,18 @@ public final class MainActivity extends Activity {
                     if (which == 0) {
                         EditText title = field("Project name", InputType.TYPE_CLASS_TEXT); title.setText(project.title);
                         new AlertDialog.Builder(this).setTitle("Rename edit").setView(title).setNegativeButton("Cancel", null)
-                                .setPositiveButton("Rename", (d, w) -> { String text = title.getText().toString().trim(); project.title = text.isEmpty() ? "Untitled edit" : text.substring(0, Math.min(text.length(), 200)); autosave(); refreshTimeline(false); }).show();
+                                .setPositiveButton("Rename", (d, w) -> { if (!liveUi() || operationBusy || !account.state().canEdit) return; recordEdit(); String text = title.getText().toString().trim(); project.title = text.isEmpty() ? "Untitled edit" : text.substring(0, Math.min(text.length(), 200)); changedEdit(); }).show();
                     } else if (which == 1) {
-                        new AlertDialog.Builder(this).setTitle("Export canvas · 30 fps")
-                                .setItems(new String[]{"1080p landscape · 1920×1080", "720p landscape · 1280×720", "1080p portrait · 1080×1920"}, (d, size) -> {
-                                    project.width = size == 1 ? 1280 : size == 2 ? 1080 : 1920;
-                                    project.height = size == 1 ? 720 : size == 2 ? 1920 : 1080;
-                                    autosave(); refreshTimeline(true);
-                                }).show();
+                        canvasMenu();
                     } else if (which == 2) {
-                        new AlertDialog.Builder(this).setTitle("Start a new edit?").setMessage("Save your current edit as a self-contained project first. Imported video copies remain in app storage.")
-                                .setNegativeButton("Cancel", null).setPositiveButton("New edit", (d, w) -> { project = new StudioProject(); selected = -1; autosave(); refreshTimeline(true); }).show();
+                        newProject();
                     } else if (which == 3) account.checkAsync(true);
                     else new AlertDialog.Builder(this).setTitle("Sign out?").setMessage("Your edit is autosaved privately. You can reopen it after signing in.")
                                 .setNegativeButton("Cancel", null).setPositiveButton("Sign out", (d, w) -> { autosave(); account.signOut(); }).show();
                 }).show();
     }
     private void about() {
-        String text = "NetVista Studio 1.4.0 · Beta 7\nFirst standalone Android mobile edition\n\nNative local video editing: import, sequence preview, trims, clip order, portable projects and H.264/AAC MP4 export.\n\nThis is not the full desktop editor. There are no transitions, layered audio/video tracks, colour grading, effects, photo/3D/Game Maker, mods or desktop project compatibility. Projects embed original videos; keep backups before uninstalling. Android may defer background account checks. Exports require the app to remain foreground.\n\nOpen-source notices:\n";
+        String text = "NetVista Studio 1.4.0 · Beta 7 · Android mobile edition\n\nNative Video, Motion/Effects and Colour workspaces: source pool, program monitor, graphical timeline, trims/split/duplicate/order, undo/redo, portable projects and H.264/AAC MP4 export. Motion and primary colour use the same composition in monitor and export.\n\nThis is not full desktop feature parity. No independent multitrack placement/mixing, transitions, keyframes, LUTs/advanced grading, photo/3D/Game Maker, mods or desktop project compatibility. The A1 lane represents linked source audio, not a separate editable track. Opacity fades to the black canvas. Projects embed original videos; keep backups before uninstalling. Android may defer background account checks. Exports require the app to remain foreground.\n\nOpen-source notices:\n";
         try (InputStream input = getAssets().open("THIRD_PARTY_NOTICES.txt")) {
             java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream(); ProjectFiles.copy(input, output, 128 * 1024);
             text += output.toString(StandardCharsets.UTF_8.name());
@@ -527,19 +854,35 @@ public final class MainActivity extends Activity {
     }
     private void setBusy(boolean busy, String message) {
         if (!liveUi()) return;
+        if (busy) flushFocusedEditor();
         operationBusy = busy; updateEnabled(); message(message);
         if (progress != null) { progress.setVisibility(busy ? View.VISIBLE : View.GONE); progress.setIndeterminate(true); }
         if (editorVisible) refreshTimeline(false);
+        if (!busy && foreground && editorVisible && player != null && player.getPlaybackState() == Player.STATE_IDLE) preview(false);
+        if (!busy && pendingLayoutRebuild) { pendingLayoutRebuild = false; if (editorVisible) showEditor(); else if (homeVisible) showHome(); }
     }
-    private void updateEnabled() { for (Button action : editActions) action.setEnabled(!operationBusy && draftReady); }
-    private void message(String value) { if (!liveUi()) return; if (status != null && editorVisible) status.setText(value == null ? "Operation unavailable." : value); }
-    private int previewHeight() { return dp(getResources().getConfiguration().smallestScreenWidthDp >= 600 ? 320 : 220); }
-    @Override public void onConfigurationChanged(Configuration configuration) { super.onConfigurationChanged(configuration); if (playerView != null) { ViewGroup.LayoutParams params = playerView.getLayoutParams(); params.height = previewHeight(); playerView.setLayoutParams(params); } }
-    @Override protected void onResume() { super.onResume(); foreground = true; if (account != null) { account.checkAsync(true); main.removeCallbacks(accountTimer); main.post(accountTimer); } }
-    @Override protected void onStop() { foreground = false; main.removeCallbacks(accountTimer); if (player != null) player.pause(); if (renderingFile != null) cancelRendering("Export cancelled when the app left the foreground. Keep the app open while rendering."); if (editorVisible) autosave(); super.onStop(); }
+    private void updateEnabled() {
+        for (Button action : editActions) action.setEnabled(!operationBusy && draftReady);
+        if (undoButton != null) undoButton.setEnabled(!operationBusy && !undo.isEmpty());
+        if (redoButton != null) redoButton.setEnabled(!operationBusy && !redo.isEmpty());
+        if (timeline != null) timeline.setInteractive(!operationBusy && draftReady);
+    }
+    private void setEnabledChildren(View view, boolean enabled) {
+        view.setEnabled(enabled);
+        if (view instanceof ViewGroup) for (int i = 0; i < ((ViewGroup) view).getChildCount(); i++) setEnabledChildren(((ViewGroup) view).getChildAt(i), enabled);
+    }
+    private void flushFocusedEditor() {
+        if (compactDialog != null && compactDialog.getWindow() != null) { View focus = compactDialog.getWindow().getDecorView().findFocus(); if (focus instanceof EditText) focus.clearFocus(); }
+        if (root != null) { View focus = root.findFocus(); if (focus instanceof EditText) focus.clearFocus(); }
+    }
+    private void message(String value) { if (!liveUi()) return; if (status != null && (editorVisible || homeVisible)) status.setText(value == null ? "Operation unavailable." : value); }
+    @Override public void onConfigurationChanged(Configuration configuration) { super.onConfigurationChanged(configuration); if (operationBusy) pendingLayoutRebuild = true; else if (editorVisible) showEditor(); else if (homeVisible) showHome(); }
+    @Override protected void onResume() { super.onResume(); foreground = true; if (account != null) { account.checkAsync(true); main.removeCallbacks(accountTimer); main.post(accountTimer); } main.removeCallbacks(playheadTimer); if (editorVisible) main.post(playheadTimer); }
+    @Override protected void onStop() { foreground = false; main.removeCallbacks(accountTimer); main.removeCallbacks(playheadTimer); main.removeCallbacks(effectsPreview); flushFocusedEditor(); if (player != null) player.pause(); if (renderingFile != null) cancelRendering("Export cancelled when the app left the foreground. Keep the app open while rendering."); if (editorVisible || homeVisible) autosave(); super.onStop(); }
     @Override protected void onSaveInstanceState(Bundle saved) { if (completedMovie != null) saved.putString("rendered_movie", completedMovie.getName()); super.onSaveInstanceState(saved); }
     @Override protected void onDestroy() {
         destroyed = true; operationGeneration++; editorVisible = false;
+        dismissCompactDialog();
         if (account != null) account.removeListener(accountListener);
         main.removeCallbacksAndMessages(null);
         if (transformer != null) { transformer.cancel(); transformer = null; }
@@ -553,11 +896,19 @@ public final class MainActivity extends Activity {
     private LinearLayout column() { LinearLayout value = new LinearLayout(this); value.setOrientation(LinearLayout.VERTICAL); return value; }
     private LinearLayout row() { LinearLayout value = new LinearLayout(this); value.setOrientation(LinearLayout.HORIZONTAL); return value; }
     private <T extends View> T weighted(T view) { view.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1)); return view; }
-    private TextView label(String value, int size, int color, boolean bold) { TextView text = new TextView(this); text.setText(value); text.setTextSize(size); text.setTextColor(color); text.setPadding(0, dp(8), 0, dp(8)); if (bold) text.setTypeface(Typeface.DEFAULT, Typeface.BOLD); return text; }
-    private Button button(String value, Runnable action, boolean editing) { Button button = new Button(this); button.setText(value); button.setAllCaps(false); button.setTextSize(12); button.setTextColor(TEXT); button.setMinWidth(0); button.setMinimumWidth(0); button.setMinHeight(dp(48)); button.setPadding(dp(6), 0, dp(6), 0); button.setOnClickListener(v -> action.run()); if (editing) editActions.add(button); return button; }
-    private EditText field(String hint, int type) { EditText field = new EditText(this); field.setHint(hint); field.setTextColor(TEXT); field.setHintTextColor(MUTED); field.setInputType(type); field.setSingleLine(true); field.setTextSize(15); field.setMinimumHeight(dp(48)); return field; }
+    private TextView label(String value, int size, int color, boolean bold) { TextView text = new TextView(this); text.setText(value); text.setTextSize(size); text.setTextColor(color); text.setPadding(0, dp(3), 0, dp(3)); if (bold) text.setTypeface(Typeface.DEFAULT, Typeface.BOLD); return text; }
+    private Button button(String value, Runnable action, boolean editing) {
+        Button button = new Button(this); button.setText(value); button.setAllCaps(false); button.setSingleLine(true); button.setEllipsize(TextUtils.TruncateAt.END);
+        button.setTextSize(12); button.setTextColor(TEXT); button.setMinWidth(dp(44)); button.setMinimumWidth(dp(44)); button.setMinHeight(dp(44)); button.setMinimumHeight(dp(44));
+        button.setPadding(dp(7), 0, dp(7), 0); button.setBackgroundTintList(ColorStateList.valueOf(CONTROL)); button.setContentDescription(value);
+        button.setOnClickListener(v -> { flushFocusedEditor(); action.run(); }); if (editing) editActions.add(button); return button;
+    }
+    private EditText field(String hint, int type) { EditText field = new EditText(this); field.setHint(hint); field.setTextColor(TEXT); field.setHintTextColor(MUTED); field.setInputType(type); field.setSingleLine(true); field.setTextSize(12); field.setMinimumHeight(dp(44)); field.setPadding(dp(6), 0, dp(6), 0); field.setBackground(shape(CONTROL, SEPARATOR)); return field; }
+    private GradientDrawable shape(int color, int border) { GradientDrawable value = new GradientDrawable(); value.setColor(color); value.setCornerRadius(dp(6)); value.setStroke(dp(1), border); return value; }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private static String filename(String name) { String value = name.replaceAll("[^A-Za-z0-9._ -]", "_").trim(); return value.isEmpty() ? "NetVista edit" : value.substring(0, Math.min(value.length(), 80)); }
     private static String seconds(long milliseconds) { return String.format(Locale.ROOT, "%.3f", milliseconds / 1000.0); }
+    private static String number(float value) { return String.format(Locale.ROOT, "%.1f", value); }
+    private static String frameTime(long value) { long seconds = value / 1000; return String.format(Locale.ROOT, "%02d:%02d:%02d:%02d", seconds / 3600, (seconds / 60) % 60, seconds % 60, (value % 1000) * 30 / 1000); }
     private static String time(long milliseconds) { return String.format(Locale.ROOT, "%02d:%02d.%03d", milliseconds / 60000, (milliseconds / 1000) % 60, milliseconds % 1000); }
 }

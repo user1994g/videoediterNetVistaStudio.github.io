@@ -8,7 +8,17 @@ This is the native desktop Windows/Linux edition of NetVista Studio. It uses Qt 
 - Import video or audio with the button or by dropping files into the application.
 - Put any number of clips side by side on one lane or move clips between unlimited video/audio lanes.
 - Linked picture and sound placement, clip selection, deletion, cutting at the playhead, timeline zoom, and playback of an automatically rendered timeline preview.
+- Studio Home stays accessible while editing. The native media pool, monitor,
+  timeline and inspector use the Mac palette and compact typography, including
+  the same coast artwork on Home. Inspector readouts stay visible at 960×640.
+- Drag sources from the Media Pool directly onto timeline tracks. Split linked
+  video/audio together, duplicate, toggle linking/snapping, scrub, fit the
+  timeline, and undo/redo up to 50 edits without copying media files.
 - Edit scale, opacity, colour, effects and volume values from the same workspace pages and keep those values in the shared project.
+- Motion includes position, rotation and zoom above 100%; zero opacity really
+  becomes transparent. Blur/sharpen and colour use the same processing path in
+  single-frame previews and movie export. Editing one property leaves other Mac
+  values and unknown project fields intact.
 - Preserve editable 3D scene data and add portable OBJ, DAE, GLTF, GLB or USDZ model references.
 - Export MP4, MOV or MKV at 24–120 fps using H.264, HEVC, AV1 or ProRes when the bundled FFmpeg build supports the encoder.
 - Output presets from 720p through **16K (15360 × 8640)** plus an even-sized custom width/height option.
@@ -49,4 +59,10 @@ The packaged app is written to `dist/NetVistaStudio`. GitHub Actions runs the sa
 
 ## Current beta difference
 
-The portable edition uses an FFmpeg preview proxy for a complete layered sequence, so a complex timeline can take a moment to refresh after an edit. The Mac edition continues to use its AVFoundation live compositor. Animated SceneKit 3D editing, maps, physics, and rig posing remain Mac-specific in this beta; the Windows/Linux edition preserves those scenes and portable model references without deleting them. The `.netvistamod` manifest format is shared by all three systems; see [`../MODDING.md`](../MODDING.md).
+The portable edition seeks and renders only active source frames for paused
+slider edits and scrubbing. It renders a full FFmpeg movie proxy when playback
+is requested, so a complex timeline can take a moment before playing. The Mac
+edition uses its AVFoundation live compositor. Animated SceneKit 3D editing,
+maps, physics, rig posing and the photo/game/model editors remain Mac-specific;
+this edition preserves scenes and model references without rendering them. The
+`.netvistamod` manifest format is shared; see [`../MODDING.md`](../MODDING.md).

@@ -3,10 +3,15 @@ package com.netvistastudio.editor.android;
 import android.content.Context;
 import android.net.Uri;
 import androidx.media3.common.C;
+import androidx.media3.common.Effect;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.effect.Presentation;
+import androidx.media3.effect.Brightness;
+import androidx.media3.effect.Contrast;
+import androidx.media3.effect.GlMatrixTransformation;
+import androidx.media3.effect.RgbMatrix;
 import androidx.media3.transformer.Composition;
 import androidx.media3.transformer.EditedMediaItem;
 import androidx.media3.transformer.EditedMediaItemSequence;
@@ -22,6 +27,54 @@ import java.util.List;
 @UnstableApi
 public final class MobileExport {
     private MobileExport() {}
+
+    /**
+     * Shared per-clip pipeline for CompositionPlayer preview and Transformer export. Source
+     * fitting precedes user transforms; transforms retain the selected canvas and clip at its
+     * edges. Colour operates in Media3's linear RGB space. This single-track editor flattens
+     * opacity onto black, because the opaque H.264 output cannot store an alpha channel.
+     */
+    public static List<Effect> videoEffects(StudioProject.Clip clip, int width, int height) {
+        if (clip == null || clip.settings == null) throw new IllegalArgumentException("Clip settings are missing.");
+        StudioProject.ClipSettings settings = clip.settings.copy();
+        List<Effect> effects = new ArrayList<>();
+        effects.add(Presentation.createForWidthAndHeight(width, height, Presentation.LAYOUT_SCALE_TO_FIT));
+        if (settings.scale != 1f || settings.rotationDegrees != 0f
+                || settings.positionX != 0f || settings.positionY != 0f) {
+            float[] matrix = settings.canvasTransformMatrix(width, height);
+            effects.add((GlMatrixTransformation) presentationTimeUs -> matrix);
+        }
+        if (settings.brightness != 0f) effects.add(new Brightness(settings.brightness));
+        if (settings.contrast != 0f) effects.add(new Contrast(settings.contrast));
+        if (settings.saturation != 1f) {
+            float[] sdrMatrix = saturationMatrix(settings.saturation, false);
+            float[] hdrMatrix = saturationMatrix(settings.saturation, true);
+            effects.add((RgbMatrix) (presentationTimeUs, useHdr) -> useHdr ? hdrMatrix : sdrMatrix);
+        }
+        if (settings.opacity != 1f) {
+            float alpha = settings.opacity;
+            // Merely adding AlphaScale would leave RGB unchanged when H.264 discards alpha.
+            // RGB * opacity is exactly a one-layer fade over our opaque black background.
+            float[] matrix = new float[]{alpha, 0f, 0f, 0f, 0f, alpha, 0f, 0f,
+                    0f, 0f, alpha, 0f, 0f, 0f, 0f, 1f};
+            effects.add((RgbMatrix) (presentationTimeUs, useHdr) -> matrix);
+        }
+        return Collections.unmodifiableList(effects);
+    }
+
+    private static float[] saturationMatrix(float saturation, boolean useHdr) {
+        // Luminance coefficients match the colour primaries supplied by RgbMatrix's contract.
+        float red = useHdr ? 0.2627f : 0.2126f;
+        float green = useHdr ? 0.6780f : 0.7152f;
+        float blue = useHdr ? 0.0593f : 0.0722f;
+        float inverse = 1f - saturation;
+        return new float[]{
+                red * inverse + saturation, red * inverse, red * inverse, 0f,
+                green * inverse, green * inverse + saturation, green * inverse, 0f,
+                blue * inverse, blue * inverse, blue * inverse + saturation, 0f,
+                0f, 0f, 0f, 1f
+        };
+    }
 
     /** Exactly the same clip order and time boundaries are used by preview and export. */
     public static List<MediaItem> previewItems(StudioProject project, ProjectFiles files) throws IOException {
@@ -39,10 +92,14 @@ public final class MobileExport {
     public static Composition composition(StudioProject project, ProjectFiles files) throws IOException {
         if (project.clips.isEmpty()) throw new IOException("Import a video before exporting.");
         List<EditedMediaItem> edited = new ArrayList<>();
-        for (MediaItem item : previewItems(project, files)) {
+        List<MediaItem> items = previewItems(project, files);
+        for (int i = 0; i < items.size(); i++) {
+            MediaItem item = items.get(i);
+            StudioProject.Clip clip = project.clips.get(i);
             edited.add(new EditedMediaItem.Builder(item).setFrameRate(30)
-                    .setEffects(new Effects(Collections.emptyList(), Collections.singletonList(
-                            Presentation.createForWidthAndHeight(project.width, project.height, Presentation.LAYOUT_SCALE_TO_FIT))))
+                    // CompositionPlayer needs source duration BEFORE clipping, not edit length.
+                    .setDurationUs(Math.multiplyExact(clip.durationMs, 1000))
+                    .setEffects(new Effects(Collections.emptyList(), videoEffects(clip, project.width, project.height)))
                     .build());
         }
         // Explicit audio/video track types synthesize silence for silent clips and

@@ -6,11 +6,12 @@ import shutil
 import subprocess
 import threading
 from collections import deque
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .model import Project, TimelineClip
+from .model import Project, TimelineClip, finite
 
 
 RESOLUTION_PRESETS: dict[str, tuple[int, int]] = {
@@ -96,15 +97,29 @@ def _clip_filter(clip: TimelineClip, index: int, project: Project, width: int, h
     contrast = max(0.0, min(4.0, clip.contrast))
     saturation = max(0.0, min(4.0, clip.saturation))
     gamma = max(0.1, min(10.0, clip.gamma))
-    transform_scale = max(0.01, min(8.0, float(clip.transform.get("scale", 1.0) or 1.0)))
-    opacity = max(0.0, min(1.0, float(clip.transform.get("opacity", 1.0) or 1.0)))
-    fit_w = max(2, int(width * min(1.0, transform_scale))) & ~1
-    fit_h = max(2, int(height * min(1.0, transform_scale))) & ~1
-    return (f"[{index}:v:0]trim=start={clip.in_point:.6f}:duration={duration:.6f},setpts=PTS-STARTPTS,"
-            f"scale={fit_w}:{fit_h}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black@0,format=rgba,"
-            f"eq=brightness={brightness:.4f}:contrast={contrast:.4f}:saturation={saturation:.4f}:gamma={gamma:.4f},"
-            f"colorchannelmixer=aa={opacity:.4f},setpts=PTS+{clip.timeline_start:.6f}/TB[v{index}]")
+    transform_scale = max(0.01, min(8.0, finite(clip.transform.get("scale"), 1.0)))
+    # A zero value is an intentional transparent clip, not a missing setting.
+    opacity = max(0.0, min(1.0, finite(clip.transform.get("opacity"), 1.0)))
+    fit_w = max(2, int(width * transform_scale)) & ~1
+    fit_h = max(2, int(height * transform_scale)) & ~1
+    rotation = max(-360.0, min(360.0, finite(clip.transform.get("rotation"))))
+    chain = [f"[{index}:v:0]trim=start={clip.in_point:.6f}:duration={duration:.6f}",
+             "setpts=PTS-STARTPTS", "setsar=1",
+             f"scale={fit_w}:{fit_h}:force_original_aspect_ratio=decrease",
+             f"eq=brightness={brightness:.4f}:contrast={contrast:.4f}:saturation={saturation:.4f}:gamma={gamma:.4f}"]
+    blur = max(0.0, min(50.0, finite(clip.effects.get("blurRadius"))))
+    sharpen = max(0.0, min(4.0, finite(clip.effects.get("sharpenAmount"))))
+    if blur:
+        chain.append(f"gblur=sigma={blur:.4f}")
+    if sharpen:
+        chain.append(f"unsharp=5:5:{sharpen:.4f}:5:5:0")
+    chain.append("format=rgba")
+    if rotation:
+        # Stored rotations share the Mac editor's counter-clockwise convention.
+        angle = -rotation * 3.141592653589793 / 180
+        chain.append(f"rotate={angle:.6f}:ow=rotw({angle:.6f}):oh=roth({angle:.6f}):c=black@0")
+    chain += [f"colorchannelmixer=aa={opacity:.4f}", f"setpts=PTS+{clip.timeline_start:.6f}/TB[v{index}]"]
+    return ",".join(chain)
 
 
 def build_command(project: Project, options: ExportOptions) -> list[str]:
@@ -124,7 +139,10 @@ def build_command(project: Project, options: ExportOptions) -> list[str]:
     previous = "base"
     for number, (index, clip) in enumerate(enumerate(video)):
         output = "vout" if number == len(video) - 1 else f"ov{number}"
-        filters.append(f"[{previous}][v{index}]overlay=eof_action=pass:shortest=0:format=auto[{output}]")
+        x = max(-2.0, min(2.0, finite(clip.transform.get("positionX")))) * options.width / 2
+        y = -max(-2.0, min(2.0, finite(clip.transform.get("positionY")))) * options.height / 2
+        filters.append(f"[{previous}][v{index}]overlay=x=(W-w)/2+{x:.4f}:y=(H-h)/2+{y:.4f}:"
+                       f"eof_action=pass:shortest=0:format=auto[{output}]")
         previous = output
     if options.include_audio and audio:
         audio_labels = []
@@ -170,6 +188,8 @@ class ExportProcess:
 
     def run(self, project: Project, options: ExportOptions,
             progress: Callable[[float, str], None] | None = None) -> str:
+        if self.cancelled.is_set():
+            raise FFmpegError("Export cancelled.")
         command = build_command(project, options)
         total = max(project.duration(), 1 / options.fps)
         # FFmpeg writes diagnostics to stderr and progress records to stdout.
@@ -180,31 +200,72 @@ class ExportProcess:
                                         text=True, errors="replace", bufsize=1)
         assert self.process.stdout is not None
         diagnostic_tail: deque[str] = deque(maxlen=20)
-        for line in self.process.stdout:
+        try:
+            for line in self.process.stdout:
+                if self.cancelled.is_set():
+                    raise FFmpegError("Export cancelled.")
+                key, _, value = line.strip().partition("=")
+                if key in {"out_time_us", "out_time_ms"}:
+                    try:
+                        seconds = int(value) / 1_000_000
+                        if progress:
+                            progress(min(0.999, seconds / total), f"{seconds:.1f} of {total:.1f} seconds")
+                    except ValueError:
+                        pass
+                elif line.strip():
+                    diagnostic_tail.append(line.rstrip())
+            status = self.process.wait()
             if self.cancelled.is_set():
-                self.cancel()
                 raise FFmpegError("Export cancelled.")
-            key, _, value = line.strip().partition("=")
-            if key in {"out_time_us", "out_time_ms"}:
+            if status != 0:
+                tail = "\n".join(diagnostic_tail)
+                raise FFmpegError(tail or f"FFmpeg stopped with status {status}.")
+            if progress:
+                progress(1.0, "Complete")
+            return options.output
+        finally:
+            # A worker is not finished until its encoder is reaped. Otherwise
+            # Cancel/close can remove files while a child still writes to them.
+            if self.process.poll() is None:
+                self.process.terminate()
                 try:
-                    seconds = int(value) / 1_000_000
-                    if progress:
-                        progress(min(0.999, seconds / total), f"{seconds:.1f} of {total:.1f} seconds")
-                except ValueError:
-                    pass
-            elif line.strip():
-                diagnostic_tail.append(line.rstrip())
-        status = self.process.wait()
-        if self.process.stdout:
+                    self.process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait()
             self.process.stdout.close()
-        if status != 0:
-            tail = "\n".join(diagnostic_tail)
-            raise FFmpegError(tail or f"FFmpeg stopped with status {status}.")
-        if progress:
-            progress(1.0, "Complete")
-        return options.output
 
 
 def render_preview(project: Project, destination: str) -> str:
     return ExportProcess().run(project, ExportOptions(destination, 1280, 720, 30, "H.264", "mp4", 30,
                                                        include_audio=True, preset="ultrafast"))
+
+
+def render_frame(project: Project, seconds: float, destination: str) -> str:
+    """Seek only active source frames; don't encode a whole movie for a slider."""
+    snapshot = deepcopy(project)
+    active = sorted((clip for clip in snapshot.timeline if clip.kind == "video" and
+                     clip.timeline_start <= seconds < clip.timeline_start + snapshot.clip_duration(clip)),
+                    key=lambda clip: (clip.track, clip.timeline_start))
+    command = [ffmpeg_executable(), "-hide_banner", "-loglevel", "error", "-y"]
+    source_offsets = []
+    for clip in active:
+        source_offsets.append(clip.in_point + seconds - clip.timeline_start)
+        clip.in_point, clip.out_point, clip.timeline_start = 0, 0.1, 0
+    snapshot.timeline = active
+    filters = ["color=c=black:s=640x360:r=30:d=0.1[base]"]
+    previous = "base"
+    for index, (clip, offset) in enumerate(zip(active, source_offsets)):
+        command += ["-ss", f"{offset:.6f}", "-i", clip.url]
+        filters.append(_clip_filter(clip, index, snapshot, 640, 360))
+        x = max(-2.0, min(2.0, finite(clip.transform.get("positionX")))) * 320
+        y = -max(-2.0, min(2.0, finite(clip.transform.get("positionY")))) * 180
+        output = f"frame{index}"
+        filters.append(f"[{previous}][v{index}]overlay=x=(W-w)/2+{x:.4f}:y=(H-h)/2+{y:.4f}:"
+                       f"eof_action=pass:format=auto[{output}]")
+        previous = output
+    command += ["-filter_complex", ";".join(filters), "-map", f"[{previous}]", "-frames:v", "1", "-update", "1", destination]
+    result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=30)
+    if result.returncode:
+        raise FFmpegError(result.stderr[-2000:] or "Frame preview failed.")
+    return destination
