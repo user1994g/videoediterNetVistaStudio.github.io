@@ -53,6 +53,7 @@ import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** A native local editor, not a website wrapper or a remote desktop companion. */
 @UnstableApi
@@ -60,6 +61,8 @@ public final class MainActivity extends Activity {
     private static final int IMPORT_VIDEO = 100, OPEN_PROJECT = 101, SAVE_PROJECT = 102, SAVE_MOVIE = 103;
     private static final int BACKGROUND = Color.rgb(12, 14, 18), PANEL = Color.rgb(23, 27, 33);
     private static final int TEXT = Color.rgb(240, 241, 244), MUTED = Color.rgb(155, 165, 181), GOLD = Color.rgb(198, 169, 120);
+    private static final Object DRAFT_LOCK = new Object();
+    private static final AtomicLong ACTIVE_ACTIVITY = new AtomicLong();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final List<Button> editActions = new ArrayList<>();
@@ -77,14 +80,17 @@ public final class MainActivity extends Activity {
     private ProgressBar progress;
     private int selected = -1;
     private boolean editorVisible, operationBusy, foreground;
+    private volatile boolean destroyed;
+    private long activityGeneration, operationGeneration;
+    private boolean draftReady;
     private StudioProject pendingSave;
     private final StudioAccount.Listener accountListener = this::accountChanged;
     private final Runnable accountTimer = new Runnable() {
-        @Override public void run() { if (foreground) { account.checkAsync(false); main.postDelayed(this, 30000); } }
+        @Override public void run() { if (foreground && liveUi()) { account.checkAsync(false); main.postDelayed(this, 30000); } }
     };
     private final Runnable exportTimer = new Runnable() {
         @Override public void run() {
-            if (transformer == null || renderingFile == null) return;
+            if (!liveUi() || transformer == null || renderingFile == null) return;
             ProgressHolder holder = new ProgressHolder();
             if (transformer.getProgress(holder) == Transformer.PROGRESS_STATE_AVAILABLE) {
                 progress.setIndeterminate(false); progress.setProgress(holder.progress);
@@ -96,6 +102,7 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        synchronized (DRAFT_LOCK) { activityGeneration = ACTIVE_ACTIVITY.incrementAndGet(); }
         try { files = new ProjectFiles(this); }
         catch (IOException e) { new AlertDialog.Builder(this).setMessage(e.getMessage()).setPositiveButton("Close", (d, w) -> finish()).show(); return; }
         if (saved != null) {
@@ -108,19 +115,23 @@ public final class MainActivity extends Activity {
         AccountCheckJob.schedule(this);
         io.execute(() -> {
             try {
-                StudioProject restored = files.loadDraft();
-                main.post(() -> { project = restored; selected = project.clips.isEmpty() ? -1 : 0; if (editorVisible) refreshTimeline(true); });
-            } catch (Exception e) { main.post(() -> message("Previous edit could not be restored. Your saved project files are untouched.")); }
+                StudioProject restored;
+                synchronized (DRAFT_LOCK) { restored = files.loadDraft(); }
+                postUi(() -> { project = restored; draftReady = true; selected = project.clips.isEmpty() ? -1 : 0; updateEnabled(); if (editorVisible) refreshTimeline(true); });
+            } catch (Exception e) { postUi(() -> { draftReady = true; updateEnabled(); message("Previous edit could not be restored. Your saved project files are untouched."); }); }
         });
     }
 
     private void accountChanged(StudioAccount.Snapshot state) {
-        if (isDestroyed()) return;
+        if (!liveUi()) return;
         if (state.canEdit) {
             if (!editorVisible) showEditor();
             accountStatus.setText((state.email.isEmpty() ? "NetVista account" : state.email) + "\n" + state.status);
         } else {
-            if (editorVisible) { cancelRendering("Account unavailable. Export cancelled; your project remains saved locally."); autosave(); showLogin(); }
+            if (editorVisible) {
+                if (transformer != null || renderingFile != null) cancelRendering("Account unavailable. Export cancelled; your project remains saved locally.");
+                autosave(); showLogin();
+            }
             if (loginStatus != null) loginStatus.setText(state.status);
             if (signInButton != null) signInButton.setEnabled(!state.busy);
         }
@@ -184,7 +195,7 @@ public final class MainActivity extends Activity {
         editor.addView(playerView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, previewHeight()));
         player.addListener(new Player.Listener() {
             @Override public void onMediaItemTransition(MediaItem mediaItem, int reason) {
-                if (mediaItem != null) {
+                if (liveUi() && mediaItem != null) {
                     for (int i = 0; i < project.clips.size(); i++) if (project.clips.get(i).id.equals(mediaItem.mediaId) && i != selected) {
                         selected = i; refreshTimeline(false); break;
                     }
@@ -205,7 +216,7 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshTimeline(boolean updatePreview) {
-        if (!editorVisible || timeline == null) return;
+        if (!liveUi() || !editorVisible || timeline == null) return;
         selected = project.clips.isEmpty() ? -1 : Math.max(0, Math.min(selected, project.clips.size() - 1));
         summary.setText(project.title + " · " + project.clips.size() + " clips · " + time(project.durationMs())
                 + " · " + project.width + "×" + project.height);
@@ -244,7 +255,7 @@ public final class MainActivity extends Activity {
         if (updatePreview) preview(false);
     }
     private void preview(boolean play) {
-        if (operationBusy || player == null) return;
+        if (!liveUi() || operationBusy || player == null) return;
         try {
             if (project.clips.isEmpty()) { player.clearMediaItems(); return; }
             List<MediaItem> items = MobileExport.previewItems(project, files);
@@ -296,11 +307,13 @@ public final class MainActivity extends Activity {
         pendingSave = project.copy(); createDocument("application/octet-stream", filename(project.title) + ".netvistamobile", SAVE_PROJECT);
     }
     private void createDocument(String type, String name, int request) {
+        if (!liveUi() || !foreground) return;
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT); intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType(type); intent.putExtra(Intent.EXTRA_TITLE, name); startActivityForResult(intent, request);
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (!liveUi() || account == null || io.isShutdown()) return;
         if (result != RESULT_OK || data == null) { if (request == SAVE_PROJECT) pendingSave = null; return; }
         if (!account.state().canEdit) { message("Sign in again to continue. Your project is safe."); return; }
         if (request == IMPORT_VIDEO) {
@@ -314,16 +327,21 @@ public final class MainActivity extends Activity {
         else if (request == SAVE_PROJECT && pendingSave != null) {
             StudioProject value = pendingSave; pendingSave = null;
             setBusy(true, "Saving project with original videos…");
+            long ticket = ++operationGeneration;
             io.execute(() -> {
                 try (OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
                     if (output == null) throw new IOException("Project destination is unavailable."); files.saveArchive(value, output);
-                    main.post(() -> setBusy(false, "Self-contained project saved. All imported videos are included."));
-                } catch (Exception e) { deleteIncomplete(destination); main.post(() -> setBusy(false, "Project save failed: " + e.getMessage())); }
+                } catch (Exception e) {
+                    deleteIncomplete(destination); postResult(ticket, () -> setBusy(false, "Project save failed: " + e.getMessage())); return;
+                }
+                postResult(ticket, () -> setBusy(false, "Self-contained project saved. All imported videos are included."));
             });
         } else if (request == SAVE_MOVIE && completedMovie != null) saveMovie(destination);
     }
     private void importVideos(List<Uri> uris) {
         setBusy(true, "Copying selected videos into private storage…");
+        long ticket = ++operationGeneration;
+        StudioProject target = project.copy();
         int available = StudioProject.MAX_CLIPS - project.clips.size();
         io.execute(() -> {
             List<StudioProject.Clip> imported = new ArrayList<>(); List<String> failures = new ArrayList<>();
@@ -334,35 +352,44 @@ public final class MainActivity extends Activity {
                     imported.add(new StudioProject.Clip(id, "media/" + id + ".video", name, duration, 0, duration));
                 } catch (Exception e) { if (copy != null) copy.delete(); failures.add("One video was unreadable, unsupported or exceeded 4 GiB."); }
             }
-            main.post(() -> {
-                project.clips.addAll(imported); selected = project.clips.isEmpty() ? -1 : project.clips.size() - imported.size();
-                setBusy(false, imported.size() + " videos imported." + (failures.isEmpty() ? "" : " " + failures.size() + " could not be imported."));
-                autosave(); refreshTimeline(true);
+            target.clips.addAll(imported);
+            String saveWarning = "";
+            try {
+                if (!saveDraftIfCurrent(target)) { removePrivateCopies(imported); return; }
+            } catch (Exception e) {
+                if (destroyed || ACTIVE_ACTIVITY.get() != activityGeneration) { removePrivateCopies(imported); return; }
+                saveWarning = " Private autosave failed—use Save to keep a project backup.";
+            }
+            String result = imported.size() + " videos imported." + (failures.isEmpty() ? "" : " " + failures.size() + " could not be imported.") + saveWarning;
+            postResult(ticket, () -> {
+                project = target; selected = project.clips.isEmpty() ? -1 : project.clips.size() - imported.size();
+                setBusy(false, result); refreshTimeline(true);
             });
         });
     }
     private void loadProject(Uri source) {
         setBusy(true, "Loading self-contained project…");
+        long ticket = ++operationGeneration;
         io.execute(() -> {
             StudioProject imported = null;
-            try (InputStream input = getContentResolver().openInputStream(source)) {
-                if (input == null) throw new IOException("Project cannot be read.");
-                StudioProject loaded = files.loadArchive(input);
-                imported = loaded;
+            try {
+                StudioProject loaded;
+                try (InputStream input = getContentResolver().openInputStream(source)) {
+                    if (input == null) throw new IOException("Project cannot be read.");
+                    loaded = files.loadArchive(input); imported = loaded;
+                }
                 // Validate the real video and duration instead of trusting archive metadata.
                 for (int i = 0; i < loaded.clips.size(); i++) {
                     StudioProject.Clip clip = loaded.clips.get(i); long actual = videoDuration(files.mediaFile(clip));
                     loaded.clips.set(i, new StudioProject.Clip(clip.id, clip.uri, clip.name, actual, clip.inMs, clip.outMs));
                 }
-                files.saveDraft(loaded);
-                main.post(() -> { project = loaded; selected = loaded.clips.isEmpty() ? -1 : 0; setBusy(false, "Project loaded with its own video copies."); refreshTimeline(true); });
+                if (!saveDraftIfCurrent(loaded)) { removePrivateCopies(loaded.clips); return; }
+                postResult(ticket, () -> { project = loaded; selected = loaded.clips.isEmpty() ? -1 : 0; setBusy(false, "Project loaded with its own video copies."); refreshTimeline(true); });
             } catch (Exception e) {
                 // These are new private copies created by this failed import, not
                 // originals, current-project media, or files from the provider.
-                if (imported != null) for (StudioProject.Clip clip : imported.clips) {
-                    try { files.mediaFile(clip).delete(); } catch (IOException ignored) { /* invalid IDs never resolve paths */ }
-                }
-                main.post(() -> setBusy(false, "Open failed: " + e.getMessage() + " Your current edit is unchanged."));
+                if (imported != null) removePrivateCopies(imported.clips);
+                postResult(ticket, () -> setBusy(false, "Open failed: " + e.getMessage() + " Your current edit is unchanged."));
             }
         });
     }
@@ -397,14 +424,18 @@ public final class MainActivity extends Activity {
             // Transformer expects to create its own output, never an existing user movie.
             if (!renderingFile.delete()) throw new IOException("Export staging is unavailable.");
             player.stop(); setBusy(true, "Rendering MP4 · keep the app open"); cancelExport.setVisibility(View.VISIBLE);
+            long ticket = ++operationGeneration;
+            File outputFile = renderingFile;
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             transformer = MobileExport.transformer(this, new Transformer.Listener() {
                 @Override public void onCompleted(Composition composition, ExportResult result) {
+                    if (!liveUi() || ticket != operationGeneration || renderingFile != outputFile) { outputFile.delete(); return; }
                     completedMovie = renderingFile; renderingFile = null; transformer = null;
                     finishRender(); setBusy(false, "Render complete. Choose where to save your MP4.");
                     createDocument("video/mp4", filename(project.title) + ".mp4", SAVE_MOVIE);
                 }
                 @Override public void onError(Composition composition, ExportResult result, ExportException error) {
+                    if (!liveUi() || ticket != operationGeneration || renderingFile != outputFile) { outputFile.delete(); return; }
                     cancelRendering("Export failed: " + error.getErrorCodeName() + ". Device codecs may not support this source/size. Source videos are unchanged.");
                 }
             });
@@ -413,15 +444,20 @@ public final class MainActivity extends Activity {
     }
     private void saveMovie(Uri destination) {
         File source = completedMovie; setBusy(true, "Saving rendered MP4…");
+        long ticket = ++operationGeneration;
         io.execute(() -> {
             try (InputStream input = new FileInputStream(source); OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
                 if (output == null) throw new IOException("Movie destination is unavailable.");
                 ProjectFiles.copy(input, output, Long.MAX_VALUE);
-                main.post(() -> { source.delete(); completedMovie = null; setBusy(false, "MP4 exported successfully. Open it from your chosen Files location."); });
-            } catch (Exception e) { deleteIncomplete(destination); main.post(() -> setBusy(false, "Movie save failed; the render is retained for retry. " + e.getMessage())); }
+            } catch (Exception e) {
+                deleteIncomplete(destination); postResult(ticket, () -> setBusy(false, "Movie save failed; the render is retained for retry. " + e.getMessage())); return;
+            }
+            source.delete();
+            postResult(ticket, () -> { completedMovie = null; setBusy(false, "MP4 exported successfully. Open it from your chosen Files location."); });
         });
     }
     private void cancelRendering(String message) {
+        if (transformer != null || renderingFile != null) operationGeneration++;
         if (transformer != null) { transformer.cancel(); transformer = null; }
         if (renderingFile != null) { renderingFile.delete(); renderingFile = null; }
         finishRender(); setBusy(false, message);
@@ -432,15 +468,30 @@ public final class MainActivity extends Activity {
     }
     private void deleteIncomplete(Uri uri) {
         try { DocumentsContract.deleteDocument(getContentResolver(), uri); }
-        catch (Exception ignored) { main.post(() -> message("Your Files provider could not remove the incomplete output. Remove that incomplete file manually.")); }
+        catch (Exception ignored) { postUi(() -> message("Your Files provider could not remove the incomplete output. Remove that incomplete file manually.")); }
     }
     private void autosave() {
-        if (files == null) return;
+        if (files == null || !draftReady || operationBusy || destroyed || io.isShutdown()) return;
         StudioProject value = project.copy(); io.execute(() -> {
-            try { files.saveDraft(value); }
-            catch (Exception e) { main.post(() -> message("Private autosave failed. Use Save to keep a project backup.")); }
+            try { saveDraftIfCurrent(value); }
+            catch (Exception e) { postUi(() -> message("Private autosave failed. Use Save to keep a project backup.")); }
         });
     }
+
+    private boolean saveDraftIfCurrent(StudioProject value) throws Exception {
+        synchronized (DRAFT_LOCK) {
+            if (ACTIVE_ACTIVITY.get() != activityGeneration) return false;
+            files.saveDraft(value); return true;
+        }
+    }
+    private void removePrivateCopies(List<StudioProject.Clip> clips) {
+        for (StudioProject.Clip clip : clips) {
+            try { files.mediaFile(clip).delete(); } catch (IOException ignored) { /* invalid IDs never resolve paths */ }
+        }
+    }
+    private boolean liveUi() { return !destroyed && !isFinishing() && !isDestroyed() && ACTIVE_ACTIVITY.get() == activityGeneration; }
+    private void postUi(Runnable result) { main.post(() -> { if (liveUi()) result.run(); }); }
+    private void postResult(long ticket, Runnable result) { postUi(() -> { if (ticket == operationGeneration) result.run(); }); }
     private void projectMenu() {
         if (operationBusy) return;
         new AlertDialog.Builder(this).setTitle("Project")
@@ -475,18 +526,30 @@ public final class MainActivity extends Activity {
         new AlertDialog.Builder(this).setTitle("About & licenses").setView(scroll).setPositiveButton("Close", null).show();
     }
     private void setBusy(boolean busy, String message) {
+        if (!liveUi()) return;
         operationBusy = busy; updateEnabled(); message(message);
         if (progress != null) { progress.setVisibility(busy ? View.VISIBLE : View.GONE); progress.setIndeterminate(true); }
         if (editorVisible) refreshTimeline(false);
     }
-    private void updateEnabled() { for (Button action : editActions) action.setEnabled(!operationBusy); }
-    private void message(String value) { if (isDestroyed()) return; if (status != null && editorVisible) status.setText(value == null ? "Operation unavailable." : value); }
+    private void updateEnabled() { for (Button action : editActions) action.setEnabled(!operationBusy && draftReady); }
+    private void message(String value) { if (!liveUi()) return; if (status != null && editorVisible) status.setText(value == null ? "Operation unavailable." : value); }
     private int previewHeight() { return dp(getResources().getConfiguration().smallestScreenWidthDp >= 600 ? 320 : 220); }
     @Override public void onConfigurationChanged(Configuration configuration) { super.onConfigurationChanged(configuration); if (playerView != null) { ViewGroup.LayoutParams params = playerView.getLayoutParams(); params.height = previewHeight(); playerView.setLayoutParams(params); } }
     @Override protected void onResume() { super.onResume(); foreground = true; if (account != null) { account.checkAsync(true); main.removeCallbacks(accountTimer); main.post(accountTimer); } }
     @Override protected void onStop() { foreground = false; main.removeCallbacks(accountTimer); if (player != null) player.pause(); if (renderingFile != null) cancelRendering("Export cancelled when the app left the foreground. Keep the app open while rendering."); if (editorVisible) autosave(); super.onStop(); }
     @Override protected void onSaveInstanceState(Bundle saved) { if (completedMovie != null) saved.putString("rendered_movie", completedMovie.getName()); super.onSaveInstanceState(saved); }
-    @Override protected void onDestroy() { if (account != null) account.removeListener(accountListener); main.removeCallbacks(accountTimer); main.removeCallbacks(exportTimer); if (transformer != null) transformer.cancel(); if (player != null) player.release(); io.shutdown(); super.onDestroy(); }
+    @Override protected void onDestroy() {
+        destroyed = true; operationGeneration++; editorVisible = false;
+        if (account != null) account.removeListener(accountListener);
+        main.removeCallbacksAndMessages(null);
+        if (transformer != null) { transformer.cancel(); transformer = null; }
+        if (renderingFile != null) { renderingFile.delete(); renderingFile = null; }
+        if (player != null) { player.release(); player = null; }
+        playerView = null;
+        // shutdown(), not shutdownNow(): pending document writes and private draft
+        // commits may finish, but all of their screen callbacks are lifecycle guarded.
+        io.shutdown(); super.onDestroy();
+    }
     private LinearLayout column() { LinearLayout value = new LinearLayout(this); value.setOrientation(LinearLayout.VERTICAL); return value; }
     private LinearLayout row() { LinearLayout value = new LinearLayout(this); value.setOrientation(LinearLayout.HORIZONTAL); return value; }
     private <T extends View> T weighted(T view) { view.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1)); return view; }
