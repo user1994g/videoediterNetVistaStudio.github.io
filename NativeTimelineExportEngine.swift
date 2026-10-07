@@ -826,7 +826,11 @@ enum NativeTimelineVisualPipeline {
         keySettings.soften = clip.value(for: .ultraKeySoftness, at: timelineTime)
         keySettings.choke = clip.value(for: .ultraKeyChoke, at: timelineTime)
         keySettings.spill = clip.value(for: .ultraKeySpill, at: timelineTime)
-        var image = UltraKeyRuntime.apply(to: source, settings: keySettings)
+        // Preview and export use the same, explicitly installed local model.
+        // Ordinary chroma key never loads a model or makes a network request.
+        let personMask = keySettings.enabled && keySettings.aiAssistEnabled && keySettings.aiAssistStrength > 0
+            ? LocalAIMatte.shared.foregroundMask(for: source) : nil
+        var image = UltraKeyRuntime.apply(to: source, settings: keySettings, foregroundMask: personMask)
         if keySettings.enabled && keySettings.output != .composite {
             return applyCrop(to: image, clip: clip, timelineTime: timelineTime, sourceExtent: sourceExtent)
         }

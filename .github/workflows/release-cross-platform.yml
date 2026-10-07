@@ -6,11 +6,11 @@ on:
       release_tag:
         description: Existing draft GitHub release tag to update
         required: true
-        default: v1.4.0-beta.4
+        default: v1.4.0-beta.7
       version_label:
         description: Filename-safe version label
         required: true
-        default: 1.4-Beta-4
+        default: 1.4-Beta-7
 
 permissions:
   contents: write
@@ -77,7 +77,7 @@ jobs:
           RELEASE_STATE="$(
             gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
               --jq '.[] | [.tag_name, (.draft | tostring), (.prerelease | tostring)] | @tsv' |
-              awk -F '\t' -v tag="$RELEASE_TAG" '$1 == tag { print $2 "\t" $3; exit }'
+              awk -F '\t' -v tag="$RELEASE_TAG" '$1 == tag { print $2 "\t" $3 }'
           )"
           if [[ -z "$RELEASE_STATE" ]]; then
             echo "Release $RELEASE_TAG does not exist." >&2

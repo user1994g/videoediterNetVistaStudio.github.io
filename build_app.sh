@@ -6,12 +6,14 @@ trap 'rm -rf "$CACHE_DIR"' EXIT HUP INT TERM
 mkdir -p "$APP/Contents/MacOS"
 mkdir -p "$APP/Contents/Resources"
 mkdir -p "$APP/Contents/Helpers"
+sh build_modeling_runtime.sh "$APP"
 cp NetVistaStudio-Info.plist "$APP/Contents/Info.plist"
 cp assets/NetVistaStudio.icns "$APP/Contents/Resources/NetVistaStudio.icns"
 cp assets/welcome-studio-hero.png "$APP/Contents/Resources/welcome-studio-hero.png"
 cp assets/home-video-coast.png "$APP/Contents/Resources/home-video-coast.png"
 cp assets/home-photo-petals.png "$APP/Contents/Resources/home-photo-petals.png"
 cp assets/home-game-world.png "$APP/Contents/Resources/home-game-world.png"
+cp assets/home-modeling.png "$APP/Contents/Resources/home-modeling.png"
 mkdir -p "$APP/Contents/Resources/game-runtime"
 for GAME_RUNTIME_FILE in assets/game-runtime/*; do
     if [ -f "$GAME_RUNTIME_FILE" ]; then
@@ -36,10 +38,16 @@ CLANG_MODULE_CACHE_PATH="$CACHE_DIR" xcrun swiftc \
     -framework Network \
     -framework Security \
     -framework CoreImage \
+    -framework CoreML \
+    -framework Vision \
     CubeLUT.swift \
     AdvancedGrade.swift \
     UltraKey.swift \
+    LocalAIMatte.swift \
     ShareServer.swift \
+    ShareCollaboration.swift \
+    ShareCompanion.swift \
+    SharePreviewRenderer.swift \
     SharePanel.swift \
     AppUpdateService.swift \
     UpdateInstaller.swift \
@@ -50,17 +58,31 @@ CLANG_MODULE_CACHE_PATH="$CACHE_DIR" xcrun swiftc \
     ModModels.swift \
     StudioTheme.swift \
     ModManager.swift \
+    ModAuthoring.swift \
+    ModCreator.swift \
     ModsStudio.swift \
+    StudioWorkspaceUI.swift \
+    VideoToolWindows.swift \
+    GradeScopes.swift \
     ProfessionalTimelineView.swift \
     NetVistaStudio.swift \
     StudioHome.swift \
     GameProject.swift \
     GameGraph.swift \
+    GameEditingSupport.swift \
     GameModelSupport.swift \
     GameRuntime.swift \
     GameExport.swift \
     GameLogicPanel.swift \
     GameEditor.swift \
+    ModelingDocument.swift \
+    ModelingSculpt.swift \
+    ModelingGenerators.swift \
+    ModelingPhysics.swift \
+    ModelingAI.swift \
+    ModelingAIModel.swift \
+    ModelingTools.swift \
+    ModelingEditor.swift \
     PhotoEditor.swift \
     PhotoRaster.swift \
     EffectsStudio.swift \
@@ -72,10 +94,12 @@ CLANG_MODULE_CACHE_PATH="$CACHE_DIR" xcrun swiftc \
     -o "$APP/Contents/MacOS/NetVistaStudio"
 SIGNING_IDENTITY=${CODESIGN_IDENTITY:--}
 if [ "$SIGNING_IDENTITY" = "-" ]; then
+    codesign --force --sign - "$APP/Contents/Helpers/modeling-runtime/llama-completion"
     codesign --force --sign - "$APP/Contents/Helpers/NetVistaUpdateHelper"
     codesign --force --sign - "$APP"
     echo "Built $APP with a local ad-hoc signature"
 elif [ -n "${CODESIGN_KEYCHAIN:-}" ]; then
+    codesign --force --options runtime --timestamp --keychain "$CODESIGN_KEYCHAIN" --sign "$SIGNING_IDENTITY" "$APP/Contents/Helpers/modeling-runtime/llama-completion"
     codesign --force --options runtime --timestamp --keychain "$CODESIGN_KEYCHAIN" --sign "$SIGNING_IDENTITY" "$APP/Contents/Helpers/NetVistaUpdateHelper"
     codesign \
         --force \
@@ -87,6 +111,7 @@ elif [ -n "${CODESIGN_KEYCHAIN:-}" ]; then
     codesign --verify --deep --strict --verbose=2 "$APP"
     echo "Built $APP with Developer ID: $SIGNING_IDENTITY"
 else
+    codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$APP/Contents/Helpers/modeling-runtime/llama-completion"
     codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$APP/Contents/Helpers/NetVistaUpdateHelper"
     codesign \
         --force \

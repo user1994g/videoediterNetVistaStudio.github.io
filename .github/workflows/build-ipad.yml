@@ -1,0 +1,39 @@
+name: Check native iPad editor
+
+on:
+  push:
+    paths:
+      - 'mobile/ipad/**'
+      - 'StudioAccount.swift'
+      - 'assets/NetVistaStudio.png'
+      - '.github/workflows/build-ipad.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ipad:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile native iOS IPA without a distribution credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEVELOPER_DIR="$(xcode-select --print-path)"
+          bash mobile/ipad/build_ipa.sh "$RUNNER_TEMP/ipad-output"
+      - name: Test project validation and edit history
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc mobile/ipad/Sources/MobileProject.swift mobile/ipad/Tests/ProjectChecks.swift -o "$RUNNER_TEMP/ipad-project-checks"
+          "$RUNNER_TEMP/ipad-project-checks"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iPad-AltStore-package
+          path: |
+            ${{ runner.temp }}/ipad-output/*.ipa
+            ${{ runner.temp }}/ipad-output/ipad-build-platform.txt
+          if-no-files-found: error
+          retention-days: 7

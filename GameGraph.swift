@@ -14,6 +14,20 @@ struct GameNodePosition: Codable, Equatable {
 struct GameGraph: Codable, Equatable {
     var wires: [GameWire] = []
     var positions: [GameNodePosition] = []
+    /// Insert a regular action without dropping an existing continuation. A
+    /// condition needs an explicit Yes/No choice, so never guess its branch.
+    mutating func insertAction(_ id: UUID, after source: UUID, in rule: GameRule) -> Bool {
+        guard id != source, source == rule.id || rule.actions.contains(where: { $0.id == source && !$0.kind.isCondition }),
+              rule.actions.contains(where: { $0.id == id }),
+              !wires.contains(where: { $0.to == id || $0.from == id }) else { return false }
+        let continuation = wires.filter { $0.from == source && $0.port == .next }
+        // Conditions cannot inherit a Next continuation of their own.
+        guard continuation.isEmpty || rule.actions.first(where: { $0.id == id })?.kind.isCondition == false else { return false }
+        wires.removeAll { $0.from == source && $0.port == .next }
+        wires.append(GameWire(from:source,to:id))
+        wires += continuation.map { GameWire(from:id,to:$0.to) }
+        return true
+    }
     static func chain(_ rule: GameRule) -> Self {
         var graph = Self(), previous = rule.id
         graph.positions = [GameNodePosition(id: rule.id, x: 40, y: 50)]

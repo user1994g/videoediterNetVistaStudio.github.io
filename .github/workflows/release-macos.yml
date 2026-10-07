@@ -6,11 +6,11 @@ on:
       release_tag:
         description: Existing GitHub release tag to update
         required: true
-        default: v1.4.0-beta.4
+        default: v1.4.0-beta.7
       asset_name:
         description: Download filename shown on GitHub
         required: true
-        default: NetVista-Studio-macOS-1.4-Beta-4.zip
+        default: NetVista-Studio-macOS-1.4-Beta-7.zip
 
 permissions:
   contents: write
@@ -91,7 +91,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ ! "$RELEASE_TAG" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
-            echo 'Use a version such as v1.4.0-beta.4 or v1.4.0.' >&2
+            echo 'Use a version such as v1.4.0-beta.7 or v1.4.0.' >&2
             exit 1
           fi
           CORE_VERSION="${BASH_REMATCH[1]}"

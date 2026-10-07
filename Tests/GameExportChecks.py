@@ -20,7 +20,7 @@ for dimension in ['2D', '3D']:
     for obj, other in zip(runtime.objects, expected['objects']):
         for key in ['x', 'y', 'z', 'size', 'rotation', 'opacity', 'visible']:
             assert abs(obj[key]-other[key]) < 1e-8, (dimension,key)
-    print('PASS:',dimension,'Python export matches native runtime over 180 frames')
+    print('PASS:',dimension,'Python export matches native runtime over',len(expected['frames']),'frames')
     if '--render' in sys.argv:
         from panda3d.core import loadPrcFileData, PNMImage
         loadPrcFileData('', 'window-type offscreen\naudio-library-name null\nwin-size 960 600')

@@ -1,7 +1,51 @@
-# Game Maker — models, characters and visual nodes
+# Game Maker — scene building, visual logic and play testing
 
 Studio Home → **Game Maker** → **2D Game** or **3D Game** opens an empty scene.
 This is a native macOS development feature. Other editor windows remain open.
+
+## Build a scene
+
+- **+ Object** adds a cube/rectangle, sphere/circle, empty object, floor/platform,
+  or wall. Floors and walls include a solid box collider; nothing is added to a
+  new scene until you choose it.
+- **World Outliner** and **Content Browser** have independent search fields.
+  Filtering the list does not delete or hide objects in the scene. A lightning
+  indicator marks objects with behaviours.
+- **Properties** has position, uniform Size, separate Width/Height/Depth,
+  rotation, opacity, visibility, collision, texture and colour. Dimensions are
+  multiplied by Size. Colour also tints an assigned texture.
+- **Snap** and the grid-size selector control drag placement in both 2D and 3D.
+  Choose 0.1, 0.5, 1 or 2 world units, or turn snapping off. Numeric fields allow
+  exact positioning. One complete drag is one undo step.
+- In 3D, select an object and drag its **red X, green Y or blue Z** handle.
+  Drag the background to orbit, Option-drag to orbit over a handle, and scroll
+  to zoom. An axis viewed end-on cannot be dragged; orbit to see it first.
+- **F / Focus** frames the selected object; **Frame scene** includes all visible
+  objects and their dimensions. **Game camera** returns to the export camera.
+  2D scenes display the camera frame. Editing camera movement does not change
+  the fixed exported camera. Adding objects and rebuilding the scene preserve
+  your editing view; Stop restores the view you had before Play.
+- **Hide logic** gives the scene more room; **Show logic** brings back the graph.
+- **⌘D** duplicates the selected object; Delete/Backspace removes it when the
+  outliner or viewport has keyboard focus. Graph Delete removes only a node.
+  Text fields retain ordinary text-editing shortcuts.
+
+## Behaviour recipes
+
+Select an object → **+ Behaviour recipe…**. Each recipe adds connected, editable
+nodes instead of hidden scripts:
+
+- **Player movement:** WASD / arrow movement at 4 units/second.
+- **Continuous spin:** 60 degrees/second.
+- **Patrol left / right:** move along X and reverse every 2 seconds. Each
+  object's patrol has a separate variable, including duplicated objects.
+- **Collect for score:** choose the collecting object; contact awards one point
+  and destroys the pickup.
+- **Hide when E is pressed:** a key-press event, not a repeating held-key action.
+- **Return to spawn on Space:** return to the position recorded when you add it.
+
+Recipes append to existing behaviours. Adding two movement recipes intentionally
+adds two movement actions. All six recipes work in both source export targets.
 
 ## Import and arrange
 
@@ -18,18 +62,21 @@ This is a native macOS development feature. Other editor windows remain open.
   imported image in **Texture**. Source material files are stored when you import
   their folder, but multi-material shading and imported animation clips/skin
   weights are not retained. The Character Rig tools create a new rig.
-- **Scene / Layers** selects the object to edit. Duplicate, delete, and ↑/↓ reorder
+- **World Outliner** selects the object to edit. Duplicate, delete, and ↑/↓ reorder
   objects. Later 2D entries draw in front. Reordering also changes runtime object
   execution order. Each object retains its own node graphs.
-- 2D: drag sprites to place them, scroll to pan, Option-scroll to zoom. 3D: click
-  the model, edit X/Y/Z and size in Properties, drag to orbit, scroll to zoom.
+- 2D: drag sprites to place them, scroll to pan, Option-scroll to zoom. 3D: use
+  the coloured handles or numeric Properties to place objects.
 
 ## Connect visual nodes
 
 1. Select an object and press **+ Event** in the bottom graph panel.
 2. Double-click the event (or select it and press **Edit**) to choose Start,
    Every frame, While key held, When key pressed, Timer, or Contact entry.
-3. Press **+ Node** to add an action or condition. New nodes are disconnected.
+3. Press **+ Node** to add an action or condition. Ordinary actions connect after
+   the selected regular node (or the end of an unbranched chain), preserving its
+   continuation. Conditions require explicit Yes/No wiring when the branch is
+   ambiguous; the hint under the graph explains whether the new node connected.
 4. Drag a coloured output dot on the right of one node onto the left input dot
    of another. The wire now controls execution. Drag a node body to reposition
    it; double-click to edit its values and target object.
@@ -89,7 +136,17 @@ also work on sprite planes in a 3D scene.
 files, portable model geometry, fitted rigs, sprite-sheet settings, node positions,
 and all connections. Saves are atomic. Play owns separate state, so saving during
 Play preserves your edited scene. Version-one and version-two projects migrate
-when opened; new saves use version three.
+when opened. Version-three projects also open with their original unit dimensions
+and colours. New saves use **version four**, so older app builds cannot silently
+discard the new dimensions/colours. Keep a separate copy if you need an old build.
+
+**Play** runs the authored scene without changing your project. **Pause / Resume**
+controls simulation; **Step** advances a paused game by exactly 1/60 second (with
+no keys held). **Restart** resets time, score, variables and objects while staying
+in the player. The **Live Game State** panel displays time, score, object count,
+variables and the selected object's live transform. Stop or Escape restores the
+authored objects and editor camera. Live state refreshes at a lower rate than
+the viewport so it does not rebuild the inspector every frame.
 
 **Export game…** still creates a new Three.js or Python/Panda3D source folder.
 Static models, sprites, event graphs, conditions and variables export. Character
@@ -117,5 +174,8 @@ event, 256 wires per event, and 10,000 total action nodes. Undo retains 30 chang
 - `Tests/GameModelChecks.swift`: OBJ/STL import, saved geometry after source
   deletion, real skeletal binding, walking and rest pose.
 - `Tests/GameEditorChecks.swift`: both native editors, graph duplication,
-  Undo/Redo, Play isolation, character animation, sprite frames and viewport renders.
+  Undo/Redo, filtered deletion, mouse-driven 3D handles, snapping, Pause/Step/Restart,
+  camera restoration, Play isolation, character animation and viewport renders.
+- `Tests/GameWorkflowChecks.swift`: recipes, version-three migration, dimensions,
+  colour validation, stretched colliders, node insertion and source-export fixtures.
 - `Tests/GameExportChecks.mjs` / `.py`: existing source-runtime behaviour parity.

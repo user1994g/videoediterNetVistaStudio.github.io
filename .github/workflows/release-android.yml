@@ -1,0 +1,92 @@
+name: Release standalone Android beta
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing draft or prerelease tag to build exactly
+        required: true
+        default: v1.4.0-beta.7
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+      - name: Require an existing beta release
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v1\.4\.0-beta\.[0-9]+$ ]]
+          STATE="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | [.tag_name, (.draft | tostring), (.prerelease | tostring)] | @tsv' \
+            | awk -F '\t' -v tag="$RELEASE_TAG" '$1 == tag { print $2 "\t" $3 }')"
+          [[ "$STATE" == true$'\t'* || "$STATE" == *$'\t'true ]]
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Install pinned Android SDK tools
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Test and build the native editor
+        run: gradle --no-daemon -p mobile/android :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
+      - name: Enable acceleration in the disposable test runner
+        run: sudo chmod a+rw /dev/kvm
+      - name: Exercise multi-clip export on Android
+        uses: reactivecircus/android-emulator-runner@4c44018e59b437e86cdfc41da381398f93ed8808 # v2
+        timeout-minutes: 15
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: gradle --no-daemon -p mobile/android :app:connectedDebugAndroidTest
+      - name: Sign, verify and publish APK
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY_BASE64 }}
+          SIGNING_CERT: ${{ secrets.ANDROID_SIGNING_CERT_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ -n "$SIGNING_KEY" && -n "$SIGNING_CERT" ]]
+          SIGNING_DIR="$(mktemp -d "$RUNNER_TEMP/netvista-signing.XXXXXX")"
+          trap 'rm -f "$SIGNING_DIR/release-key.pk8" "$SIGNING_DIR/release-cert.pem"; rmdir "$SIGNING_DIR"' EXIT
+          printf '%s' "$SIGNING_KEY" | base64 --decode > "$SIGNING_DIR/release-key.pk8"
+          printf '%s' "$SIGNING_CERT" | base64 --decode > "$SIGNING_DIR/release-cert.pem"
+          unset SIGNING_KEY SIGNING_CERT
+          mkdir -p dist
+          ASSET="dist/NetVista-Studio-Android-1.4-Beta-${RELEASE_TAG##*.}.apk"
+          TOOLS="$ANDROID_HOME/build-tools/36.0.0"
+          "$TOOLS/zipalign" -p -f 4 mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/netvista-aligned.apk"
+          "$TOOLS/apksigner" sign --key "$SIGNING_DIR/release-key.pk8" --cert "$SIGNING_DIR/release-cert.pem" --out "$ASSET" "$RUNNER_TEMP/netvista-aligned.apk"
+          "$TOOLS/apksigner" verify --verbose --print-certs "$ASSET"
+          BADGING="$("$TOOLS/aapt" dump badging "$ASSET")"
+          EXPECTED_CODE="$(python3 -c 'import plistlib; print(plistlib.load(open("NetVistaStudio-Info.plist", "rb"))["CFBundleVersion"])')"
+          [[ "$BADGING" == *"name='com.netvistastudio.editor.android' versionCode='$EXPECTED_CODE' versionName='1.4.0'"* ]]
+          [[ "$(unzip -p "$ASSET" assets/release-tag.txt)" == "$RELEASE_TAG" ]]
+          printf '%s\n' "$BADGING" | sed -n '1,12p'
+          sha256sum "$ASSET"
+          gh release upload "$RELEASE_TAG" "$ASSET#NetVista Studio for Android and Samsung — first standalone beta" --repo "$GITHUB_REPOSITORY" --clobber
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Android-beta-checks
+          path: |
+            mobile/android/app/build/reports/
+          retention-days: 7

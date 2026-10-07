@@ -22,7 +22,7 @@ try {
       geometry.setAttribute('position',new THREE.Float32BufferAttribute(mesh.positions,3)); geometry.setAttribute('uv',new THREE.Float32BufferAttribute(mesh.uv,2)); geometry.computeVertexNormals();
     } else if(flat) geometry=obj.kind==='coin'?new THREE.CircleGeometry(.5,32):new THREE.PlaneGeometry(1,1);
     else geometry=obj.kind==='coin'?new THREE.SphereGeometry(.5,24,16):new THREE.BoxGeometry(1,1,1);
-    const material=new (flat?THREE.MeshBasicMaterial:THREE.MeshLambertMaterial)({color:obj.imageID?0xffffff:obj.kind==='coin'?0xf5c45c:0x589fd8,map:textures.get(obj.imageID),transparent:true,alphaTest:.01,side:THREE.DoubleSide});
+    const material=new (flat?THREE.MeshBasicMaterial:THREE.MeshLambertMaterial)({color:obj.colour??(obj.imageID?0xffffff:obj.kind==='coin'?0xf5c45c:0x589fd8),map:textures.get(obj.imageID),transparent:true,alphaTest:.01,side:THREE.DoubleSide});
     const node=new THREE.Mesh(geometry,material); if(obj.kind==='empty') node.visible=false; scene.add(node); nodes.set(obj.id,node);
   }
   const keys=new Set(), map={ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right',' ':'space'};
@@ -32,7 +32,7 @@ try {
   function resize(){const aspect=innerWidth/innerHeight;renderer.setSize(innerWidth,innerHeight);if(is2D){const h=Math.max(13,21/aspect);camera.top=h/2;camera.bottom=-h/2;camera.left=-h*aspect/2;camera.right=h*aspect/2;}else camera.aspect=aspect;camera.updateProjectionMatrix();}
   addEventListener('resize',resize);resize();let previous=performance.now();
   renderer.setAnimationLoop(now=>{const dt=(now-previous)/1000;previous=now;if(!document.hidden)runtime.step(keys,dt);
-    runtime.objects.forEach((obj,index)=>{const node=nodes.get(obj.id);node.position.set(obj.x,obj.y,is2D?index*.001:obj.z);node.scale.setScalar(obj.size);node.rotation.set(0,is2D?0:obj.rotation*Math.PI/180,is2D?obj.rotation*Math.PI/180:0);node.material.opacity=obj.opacity;node.visible=obj.visible&&!runtime.destroyed.has(obj.id)&&obj.kind!=='empty';});
+    runtime.objects.forEach((obj,index)=>{const node=nodes.get(obj.id);node.position.set(obj.x,obj.y,is2D?index*.001:obj.z);node.scale.set(obj.size*(obj.scaleX??1),obj.size*(obj.scaleY??1),obj.size*(obj.scaleZ??1));node.rotation.set(0,is2D?0:obj.rotation*Math.PI/180,is2D?obj.rotation*Math.PI/180:0);node.material.opacity=obj.opacity;node.visible=obj.visible&&!runtime.destroyed.has(obj.id)&&obj.kind!=='empty';});
     hud.textContent=project.name+'\nScore: '+Number(runtime.score.toFixed(2));renderer.render(scene,camera);
   });
 } catch(error) { hud.textContent='Could not start the game.\n'+error.message+'\nSee README.md for setup instructions.'; console.error(error); }

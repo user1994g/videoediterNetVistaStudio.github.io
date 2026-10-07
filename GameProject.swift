@@ -40,6 +40,10 @@ struct GameObject: Codable, Equatable {
     var x: Double
     var y: Double
     var size: Double = 1
+    var scaleX: Double = 1
+    var scaleY: Double = 1
+    var scaleZ: Double = 1
+    var colour: String?
     var imageID: UUID?
     var z: Double = 0
     var rotation: Double = 0
@@ -51,7 +55,7 @@ struct GameObject: Codable, Equatable {
     var rig: GameCharacterRig?
     var spriteSheet: GameSpriteSheet?
 
-    enum CodingKeys: String, CodingKey { case id, name, kind, x, y, size, imageID, z, rotation, opacity, visible, solid, modelID, rules, rig, spriteSheet }
+    enum CodingKeys: String, CodingKey { case id, name, kind, x, y, size, scaleX, scaleY, scaleZ, colour, imageID, z, rotation, opacity, visible, solid, modelID, rules, rig, spriteSheet }
     init(name: String, kind: GameObjectKind, x: Double = 0, y: Double = 0, size: Double = 1, imageID: UUID? = nil) {
         self.name = name; self.kind = kind; self.x = x; self.y = y; self.size = size; self.imageID = imageID
     }
@@ -61,6 +65,10 @@ struct GameObject: Codable, Equatable {
         kind = try c.decode(GameObjectKind.self, forKey: .kind)
         x = try c.decode(Double.self, forKey: .x); y = try c.decode(Double.self, forKey: .y)
         size = try c.decode(Double.self, forKey: .size); imageID = try c.decodeIfPresent(UUID.self, forKey: .imageID)
+        scaleX = try c.decodeIfPresent(Double.self, forKey: .scaleX) ?? 1
+        scaleY = try c.decodeIfPresent(Double.self, forKey: .scaleY) ?? 1
+        scaleZ = try c.decodeIfPresent(Double.self, forKey: .scaleZ) ?? 1
+        colour = try c.decodeIfPresent(String.self, forKey: .colour)
         z = try c.decodeIfPresent(Double.self, forKey: .z) ?? 0
         rotation = try c.decodeIfPresent(Double.self, forKey: .rotation) ?? 0
         opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? 1
@@ -88,7 +96,7 @@ enum GameProjectError: LocalizedError {
 /// Paths preserve imported folder structure; opening a game executes no code.
 struct GameProject: Codable, Equatable {
     var format = "netvista-game"
-    var version = 3
+    var version = 4
     var name: String
     var dimension: GameDimension
     var objects: [GameObject]
@@ -100,7 +108,7 @@ struct GameProject: Codable, Equatable {
     }
 
     func validate() throws {
-        guard format == "netvista-game", version == 3 else { throw GameProjectError.invalid("This game format or version is not supported.") }
+        guard format == "netvista-game", version == 4 else { throw GameProjectError.invalid("This game format or version is not supported.") }
         guard objects.count <= 2000,
               Set(objects.map(\.id)).count == objects.count,
               Set(assets.map(\.id)).count == assets.count, Set(assets.map(\.path)).count == assets.count,
@@ -116,6 +124,10 @@ struct GameProject: Codable, Equatable {
         }
         var totalActions = 0
         for object in objects {
+            guard [object.scaleX,object.scaleY,object.scaleZ].allSatisfy({ $0.isFinite && (0.01...1000).contains($0) }),
+                  object.colour == nil || object.colour!.range(of:"^#[0-9a-fA-F]{6}$",options:.regularExpression) != nil else {
+                throw GameProjectError.invalid("Object dimensions must be 0.01–1,000 and colours must be six-digit hex values.")
+            }
             guard [object.x, object.y, object.z, object.size, object.rotation, object.opacity].allSatisfy(\.isFinite),
                   abs(object.x) <= 10000, abs(object.y) <= 10000, abs(object.z) <= 10000,
                   (0.01...1000).contains(object.size), (0...1).contains(object.opacity), abs(object.rotation) <= 360000,
@@ -166,6 +178,7 @@ struct GameProject: Codable, Equatable {
             project.version = 2
         }
         if project.version == 2 { project.version = 3 }
+        if project.version == 3 { project.version = 4 }
         try project.validate(); return project
     }
 

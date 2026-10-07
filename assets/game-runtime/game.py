@@ -86,6 +86,9 @@ class Game(ShowBase):
                 node.setTexture(texture); node.setColor(1,1,1,1)
             else:
                 node.setColor(*((.96,.77,.36,1) if obj['kind']=='coin' else (.345,.624,.847,1)))
+            if obj.get('colour'):
+                colour = obj['colour'].lstrip('#')
+                node.setColor(*(int(colour[i:i+2], 16)/255 for i in (0,2,4)), 1)
             self.nodes[obj['id']] = node
         for key in ['w','a','s','d','e','space','up','down','left','right']:
             event = 'arrow_'+key if key in ['up','down','left','right'] else key
@@ -108,7 +111,8 @@ class Game(ShowBase):
         if not hasattr(self.win, 'getProperties') or self.win.getProperties().getForeground():
             self.runtime.step(self.keys,ClockObject.getGlobalClock().getDt())
         for i,obj in enumerate(self.runtime.objects):
-            node = self.nodes[obj['id']]; node.setPos(obj['x'],-i*.001 if self.is2d else -obj['z'],obj['y']); node.setScale(obj['size'])
+            node = self.nodes[obj['id']]; node.setPos(obj['x'],-i*.001 if self.is2d else -obj['z'],obj['y'])
+            node.setScale(obj['size']*obj.get('scaleX',1), obj['size']*obj.get('scaleZ',1), obj['size']*obj.get('scaleY',1))
             node.setHpr(0 if self.is2d else obj['rotation'],0,-obj['rotation'] if self.is2d else 0); node.setAlphaScale(obj['opacity'])
             node.show() if obj['visible'] and obj['id'] not in self.runtime.destroyed and obj['kind']!='empty' else node.hide()
         self.hud.setText(f"{self.project['name']}\nScore: {self.runtime.score:g}\nR: restart | Esc: quit")

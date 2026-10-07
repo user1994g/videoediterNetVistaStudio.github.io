@@ -37,6 +37,7 @@ final class SharePanelViewController: NSViewController {
     private let forgetButton = NSButton(title: "Forget Paired Devices", target: nil, action: nil)
     private let stopButton = NSButton(title: "Stop Sharing", target: nil, action: nil)
     private let testButton = NSButton(title: "Check Connection", target: nil, action: nil)
+    private let restartButton = NSButton(title: "Restart Sharing", target: nil, action: nil)
 
     init(server: LocalShareServer) {
         self.server = server
@@ -79,6 +80,7 @@ final class SharePanelViewController: NSViewController {
     private func buildInterface() {
         let root = NSStackView()
         root.orientation = .vertical
+        root.alignment = .leading
         root.spacing = 0
         root.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(root)
@@ -97,7 +99,7 @@ final class SharePanelViewController: NSViewController {
 
         let content = NSStackView()
         content.orientation = .vertical
-        content.alignment = .width
+        content.alignment = .leading
         content.spacing = 14
         content.edgeInsets = NSEdgeInsets(top: 18, left: 22, bottom: 22, right: 22)
         content.translatesAutoresizingMaskIntoConstraints = false
@@ -105,6 +107,7 @@ final class SharePanelViewController: NSViewController {
         content.addArrangedSubview(makeConnectionCard())
         content.addArrangedSubview(makePairingCard())
         content.addArrangedSubview(makeTrustCard())
+        for card in content.arrangedSubviews { card.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -44).isActive = true }
 
         let scroll = NSScrollView()
         scroll.drawsBackground = false
@@ -121,6 +124,7 @@ final class SharePanelViewController: NSViewController {
         root.addArrangedSubview(scroll)
         root.addArrangedSubview(makeDivider())
         root.addArrangedSubview(makeFooter())
+        for child in root.arrangedSubviews { child.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true }
     }
 
     private func makeHeader() -> NSView {
@@ -138,7 +142,7 @@ final class SharePanelViewController: NSViewController {
         let title = NSTextField(labelWithString: "Share on Your Local Network")
         title.font = .systemFont(ofSize: 20, weight: .bold)
         title.textColor = .white
-        let subtitle = NSTextField(labelWithString: "Open this project on a device connected to the same Wi-Fi or local network.")
+        let subtitle = NSTextField(labelWithString: "Pair an iPad or laptop to collaborate on Colour and 3D on this network.")
         subtitle.font = .systemFont(ofSize: 11.5)
         subtitle.textColor = Palette.secondaryText
         subtitle.lineBreakMode = .byTruncatingTail
@@ -227,8 +231,9 @@ final class SharePanelViewController: NSViewController {
 
         let details = NSStackView(views: [eyebrow, heading, addressField, alternateAddressField, buttons, statusDetailLabel, reachabilityLabel])
         details.orientation = .vertical
-        details.alignment = .width
+        details.alignment = .leading
         details.spacing = 7
+        for child in details.arrangedSubviews { child.widthAnchor.constraint(equalTo: details.widthAnchor).isActive = true }
         details.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let qrSurface = NSView(frame: .zero)
@@ -303,8 +308,9 @@ final class SharePanelViewController: NSViewController {
 
         let stack = NSStackView(views: [heading, codeLabel, countdownLabel, pairingHelpLabel, pairedRow])
         stack.orientation = .vertical
-        stack.alignment = .width
+        stack.alignment = .leading
         stack.spacing = 8
+        for child in stack.arrangedSubviews { child.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         return styledCard(stack)
     }
 
@@ -317,14 +323,15 @@ final class SharePanelViewController: NSViewController {
         let title = NSTextField(labelWithString: "Use trusted private Wi-Fi only")
         title.font = .systemFont(ofSize: 12.5, weight: .semibold)
         title.textColor = Palette.warningText
-        let body = NSTextField(wrappingLabelWithString: "Anyone on this network can reach the pairing page. Share the temporary code only with a device you trust, and keep this Mac awake while sharing.")
+        let body = NSTextField(wrappingLabelWithString: "Paired devices can view media and edit primary grades and scene objects. HTTP is not encrypted. Share codes only on trusted private Wi-Fi; keep the Mac awake. Save shared edits on this Mac. Closing this window does not stop sharing.")
         body.font = .systemFont(ofSize: 11)
         body.textColor = Palette.warningText.withAlphaComponent(0.82)
         body.maximumNumberOfLines = 3
         let labels = NSStackView(views: [title, body])
         labels.orientation = .vertical
-        labels.alignment = .width
+        labels.alignment = .leading
         labels.spacing = 3
+        body.widthAnchor.constraint(equalTo: labels.widthAnchor).isActive = true
 
         let row = NSStackView(views: [icon, labels])
         row.orientation = .horizontal
@@ -338,13 +345,17 @@ final class SharePanelViewController: NSViewController {
         configureButton(forgetButton, action: #selector(confirmForgetDevices), tint: Palette.secondaryText)
         configureButton(stopButton, action: #selector(stopSharing), tint: .systemRed)
         configureButton(testButton, action: #selector(checkConnection), tint: Palette.secondaryText)
+        configureButton(restartButton, action: #selector(restartSharing), tint: Palette.accent)
 
-        let footer = NSStackView(views: [newCodeButton, testButton, forgetButton, flexibleSpacer(), stopButton])
-        footer.orientation = .horizontal
-        footer.alignment = .centerY
+        let row = NSStackView(views: [newCodeButton, restartButton, testButton, flexibleSpacer(), stopButton])
+        row.orientation = .horizontal; row.alignment = .centerY; row.spacing = 8
+        let footer = NSStackView(views: [row, forgetButton])
+        footer.orientation = .vertical
+        footer.alignment = .leading
         footer.spacing = 9
         footer.edgeInsets = NSEdgeInsets(top: 12, left: 22, bottom: 12, right: 22)
         footer.heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
+        row.widthAnchor.constraint(equalTo: footer.widthAnchor, constant: -44).isActive = true
         return footer
     }
 
@@ -379,13 +390,13 @@ final class SharePanelViewController: NSViewController {
             statusDetailLabel.stringValue = "Sharing is stopped. Create a new code when you are ready."
         case .starting:
             setPhase(title: "Starting…", color: Palette.warning)
-            statusDetailLabel.stringValue = "Requesting local-network access and preparing the address…"
+            statusDetailLabel.stringValue = "Starting the LAN listener and preparing the full address…"
         case .ready:
             setPhase(title: "Sharing", color: Palette.success)
             statusDetailLabel.stringValue = "Open the full http:// address including :\(newState.primaryURL?.port ?? 8787). Keep this app open and the Mac’s lid open."
         case .failed:
             setPhase(title: "Couldn’t start", color: Palette.error)
-            statusDetailLabel.stringValue = "Check local-network access and try creating a new code."
+            statusDetailLabel.stringValue = "The server is not listening. Select Restart Sharing and check the error below."
         }
 
         addressField.stringValue = newState.primaryURL?.absoluteString ?? "Waiting for a local address…"
@@ -555,6 +566,13 @@ final class SharePanelViewController: NSViewController {
     @objc private func createNewCode() {
         server.issueNewCode()
         reportStatus("Creating a fresh six-digit pairing code…")
+    }
+
+    @objc private func restartSharing() {
+        // stop/start are ordered on the server's queue, so failed/waiting
+        // listeners are really discarded instead of merely rotating a code.
+        server.stop(); server.startWithNewCode()
+        reportStatus("Restarting the LAN server with a fresh pairing code…")
     }
 
     @objc private func confirmForgetDevices() {

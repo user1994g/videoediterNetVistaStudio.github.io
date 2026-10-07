@@ -129,6 +129,7 @@ final class WelcomeViewController: NSViewController {
     var onOpenVideoEditor: (() -> Void)?
     var onOpenPhotoEditor: (() -> Void)?
     var onOpenGameMaker: (() -> Void)?
+    var onOpen3DEditor: (() -> Void)?
     var onOpenProject: ((URL) -> Void)?
     var onCheckForUpdates: (() -> Void)?
     var onOpenAccount: (() -> Void)?
@@ -148,6 +149,7 @@ final class WelcomeViewController: NSViewController {
     private let videoCard = StudioHomeCard()
     private let photoCard = StudioHomeCard()
     private let gameCard = StudioHomeCard()
+    private let modelCard = StudioHomeCard()
     private let recentHeader = StudioHomeSurface()
     private let recentRows = StudioHomeSurface()
     private let recentTitle = homeLabel("Recent projects",size:20,weight:.semibold)
@@ -230,6 +232,8 @@ final class WelcomeViewController: NSViewController {
         let game = button("Game Maker",symbol:"gamecontroller",action:#selector(showGameMaker))
         game.alignment = .left
         add(game,to:sidebar,x:12,y:292,w:168,h:38)
+        let model = button("3D Editor",symbol:"cube",action:#selector(open3DEditor)); model.alignment = .left
+        add(model,to:sidebar,x:12,y:340,w:168,h:38)
         let guide = button("Quick guide",symbol:"book",action:#selector(showGuide)); guide.alignment = .left
         add(guide,to:footer,x:0,y:0,w:168,h:34)
         let version = Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "1.4.0"
@@ -238,13 +242,14 @@ final class WelcomeViewController: NSViewController {
     }
     private func buildContent() {
         configure(openButton,title:"Open project…",action:#selector(openProjectPicker),style:.outlined)
-        openButton.toolTip = "Open a video, layered photo or game project"
-        [titleLabel,subtitle,openButton,videoCard,photoCard,gameCard,recentHeader,recentRows].forEach { content.addSubview($0) }
+        openButton.toolTip = "Open a video, layered photo, game or modelling project"
+        [titleLabel,subtitle,openButton,videoCard,photoCard,gameCard,modelCard,recentHeader,recentRows].forEach { content.addSubview($0) }
         makeCard(videoCard,title:"Video Editor",category:"C I N E M A",symbol:"film",asset:"home-video-coast",detail:"Timeline, colour, sound & 3D.",action:#selector(openVideoEditor))
         makeCard(photoCard,title:"Photo Editor",category:"I M A G E S",symbol:"photo",asset:"home-photo-petals",detail:"Layers, brushes & retouching.",action:#selector(openPhotoEditor))
         makeCard(gameCard,title:"Game Maker",category:"W O R L D S",symbol:"gamecontroller",asset:"home-game-world",detail:"2D, 3D & visual scripting.",action:#selector(showGameMaker))
+        makeCard(modelCard,title:"3D Editor",category:"F O R M & M E S H",symbol:"cube",asset:"home-modeling",detail:"Model, reshape & export.",action:#selector(open3DEditor))
         recentHeader.addSubview(recentTitle)
-        for (index,title) in ["All","Video","Photos","Games"].enumerated() {
+        for (index,title) in ["All","Video","Photos","Games","Models"].enumerated() {
             let filter = button(title,action:#selector(selectKind(_:)),style:.pill)
             filter.tag = index; filter.active = index == 0; filters.append(filter); recentHeader.addSubview(filter)
         }
@@ -269,7 +274,7 @@ final class WelcomeViewController: NSViewController {
         accountButton.frame = NSRect(x:width-288,y:10,width:108,height:32)
         updateButton.frame = NSRect(x:width-170,y:10,width:148,height:32)
         sidebar.frame = NSRect(x:0,y:53,width:192,height:max(1,height-53))
-        footer.frame = NSRect(x:12,y:max(320,sidebar.bounds.height-100),width:168,height:76)
+        footer.frame = NSRect(x:12,y:max(390,sidebar.bounds.height-100),width:168,height:76)
         scroll.frame = NSRect(x:193,y:53,width:max(1,width-193),height:max(1,height-53))
         let available = max(1,scroll.contentSize.width), margin: CGFloat = available < 800 ? 28 : 36
         let bodyWidth = max(1,min(1240,available-margin*2)), x = max(margin,(available-bodyWidth)/2)
@@ -277,28 +282,28 @@ final class WelcomeViewController: NSViewController {
         titleLabel.frame = NSRect(x:x,y:31,width:bodyWidth-156,height:37)
         subtitle.frame = NSRect(x:x,y:76,width:bodyWidth,height:22)
         openButton.frame = NSRect(x:x+bodyWidth-137,y:34,width:137,height:34)
-        let columns = bodyWidth >= 1020 ? 3 : 2
+        let columns = bodyWidth >= 1200 ? 4 : 2
         let cardWidth = (bodyWidth-CGFloat(columns-1)*20)/CGFloat(columns)
         let imageHeight = min(320,max(168,cardWidth/1.73))
         let cardHeight = imageHeight+(cardWidth < 410 ? 126 : 94)
-        for (index,card) in [videoCard,photoCard,gameCard].enumerated() {
+        for (index,card) in [videoCard,photoCard,gameCard,modelCard].enumerated() {
             card.artworkHeight = imageHeight
             card.frame = NSRect(x:x+CGFloat(index % columns)*(cardWidth+20),y:124+CGFloat(index / columns)*(cardHeight+20),width:cardWidth,height:cardHeight)
             card.needsLayout = true
         }
-        let rows = (3+columns-1)/columns
+        let rows = (4+columns-1)/columns
         recentOrigin = 124+CGFloat(rows)*cardHeight+CGFloat(rows-1)*20+36
         recentHeader.frame = NSRect(x:x,y:recentOrigin,width:bodyWidth,height:75)
         recentTitle.frame = NSRect(x:0,y:0,width:240,height:29)
         for (index,filter) in filters.enumerated() { filter.frame = NSRect(x:CGFloat(index)*67,y:41,width:60,height:28) }
-        search.frame = NSRect(x:bodyWidth-min(248,bodyWidth-285),y:40,width:min(248,bodyWidth-285),height:29)
+        search.frame = NSRect(x:bodyWidth-min(248,bodyWidth-350),y:40,width:min(248,bodyWidth-350),height:29)
         let rowsY = recentOrigin+85
         recentRows.frame = NSRect(x:x,y:rowsY,width:bodyWidth,height:listedURLs.isEmpty ? 174 : CGFloat(listedURLs.count)*64)
         layoutRecentRows()
         content.frame = NSRect(x:0,y:0,width:available,height:max(scroll.contentSize.height,rowsY+recentRows.frame.height+36))
     }
     func refreshRecentProjects() {
-        urls = NSDocumentController.shared.recentDocumentURLs.filter { ["netvistastudio","netvistaphoto","netvistagame"].contains($0.pathExtension.lowercased()) }
+        urls = NSDocumentController.shared.recentDocumentURLs.filter { ["netvistastudio","netvistaphoto","netvistagame","netvistamodel"].contains($0.pathExtension.lowercased()) }
         filterRecent()
     }
     @objc private func selectKind(_ sender: NSButton) {
@@ -308,7 +313,7 @@ final class WelcomeViewController: NSViewController {
     }
     @objc private func filterRecent() {
         listedURLs = Array(urls.filter { url in
-            let extensions = ["", "netvistastudio", "netvistaphoto", "netvistagame"]
+            let extensions = ["", "netvistastudio", "netvistaphoto", "netvistagame", "netvistamodel"]
             return (selectedKind == 0 || url.pathExtension.lowercased() == extensions[selectedKind]) && (search.stringValue.isEmpty || url.lastPathComponent.localizedCaseInsensitiveContains(search.stringValue))
         }.prefix(20))
         recentRows.subviews.forEach { $0.removeFromSuperview() }
@@ -325,11 +330,11 @@ final class WelcomeViewController: NSViewController {
             for (index,url) in listedURLs.enumerated() {
                 let row = button("",action:#selector(openRecent(_:))); row.autoresizesSubviews = false
                 row.tag = index; row.toolTip = url.path; row.setAccessibilityLabel("Open \(url.lastPathComponent)")
-                let icon = NSImageView(image:NSImage(systemSymbolName:url.pathExtension.lowercased() == "netvistaphoto" ? "photo" : url.pathExtension.lowercased() == "netvistagame" ? "gamecontroller" : "film",accessibilityDescription:nil) ?? NSImage())
+                let icon = NSImageView(image:NSImage(systemSymbolName:url.pathExtension.lowercased() == "netvistamodel" ? "cube" : url.pathExtension.lowercased() == "netvistaphoto" ? "photo" : url.pathExtension.lowercased() == "netvistagame" ? "gamecontroller" : "film",accessibilityDescription:nil) ?? NSImage())
                 icon.contentTintColor = NSColor(hex:"B8BCC6")
                 let name = homeLabel(url.deletingPathExtension().lastPathComponent,size:12,weight:.medium)
                 let location = homeLabel(url.deletingLastPathComponent().lastPathComponent,size:10,colour:"92969F")
-                let kind = homeLabel(url.pathExtension.lowercased() == "netvistaphoto" ? "Photo project" : url.pathExtension.lowercased() == "netvistagame" ? "Game project" : "Video project",size:11,colour:"A5A8AE"); kind.alignment = .right
+                let kind = homeLabel(url.pathExtension.lowercased() == "netvistamodel" ? "3D model" : url.pathExtension.lowercased() == "netvistaphoto" ? "Photo project" : url.pathExtension.lowercased() == "netvistagame" ? "Game project" : "Video project",size:11,colour:"A5A8AE"); kind.alignment = .right
                 [icon,name,location,kind].forEach { row.addSubview($0); $0.setAccessibilityElement(false) }
                 recentRows.addSubview(row)
             }
@@ -365,6 +370,7 @@ final class WelcomeViewController: NSViewController {
     @objc private func openVideoEditor() { onOpenVideoEditor?() }
     @objc private func openPhotoEditor() { onOpenPhotoEditor?() }
     @objc private func showGameMaker() { onOpenGameMaker?() }
+    @objc private func open3DEditor() { onOpen3DEditor?() }
     @objc private func checkForUpdates() { onCheckForUpdates?() }
     @objc private func openAccount() { onOpenAccount?() }
     func setAccountState(_ title: String, detail: String) {
@@ -375,9 +381,10 @@ final class WelcomeViewController: NSViewController {
     }
     @objc private func showGuide() {
         let alert = NSAlert()
-        alert.messageText = "Your studio, three workspaces."
+        alert.messageText = "Your studio, four workspaces."
         alert.informativeText = "VIDEO EDITOR\nBuild your timeline, then use Effects, Colour, Audio or 3D Scene. Save your work as a .netvistastudio project.\n\nPHOTO EDITOR\nCreate a blank document or import an image. Keep layers and masks by saving a .netvistaphoto project; export a PNG or JPEG for sharing.\n\nGAME MAKER\nChoose an empty 2D or 3D scene. Import PNG/JPG sprites or OBJ models, then use Add asset to scene. Select an object, add an Event and Action blocks, and press Play. Save as .netvistagame; Export game creates Three.js or Python source with your assets and blocks.\n\nRETURN TO YOUR WORK\nEach editor has its own window. Use Studio Home to switch editors without closing a project. Saved and opened projects appear under Recent projects."
         alert.addButton(withTitle:"Got it")
+        alert.informativeText += "\n\n3D EDITOR\nCreate primitives and edit faces or vertices in a separate modelling window. Extrude, inset and subdivide meshes. Save as .netvistamodel, or export geometry as OBJ for Game Maker and other 3D apps."
         if let window = view.window { alert.beginSheetModal(for:window) }
     }
     @objc private func openRecent(_ sender: NSButton) {
@@ -392,7 +399,7 @@ final class WelcomeViewController: NSViewController {
     @objc private func openProjectPicker() {
         let panel = NSOpenPanel(); panel.title = "Open NetVista Studio Project"; panel.prompt = "Open Project"
         panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
-        panel.allowedFileTypes = ["netvistastudio","netvistaphoto","netvistagame"]
+        panel.allowedFileTypes = ["netvistastudio","netvistaphoto","netvistagame","netvistamodel"]
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             if response == .OK, let url = panel.url { self?.onOpenProject?(url) }
         }
@@ -401,19 +408,20 @@ final class WelcomeViewController: NSViewController {
 
     #if STUDIO_HOME_CHECKS
     func checkHomeActions() {
-        var video = 0, photo = 0, game = 0, updates = 0
+        var video = 0, photo = 0, game = 0, model = 0, updates = 0
+        onOpen3DEditor = { model += 1 }
         onOpenGameMaker = { game += 1 }
         onOpenVideoEditor = { video += 1 }; onOpenPhotoEditor = { photo += 1 }
         onCheckForUpdates = { updates += 1 }
         updateButton.performClick(nil); precondition(updates == 1,"Home Update must route to the shared updater")
         precondition(updateButton.frame.maxX <= header.bounds.width && beta.frame.maxX < updateButton.frame.minX)
-        videoCard.launch.performClick(nil); photoCard.launch.performClick(nil); gameCard.launch.performClick(nil)
-        precondition(video == 1 && photo == 1 && game == 1,"Editor launches must route independently")
-        for node in [sidebar,scroll,header,videoCard,photoCard,gameCard,recentHeader,recentRows] {
+        videoCard.launch.performClick(nil); photoCard.launch.performClick(nil); gameCard.launch.performClick(nil); modelCard.launch.performClick(nil)
+        precondition(video == 1 && photo == 1 && game == 1 && model == 1,"Editor launches must route independently")
+        for node in [sidebar,scroll,header,videoCard,photoCard,gameCard,modelCard,recentHeader,recentRows] {
             precondition(node.frame.width > 0 && node.frame.height > 0)
         }
         precondition(photoCard.frame.maxX <= content.bounds.width,"Content must not overflow")
-        for parent in [videoCard,photoCard,gameCard] {
+        for parent in [videoCard,photoCard,gameCard,modelCard] {
             precondition(parent.artwork.artwork != nil,"Production artwork must be bundled")
             for child in parent.subviews {
                 precondition(child.frame.minX >= 0 && child.frame.maxX <= parent.bounds.width && child.frame.minY >= 0 && child.frame.maxY <= parent.bounds.height,"Tile content must stay in bounds: \(child.frame)")
@@ -425,8 +433,9 @@ final class WelcomeViewController: NSViewController {
         showHome(); precondition(homeButton.active && scroll.contentView.bounds.minY == 0)
     }
     func checkRecentFiltering() {
-        urls = [URL(fileURLWithPath:"/private/tmp/check-video.netvistastudio"),URL(fileURLWithPath:"/private/tmp/check-photo.netvistaphoto"),URL(fileURLWithPath:"/private/tmp/check-game.netvistagame")]
-        filterRecent(); precondition(listedURLs.count == 3)
+        urls = [URL(fileURLWithPath:"/private/tmp/check-video.netvistastudio"),URL(fileURLWithPath:"/private/tmp/check-photo.netvistaphoto"),URL(fileURLWithPath:"/private/tmp/check-game.netvistagame"),URL(fileURLWithPath:"/private/tmp/check-model.netvistamodel")]
+        filterRecent(); precondition(listedURLs.count == 4)
+        filters[4].performClick(nil); precondition(listedURLs.count == 1 && listedURLs[0].pathExtension == "netvistamodel")
         filters[3].performClick(nil); precondition(listedURLs.count == 1 && listedURLs[0].pathExtension == "netvistagame")
         filters[2].performClick(nil); precondition(listedURLs.count == 1 && listedURLs[0].pathExtension == "netvistaphoto")
         filters[1].performClick(nil); precondition(listedURLs.count == 1 && listedURLs[0].pathExtension == "netvistastudio")

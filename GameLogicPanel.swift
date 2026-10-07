@@ -1,5 +1,21 @@
 import Cocoa
 
+final class GameColourWell: NSColorWell {
+    private let changed: (String) -> Void
+    init(_ colour: NSColor, changed: @escaping (String) -> Void) {
+        self.changed = changed; super.init(frame:.zero); color = colour; isContinuous = false
+        target = self; action = #selector(acceptColour)
+        widthAnchor.constraint(equalToConstant:66).isActive = true; heightAnchor.constraint(equalToConstant:26).isActive = true
+        toolTip = "Object colour; multiplies the texture colour when a texture is assigned"
+    }
+    required init?(coder:NSCoder) { fatalError() }
+    @objc private func acceptColour() {
+        guard let rgb = color.usingColorSpace(.sRGB) else { return }
+        func byte(_ component: CGFloat) -> Int { Int((min(1,max(0,component))*255).rounded()) }
+        changed(String(format:"#%02X%02X%02X",byte(rgb.redComponent),byte(rgb.greenComponent),byte(rgb.blueComponent)))
+    }
+}
+
 final class GameButton: NSButton {
     var invoke: (() -> Void)?
     init(_ title: String, _ action: @escaping () -> Void) {
@@ -79,10 +95,14 @@ final class GameLogicPanel: NSView {
     }
     required init?(coder: NSCoder) { fatalError() }
     func show(object: GameObject?, objects: [GameObject], dimension: GameDimension) {
-        if owner != object?.id { viewCommitAndClose(); active = 0; canvas.selection = nil; scroll.contentView.scroll(to:.zero) }
+        let changedOwner = owner != object?.id
+        if changedOwner { viewCommitAndClose(); active = 0; canvas.selection = nil; scroll.contentView.scroll(to:.zero) }
         owner = object?.id; rules = object?.rules ?? []; self.objects = objects; self.dimension = dimension; render()
+        if changedOwner { DispatchQueue.main.async { [weak self] in self?.frameGraph() } }
     }
     func setEditing(_ enabled: Bool) { isHidden = !enabled; if !enabled { popover?.close() } }
+    func frameGraph() { layoutSubtreeIfNeeded(); fitGraph() }
+    func selectLastEvent() { active = max(0,rules.count-1); render(); frameGraph() }
     private func commit() { changed?(rules); render() }
     private func render() {
         header.arrangedSubviews.forEach { header.removeArrangedSubview($0); $0.removeFromSuperview() }
@@ -128,8 +148,11 @@ final class GameLogicPanel: NSView {
         var graph = rules[active].graph ?? .chain(rules[active])
         let origin = scroll.contentView.bounds.origin
         graph.positions.append(GameNodePosition(id:action.id,x:max(280,Double(origin.x)+300),y:max(40,Double(origin.y)+60+Double(rules[active].actions.count % 4)*130)))
-        rules[active].actions.append(action); rules[active].graph = graph; canvas.selection = action.id; commit()
-        hint.stringValue = "New node added. Drag a wire to its left input to make it run."
+        let source = canvas.selection ?? (rules[active].actions.contains(where: { $0.kind.isCondition }) ? nil : rules[active].actions.last?.id ?? rules[active].id)
+        rules[active].actions.append(action)
+        let connected = source.map { graph.insertAction(action.id,after:$0,in:rules[active]) } ?? false
+        rules[active].graph = graph; canvas.selection = action.id; commit()
+        hint.stringValue = connected ? "Connected after the selected node. Double-click to edit its settings." : "Choose the branch: drag a Yes / No output to the new node’s input."
     }
     private func removeSelected() {
         viewCommitAndClose()

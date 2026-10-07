@@ -1,6 +1,6 @@
 # NetVista Studio
 
-NetVista Studio is a native desktop video editor. The macOS edition is built with Swift, Cocoa, AVFoundation, SceneKit, SpriteKit, Core Image, and VideoToolbox. A native Qt/FFmpeg Windows and Linux beta lives in [`cross_platform`](cross_platform/README.md). Neither edition is a website or browser wrapper.
+NetVista Studio is a native creative editor. The macOS edition is built with Swift, Cocoa, AVFoundation, SceneKit, SpriteKit, Core Image, and VideoToolbox. A native Qt/FFmpeg Windows and Linux beta lives in [`cross_platform`](cross_platform/README.md). The first standalone mobile video editors live in [`mobile`](MOBILE_RELEASE.md). These are native apps, not website wrappers.
 
 ## Project website
 
@@ -8,7 +8,7 @@ The combined website is maintained separately in [netvistastudio.io](https://git
 
 ## Public beta download
 
-Download **NetVista Studio 1.4 Beta 4** from the [GitHub Releases page](https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/tag/v1.4.0-beta.4). Downloads are available for macOS, Windows, and Linux. This is early beta software, so expect bugs or incomplete features and keep backups of important project files.
+Download **NetVista Studio 1.4 Beta 7** from the [GitHub Releases page](https://github.com/user1994g/videoediterNetVistaStudio.github.io/releases/tag/v1.4.0-beta.7). Downloads include macOS, Windows and Linux packages, an iPad IPA for AltStore Classic, and an Android APK for Samsung and other compatible devices. This is early beta software: keep backups. The first mobile editions focus on importing, previewing, trimming/reordering, saving and exporting videos; they do not include the desktop photo, modelling, game or advanced grading tools. See [Beta 7 release notes](RELEASE_NOTES_BETA_7.md) and [mobile installation/build instructions](MOBILE_RELEASE.md).
 
 The current macOS beta is ad-hoc signed and therefore triggers a Gatekeeper warning. The repository includes a secure Developer ID signing and Apple notarization workflow; see [`MACOS_RELEASE.md`](MACOS_RELEASE.md). After the Apple credentials are configured and that workflow publishes a replacement ZIP, macOS users can open the download normally.
 
@@ -27,6 +27,13 @@ The [design specification, research and artwork prompts](design/STUDIO_HOME.md)
 document the mockup-to-native implementation.
 
 ## Game Maker (macOS beta)
+
+The native scene-building workspace now includes 3D move handles, grid snapping,
+independent object dimensions and colours, floor/wall primitives, searchable
+objects/assets, six editable behaviour recipes, and Pause/Step/Restart with live
+game-state inspection. New version-four game saves preserve these settings;
+older projects migrate when opened. This is still a small engine, not Unreal-level
+feature parity.
 
 Studio Home → **Game Maker** opens an empty 2D or 3D scene. Import PNG/JPG
 sprites or 3D models, place them from Assets, and connect draggable visual nodes
@@ -64,10 +71,14 @@ source export is not yet supported. See [Game Maker guide and limits](GAME_MAKER
 
 ## Creative tools
 
+- On macOS, **Studio Home → 3D Editor** opens a separate polygon-modelling and sculpting workspace. Use ten brushes including Clay, Crease, Scrape and Mask, X symmetry, smoother continuous strokes, persistent sculpt masks, Shift-click face regions, connected region extrusion, proportional vertex editing, and subdivision. Save editable `.netvistamodel` projects or export OBJ geometry. See [the modelling guide](MODELING.md) for controls and current limitations; this is not a full Blender replacement.
+- Sparse meshes now gain optional automatic sculpt detail, so clicking a cube's side actually deforms it. Add an original 48-part dragon starter at Draft/Balanced/High detail, flat or smooth-subdivide with budget checks, and join visible geometry. Optional rigid-body physics offers Play/Pause/Step/Reset and explicit undoable Bake. The [local modeling helper](MODELING_AI.md) has a built-in CPU runtime and a separately approved ~491 MB model download directly in the app—no Ollama setup. It proposes reviewed modeling steps, not finished text-to-mesh assets. Nothing downloads automatically.
+
 - The Color page opens a separate resizable native Color Studio with interactive Lift, Gamma/Midtones, and Gain wheels, master/luma controls, exact RGB values, primary sliders, and preset looks.
 - The advanced Colour workspace also provides a reorderable node stack, editable Master/RGB and hue/luma curves, HSL qualifiers with softness/invert controls, waveform/parade/histogram/vectorscope scopes, and portable 17³/33³/65³ `.cube` export.
 - Import 3D `.cube` LUT files, preview them live, adjust their mix from 0–100%, remove them non-destructively, and apply one grade to one or many selected video clips. Imported LUT data is embedded in the project save so the look survives if the original `.cube` file moves.
 - The Effects page opens a separate resizable native Effects Studio for position, scale, rotation, opacity, blur, sharpen, vignette, monochrome, sepia, glow, vintage, and keyframes.
+- **Effects → Ultra Key** has improved green/blue-screen edge handling, shadow keying, real spatial Choke/Soften and spill cleanup. Optional **Download Model…** installs Apple's approximately 4.3 MB DeepLabV3 person segmentation model; enable **AI-assisted person cutout** afterwards. Video processing stays local, with the same path for preview and export. This is a people-specific vision model, not an LLM or fine-hair matting system. Nothing is downloaded automatically. See [AI cutout setup and limitations](AI_MATTING.md).
 - Add transform, opacity, or volume keyframes at the playhead with smooth, linear, or hold interpolation.
 - The macOS 3D Scene page provides a native workspace with objects, materials, lighting, shadows, reflections, camera controls, video planes, and live green-screen removal.
 - The 3D inspector separates **Object**, **Rig**, and **World** tools. Choose **Move**, **Rotate**, or **Scale** above the viewport and drag to transform the selected object; Shift changes the movement/rotation axis. Choose **Orbit** to navigate again, or press **F** to frame the selection.
@@ -83,6 +94,7 @@ source export is not yet supported. See [Game Maker guide and limits](GAME_MAKER
 
 ## Mods
 
+- **Create Mod…** opens a guided native creator for themes, tool pages, and preset catalog references. Pick a template, edit its settings, preview locally, then Export or Test Install. The app generates the manifest/hashes and runs normal validation; test installs stay disabled until you enable them. See [the creator guide](MODDING.md).
 - Open the **Mods** page to install a `.netvistamod` package by button or drag-and-drop, open the persistent Mods folder, and enable, disable, update, or remove installed mods.
 - Mods are saved in the operating system's per-user app-data folder, not inside the signed application, so replacing NetVista Studio with an update does not erase them.
 - Mods v1 are data-only and can apply bounded themes, provide declarative pages, and display checked catalog entries for future 3D props/maps and effect presets. Catalog assets are not inserted into scenes or clips automatically in this beta. Mods cannot silently run Python, JavaScript, Swift, native libraries, shell scripts, or executables inside the editor.
@@ -100,10 +112,11 @@ source export is not yet supported. See [Game Maker guide and limits](GAME_MAKER
 
 ## Share on your local network
 
-- Press **Share** to start a temporary server and pairing code. The Share window shows the Mac's private local IP address, such as `http://192.168.1.118:58045/`.
+- Press **Share** to start a temporary server and pairing code. The Share window shows the Mac's private local IP address and stable port, such as `http://192.168.1.118:8787/` (fallbacks through 8796).
 - Open that exact address on an iPad, phone, or computer connected to the same Wi-Fi or wired LAN, then enter the six-digit code.
 - Sharing never publishes the project to the internet and does not advertise `localhost` as the device address. Connections outside the Mac's current private subnet are rejected.
 - If the router uses guest/client isolation, devices on the same Wi-Fi name may still be blocked from one another; use the main trusted network instead.
+- The paired browser companion supports concurrent **Colour** and **3D Scene** editing slots, graded/native-scene sampled previews, primary grades, object transforms and primitives. The Mac remains the native project authority; save there to retain remote edits. Full desktop timeline/mesh/rig editing is not remotely available yet. See [LAN_COLLABORATION.md](LAN_COLLABORATION.md) for setup, limitations and connection checks.
 
 ## Build it again
 

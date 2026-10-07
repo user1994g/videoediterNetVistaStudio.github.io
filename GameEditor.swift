@@ -2,20 +2,28 @@ import Cocoa
 import SpriteKit
 import SceneKit
 
+private func gameObjectColour(_ object: GameObject) -> NSColor {
+    let hex = object.colour ?? (object.imageID != nil ? "#ffffff" : object.kind == .coin ? "#f5c45c" : "#589fd8")
+    let value = UInt32(hex.dropFirst(),radix:16) ?? 0x589fd8
+    return NSColor(srgbRed:CGFloat((value >> 16) & 255)/255,green:CGFloat((value >> 8) & 255)/255,blue:CGFloat(value & 255)/255,alpha:1)
+}
+
 private final class GameSpriteView: SKView {
     var selected: ((UUID?) -> Void)?
     var moved: ((UUID,CGPoint,Bool) -> Void)?
     var editing = true
     private var dragged: UUID?
     private var offset = CGPoint.zero
+    private var didDrag = false
     override func mouseDown(with event: NSEvent) {
         guard editing, let scene else { return }; let point = scene.convertPoint(fromView:convert(event.locationInWindow,from:nil))
         let node = scene.nodes(at:point).first { $0.name.flatMap(UUID.init(uuidString:)) != nil }
+        window?.makeFirstResponder(self); didDrag = false
         dragged = node?.name.flatMap(UUID.init(uuidString:)); selected?(dragged)
         if let node { offset = CGPoint(x:point.x-node.position.x,y:point.y-node.position.y) }
     }
-    override func mouseDragged(with event: NSEvent) { move(event,finished:false) }
-    override func mouseUp(with event: NSEvent) { move(event,finished:true); dragged = nil }
+    override func mouseDragged(with event: NSEvent) { didDrag = true; move(event,finished:false) }
+    override func mouseUp(with event: NSEvent) { if didDrag { move(event,finished:true) }; dragged = nil }
     private func move(_ event: NSEvent, finished: Bool) {
         guard editing, let id = dragged, let scene else { return }; let p = scene.convertPoint(fromView:convert(event.locationInWindow,from:nil))
         moved?(id,CGPoint(x:(p.x-offset.x)/40,y:(p.y-offset.y)/40),finished)
@@ -28,13 +36,42 @@ private final class GameSpriteView: SKView {
 }
 private final class GameSceneView: SCNView {
     var selected: ((UUID?) -> Void)?
+    var moved: ((UUID, SCNVector3, Bool) -> Void)?
+    var selectedID: UUID?
+    var selectedPosition = SCNVector3Zero
     var editing = true
+    private var gesture: (id: UUID, axis: Int, origin: SCNVector3, pointer: NSPoint, vector: NSPoint)?
     override func mouseDown(with event: NSEvent) {
-        if editing, var node = hitTest(convert(event.locationInWindow,from:nil),options:nil).first?.node {
+        let point = convert(event.locationInWindow,from:nil)
+        window?.makeFirstResponder(self)
+        if editing, !event.modifierFlags.contains(.option), let hit = hitTest(point,options:nil).first {
+            if let name = hit.node.name, name.hasPrefix("gizmo-"), let axis = Int(name.dropFirst(6)), let selectedID {
+                let p = selectedPosition
+                var end = p
+                if axis == 0 { end.x += 1 }; if axis == 1 { end.y += 1 }; if axis == 2 { end.z += 1 }
+                let a = projectPoint(p), b = projectPoint(end)
+                gesture = (selectedID,axis,p,point,NSPoint(x:CGFloat(b.x-a.x),y:CGFloat(b.y-a.y)))
+                return
+            }
+            var node = hit.node
             while node.name.flatMap(UUID.init(uuidString:)) == nil, let parent = node.parent { node = parent }
             if let id = node.name.flatMap(UUID.init(uuidString:)) { selected?(id) }
         }
         super.mouseDown(with:event)
+    }
+    override func mouseDragged(with event: NSEvent) {
+        if gesture != nil { moveHandle(event, finished:false) } else { super.mouseDragged(with:event) }
+    }
+    override func mouseUp(with event: NSEvent) {
+        if gesture != nil { moveHandle(event, finished:true); gesture = nil } else { super.mouseUp(with:event) }
+    }
+    private func moveHandle(_ event: NSEvent, finished: Bool) {
+        guard let g = gesture, editing else { return }
+        let p = convert(event.locationInWindow,from:nil)
+        let delta = GameEditorMath.axisDistance(dx:Double(p.x-g.pointer.x),dy:Double(p.y-g.pointer.y),axisX:Double(g.vector.x),axisY:Double(g.vector.y))
+        var result = g.origin
+        if g.axis == 0 { result.x += delta }; if g.axis == 1 { result.y += delta }; if g.axis == 2 { result.z += delta }
+        moved?(g.id,result,finished)
     }
 }
 
@@ -53,6 +90,14 @@ final class GameEditorViewController: NSViewController, NSWindowDelegate, NSTabl
     private var eventMonitor: Any?
     private var undoSteps: [GameProject] = [], redoSteps: [GameProject] = []
     private var dragStart: GameProject?
+    private var paused = false
+    private var grid: Double = 0.5
+    private var snapEnabled = true
+    private var lastDebugRefresh: Double = -1
+    private var editorCamera2D: (CGPoint, CGFloat)?
+    private var editorCamera3D: SCNMatrix4?
+    private var gizmo: SCNNode?
+    private var logicWasHidden = false
     private let spriteView = GameSpriteView()
     private let sceneView = GameSceneView()
     private var sprites: [UUID: SKNode] = [:], nodes: [UUID: SCNNode] = [:]
@@ -62,16 +107,22 @@ final class GameEditorViewController: NSViewController, NSWindowDelegate, NSTabl
     private var previewTimer: Timer?
     private var previewTime: Double = 0
     private let table = NSTableView(), assetTable = NSTableView()
+    private let objectSearch = NSSearchField(), assetSearch = NSSearchField()
+    private let sceneCount = NSTextField(labelWithString: "WORLD OUTLINER")
     private let properties = GameScroll()
     private let logic = GameLogicPanel(frame:.zero)
     private let status = NSTextField(labelWithString: "")
     private let empty = NSTextField(wrappingLabelWithString: "Your scene is empty.\nImport a sprite or 3D model, then add it from Assets.\nOr use + Object to build with shapes.")
     private let titleField = NSTextField()
     private var playButton: GameButton!
+    private var pauseButton: GameButton!, stepButton: GameButton!, restartButton: GameButton!
+    private var snapButton: GameButton!, logicButton: GameButton!
+    private var debugText = NSTextField(wrappingLabelWithString: "")
     private var undoButton: GameButton!, redoButton: GameButton!
     private var editingButtons: [NSControl] = []
     private var selectedObject: GameObject? { project.objects.first { $0.id == selected } }
-    private var placeableAssets: [GameAsset] { project.assets.filter { textures[$0.id] != nil || meshes[$0.id] != nil } }
+    private var filteredObjects: [GameObject] { project.objects.filter { objectSearch.stringValue.isEmpty || $0.name.localizedCaseInsensitiveContains(objectSearch.stringValue) } }
+    private var placeableAssets: [GameAsset] { project.assets.filter { (textures[$0.id] != nil || meshes[$0.id] != nil) && (assetSearch.stringValue.isEmpty || $0.path.localizedCaseInsensitiveContains(assetSearch.stringValue)) } }
 
     init(project: GameProject, url: URL? = nil) {
         self.project = project; projectURL = url; dirty = url == nil; saved = url == nil ? nil : project
@@ -87,13 +138,24 @@ final class GameEditorViewController: NSViewController, NSWindowDelegate, NSTabl
         let saveAs = GameButton("Save As…") { [weak self] in _ = self?.save(as:true) }
         let export = GameButton("Export game…") { [weak self] in self?.exportGame() }
         playButton = GameButton("▶ Play") { [weak self] in self?.togglePlay() }
+        pauseButton = GameButton("Pause") { [weak self] in self?.togglePause() }
+        stepButton = GameButton("Step") { [weak self] in self?.stepFrame() }
+        restartButton = GameButton("Restart") { [weak self] in self?.restartPlay() }
+        stepButton.toolTip = "Advance the paused game by exactly one 60 Hz frame"
+        pauseButton.isEnabled = false; stepButton.isEnabled = false; restartButton.isEnabled = false
         undoButton = GameButton("Undo") { [weak self] in self?.undoEdit() }; redoButton = GameButton("Redo") { [weak self] in self?.redoEdit() }
         titleField.stringValue = project.name; titleField.target = self; titleField.action = #selector(renameGame)
         titleField.widthAnchor.constraint(greaterThanOrEqualToConstant:130).isActive = true
-        let toolbar = gameRow([home,gameLabel("GAME MAKER · \(project.dimension.rawValue)",strong:true),titleField,undoButton,redoButton,open,save,saveAs,export,playButton]); toolbar.spacing = 8
-        let sidebar = NSStackView(); sidebar.orientation = .vertical; sidebar.alignment = .leading; sidebar.spacing = 10
-        let objectsScroll = configure(table); objectsScroll.heightAnchor.constraint(greaterThanOrEqualToConstant:150).isActive = true
-        let assetsScroll = configure(assetTable); assetsScroll.heightAnchor.constraint(greaterThanOrEqualToConstant:100).isActive = true
+        let toolbar = gameRow([home,gameLabel("GAME MAKER · \(project.dimension.rawValue)",strong:true),titleField,open,save,saveAs,export]); toolbar.spacing = 10
+        snapButton = GameButton("Snap ✓") { [weak self] in guard let self else { return }; self.snapEnabled.toggle(); self.snapButton.title = self.snapEnabled ? "Snap ✓" : "Snap off" }
+        let gridPicker = GamePopup(["0.1 units","0.5 units","1 unit","2 units"],selected:1) { [weak self] i in self?.grid = [0.1,0.5,1,2][i] }
+        logicButton = GameButton("Hide logic") { [weak self] in self?.toggleLogic() }
+        let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow,for:.horizontal)
+        let commands = gameRow([undoButton,redoButton,snapButton,gridPicker,logicButton,spacer,playButton,pauseButton,stepButton,restartButton])
+        commands.spacing = 8
+        let sidebar = NSStackView(); sidebar.orientation = .vertical; sidebar.alignment = .leading; sidebar.spacing = 8
+        let objectsScroll = configure(table); objectsScroll.heightAnchor.constraint(greaterThanOrEqualToConstant:100).isActive = true
+        let assetsScroll = configure(assetTable); assetsScroll.heightAnchor.constraint(greaterThanOrEqualToConstant:70).isActive = true
         let add = GameButton("+ Object") { [weak self] in self?.addObjectMenu() }
         let duplicate = GameButton("Duplicate") { [weak self] in self?.duplicateObject() }
         let layerUp = GameButton("↑") { [weak self] in self?.moveLayer(-1) }; layerUp.toolTip = "Move object earlier in the scene / draw order"
@@ -101,46 +163,64 @@ final class GameEditorViewController: NSViewController, NSWindowDelegate, NSTabl
         let delete = GameButton("Delete") { [weak self] in self?.deleteObject() }
         let importButton = GameButton("Import sprites / models…") { [weak self] in self?.importAssets() }
         let place = GameButton("Add asset to scene") { [weak self] in self?.placeAsset() }
-        for child in [gameLabel("SCENE / LAYERS",strong:true),objectsScroll,gameRow([add,delete]),gameRow([duplicate,layerUp,layerDown]),gameLabel("ASSETS",strong:true),assetsScroll,importButton,place] { sidebar.addArrangedSubview(child) }
+        objectSearch.placeholderString = "Search objects"; objectSearch.target = self; objectSearch.action = #selector(filterObjects)
+        assetSearch.placeholderString = "Search assets"; assetSearch.target = self; assetSearch.action = #selector(filterAssets)
+        for field in [objectSearch,assetSearch] { field.sendsSearchStringImmediately = true; field.widthAnchor.constraint(equalToConstant:206).isActive = true }
+        sceneCount.font = .systemFont(ofSize:11,weight:.semibold); sceneCount.textColor = .secondaryLabelColor
+        for child in [sceneCount,objectSearch,objectsScroll,gameRow([add,delete]),gameRow([duplicate,layerUp,layerDown]),gameLabel("CONTENT BROWSER",strong:true),assetSearch,assetsScroll,importButton,place] { sidebar.addArrangedSubview(child) }
         for scroll in [objectsScroll,assetsScroll] { scroll.widthAnchor.constraint(equalToConstant:206).isActive = true }
         let assetHint = NSTextField(wrappingLabelWithString:"PNG / JPG sprites · OBJ / DAE / STL / PLY / USD models\nAssets travel inside your game save."); assetHint.font = .systemFont(ofSize:11); assetHint.textColor = .secondaryLabelColor; assetHint.widthAnchor.constraint(equalToConstant:206).isActive = true; sidebar.addArrangedSubview(assetHint)
         let viewport = NSView()
         let render: NSView = project.dimension == .twoD ? spriteView : sceneView
         let fit = GameButton("Frame scene") { [weak self] in self?.frameScene() }
         let reset = GameButton("Game camera") { [weak self] in self?.resetCamera() }
-        let tools = gameRow([gameLabel("SCENE",strong:true),fit,reset,gameLabel(project.dimension == .twoD ? "Scroll: pan · ⌥ scroll: zoom" : "Drag: orbit · Scroll: zoom")])
+        let focus = GameButton("Focus · F") { [weak self] in self?.focusSelected() }
+        let tools = gameRow([gameLabel(project.dimension == .twoD ? "2D SCENE" : "PERSPECTIVE",strong:true),fit,focus,reset])
         toolbar.heightAnchor.constraint(equalToConstant:32).isActive = true
+        commands.heightAnchor.constraint(equalToConstant:32).isActive = true
         tools.heightAnchor.constraint(equalToConstant:30).isActive = true
         status.heightAnchor.constraint(equalToConstant:18).isActive = true
         for child in [render,tools,empty] { viewport.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
         empty.alignment = .center; empty.textColor = .secondaryLabelColor; empty.font = .systemFont(ofSize:14)
         NSLayoutConstraint.activate([tools.topAnchor.constraint(equalTo:viewport.topAnchor,constant:8),tools.leadingAnchor.constraint(equalTo:viewport.leadingAnchor,constant:10),render.topAnchor.constraint(equalTo:tools.bottomAnchor,constant:8),render.leadingAnchor.constraint(equalTo:viewport.leadingAnchor),render.trailingAnchor.constraint(equalTo:viewport.trailingAnchor),render.bottomAnchor.constraint(equalTo:viewport.bottomAnchor),empty.centerXAnchor.constraint(equalTo:render.centerXAnchor),empty.centerYAnchor.constraint(equalTo:render.centerYAnchor),empty.widthAnchor.constraint(lessThanOrEqualTo:render.widthAnchor,constant:-40)])
         let center = NSSplitView(); center.isVertical = false; center.dividerStyle = .thin
+        for panel in [viewport,properties,logic] as [NSView] {
+            panel.wantsLayer = true; panel.layer?.backgroundColor = NSColor(calibratedWhite:0.075,alpha:1).cgColor
+            panel.layer?.borderWidth = 1; panel.layer?.borderColor = NSColor(calibratedWhite:0.19,alpha:1).cgColor
+        }
         center.addArrangedSubview(viewport); center.addArrangedSubview(logic)
         viewport.heightAnchor.constraint(greaterThanOrEqualToConstant:240).isActive = true
-        logic.heightAnchor.constraint(greaterThanOrEqualToConstant:240).isActive = true
-        let balanced = viewport.heightAnchor.constraint(equalTo:logic.heightAnchor,multiplier:1.1); balanced.priority = .defaultLow; balanced.isActive = true
-        for child in [toolbar,sidebar,center,properties,status] { view.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
+        logic.heightAnchor.constraint(greaterThanOrEqualToConstant:190).isActive = true
+        let balanced = viewport.heightAnchor.constraint(equalTo:logic.heightAnchor,multiplier:1.5); balanced.priority = .defaultLow; balanced.isActive = true
+        for child in [toolbar,commands,sidebar,center,properties,status] { view.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             toolbar.leadingAnchor.constraint(equalTo:view.leadingAnchor,constant:12),toolbar.trailingAnchor.constraint(equalTo:view.trailingAnchor,constant:-12),toolbar.topAnchor.constraint(equalTo:view.topAnchor,constant:10),
-            sidebar.leadingAnchor.constraint(equalTo:view.leadingAnchor,constant:12),sidebar.widthAnchor.constraint(equalToConstant:206),sidebar.topAnchor.constraint(equalTo:toolbar.bottomAnchor,constant:18),sidebar.bottomAnchor.constraint(equalTo:status.topAnchor,constant:-12),
-            center.leadingAnchor.constraint(equalTo:sidebar.trailingAnchor,constant:12),center.topAnchor.constraint(equalTo:toolbar.bottomAnchor,constant:12),center.bottomAnchor.constraint(equalTo:status.topAnchor,constant:-10),center.trailingAnchor.constraint(equalTo:properties.leadingAnchor,constant:-8),
+            commands.leadingAnchor.constraint(equalTo:toolbar.leadingAnchor),commands.trailingAnchor.constraint(equalTo:toolbar.trailingAnchor),commands.topAnchor.constraint(equalTo:toolbar.bottomAnchor,constant:8),
+            sidebar.leadingAnchor.constraint(equalTo:view.leadingAnchor,constant:12),sidebar.widthAnchor.constraint(equalToConstant:206),sidebar.topAnchor.constraint(equalTo:commands.bottomAnchor,constant:14),sidebar.bottomAnchor.constraint(equalTo:status.topAnchor,constant:-12),
+            center.leadingAnchor.constraint(equalTo:sidebar.trailingAnchor,constant:12),center.topAnchor.constraint(equalTo:commands.bottomAnchor,constant:10),center.bottomAnchor.constraint(equalTo:status.topAnchor,constant:-10),center.trailingAnchor.constraint(equalTo:properties.leadingAnchor,constant:-8),
             properties.widthAnchor.constraint(equalToConstant:240),properties.trailingAnchor.constraint(equalTo:view.trailingAnchor,constant:-4),properties.topAnchor.constraint(equalTo:center.topAnchor),properties.bottomAnchor.constraint(equalTo:center.bottomAnchor),
             status.leadingAnchor.constraint(equalTo:view.leadingAnchor,constant:14),status.trailingAnchor.constraint(equalTo:view.trailingAnchor,constant:-14),status.bottomAnchor.constraint(equalTo:view.bottomAnchor,constant:-10)
         ])
         status.font = .systemFont(ofSize:11); status.textColor = .secondaryLabelColor; status.lineBreakMode = .byTruncatingTail
-        editingButtons = [add,duplicate,layerUp,layerDown,delete,importButton,place,export,fit,reset]
+        editingButtons = [add,duplicate,layerUp,layerDown,delete,importButton,place,export,fit,focus,reset,snapButton,gridPicker,logicButton,objectSearch,assetSearch]
         spriteView.selected = { [weak self] id in self?.select(id) }; spriteView.moved = { [weak self] id,point,finished in self?.drag(id,point:point,finished:finished) }; sceneView.selected = { [weak self] id in self?.select(id) }
+        sceneView.moved = { [weak self] id,point,finished in self?.drag3D(id,point:point,finished:finished) }
         logic.changed = { [weak self] rules in
             guard let self, let index = self.project.objects.firstIndex(where: { $0.id == self.selected }), self.play == nil else { return }
             self.remember(); self.project.objects[index].rules = rules; self.changed()
         }
-        refreshAssets(); refresh(); rebuildScene(); status.stringValue = "Empty by design. Add your assets, then connect an event to action blocks."
+        refreshAssets(); refresh(); rebuildScene(); status.stringValue = "Add an object or import assets. Select → Behaviour recipes to build a playable graph."
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching:[.keyDown,.keyUp]) { [weak self] event in
             guard let self, event.window === self.view.window else { return event }
             if event.type == .keyDown, event.modifierFlags.contains(.command) {
                 if event.charactersIgnoringModifiers == "s" { _ = self.save(as:event.modifierFlags.contains(.shift)); return nil }
                 if event.charactersIgnoringModifiers == "z", !(self.view.window?.firstResponder is NSTextView) { if event.modifierFlags.contains(.shift) { self.redoEdit() } else { self.undoEdit() }; return nil }
+                if event.charactersIgnoringModifiers == "d", self.play == nil, !(self.view.window?.firstResponder is NSTextView) { self.duplicateObject(); return nil }
+            }
+            if self.play == nil, !(self.view.window?.firstResponder is NSTextView), !event.modifierFlags.contains(.command), event.type == .keyDown {
+                if event.charactersIgnoringModifiers == "f" { self.focusSelected(); return nil }
+                let responder = self.view.window?.firstResponder
+                if [51,117].contains(event.keyCode), responder === self.table || responder === self.spriteView || responder === self.sceneView { self.deleteObject(); return nil }
             }
             guard self.play != nil else { return event }; if event.keyCode == 53 { self.togglePlay(); return nil }
             guard !event.modifierFlags.contains(.command), !event.modifierFlags.contains(.control) else { return event }
@@ -152,40 +232,54 @@ final class GameEditorViewController: NSViewController, NSWindowDelegate, NSTabl
     override func viewDidAppear() { super.viewDidAppear(); view.window?.delegate = self; updateTitle() }
     private func configure(_ table: NSTableView) -> NSScrollView {
         let column = NSTableColumn(identifier:.init("name")); column.width = 200; table.addTableColumn(column)
-        table.headerView = nil; table.rowHeight = 30; table.dataSource = self; table.delegate = self; table.usesAlternatingRowBackgroundColors = true
+        table.headerView = nil; table.rowHeight = 28; table.dataSource = self; table.delegate = self
+        table.backgroundColor = NSColor(calibratedWhite:0.075,alpha:1)
         let scroll = NSScrollView(); scroll.documentView = table; scroll.hasVerticalScroller = true; return scroll
     }
-    func numberOfRows(in tableView: NSTableView) -> Int { tableView === table ? project.objects.count : placeableAssets.count }
+    @objc private func filterObjects() { let keep = selected; table.reloadData(); select(keep) }
+    @objc private func filterAssets() { assetTable.reloadData() }
+    func numberOfRows(in tableView: NSTableView) -> Int { tableView === table ? filteredObjects.count : placeableAssets.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let text: String
-        if tableView === table { let o = project.objects[row]; text = "\(o.visible ? "◈" : "○")  \(o.name)" }
+        if tableView === table { let o = filteredObjects[row]; text = "\(o.visible ? "◈" : "○")  \(o.name)\(o.rules.isEmpty ? "" : "  ⚡")" }
         else { let a = placeableAssets[row]; text = "\(meshes[a.id] != nil ? "◇" : "▧")  \(URL(fileURLWithPath:a.path.hasSuffix(".nvmesh") ? String(a.path.dropLast(7)) : a.path).lastPathComponent)" }
         let label = NSTextField(labelWithString:text); label.lineBreakMode = .byTruncatingMiddle; label.font = .systemFont(ofSize:12); return label
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard notification.object as? NSTableView === table else { return }
-        selected = project.objects.indices.contains(table.selectedRow) ? project.objects[table.selectedRow].id : nil
+        selected = filteredObjects.indices.contains(table.selectedRow) ? filteredObjects[table.selectedRow].id : nil
         refreshInspector(); refreshLogic(); highlight()
     }
     private func select(_ id: UUID?) {
         selected = id
-        if let i = project.objects.firstIndex(where: { $0.id == id }) { table.selectRowIndexes(IndexSet(integer:i),byExtendingSelection:false) } else { table.deselectAll(nil) }
+        if let i = filteredObjects.firstIndex(where: { $0.id == id }) { table.selectRowIndexes(IndexSet(integer:i),byExtendingSelection:false) } else { table.deselectAll(nil) }
+        // Selection can remain in the viewport while hidden by an outliner filter.
+        selected = project.objects.contains(where: { $0.id == id }) ? id : nil
         refreshInspector(); refreshLogic(); highlight()
     }
     private func refresh() {
         let keep = selected; table.reloadData(); assetTable.reloadData(); select(keep)
+        sceneCount.stringValue = "WORLD OUTLINER  ·  \(project.objects.count)"
         empty.isHidden = !project.objects.isEmpty || play != nil; updateTitle()
     }
     private func refreshLogic() { logic.show(object:selectedObject,objects:project.objects,dimension:project.dimension) }
     private func refreshInspector() {
         properties.clear(); properties.add(gameLabel("PROPERTIES",strong:true))
+        if play != nil { showDebugger(); return }
         guard let object = selectedObject else { properties.add(gameLabel("No object selected")); properties.add(gameLabel("Add sprites, models or empty objects.")); return }
         properties.add(gameLabel(object.name,strong:true))
         let name = NSTextField(string:object.name); name.target = self; name.action = #selector(renameObject); name.widthAnchor.constraint(equalToConstant:208).isActive = true; properties.add(name)
+        properties.add(GameButton("+ Behaviour recipe…") { [weak self] in self?.behaviourMenu() })
+        properties.add(GameButton("Visual logic · \(object.rules.count) events") { [weak self] in self?.showLogic() })
         properties.add(gameLabel("TRANSFORM",strong:true))
         for (caption,key,range) in [("X",\GameObject.x,-10000.0...10000),("Y",\GameObject.y,-10000.0...10000),("Z",\GameObject.z,-10000.0...10000),("Size",\GameObject.size,0.01...1000),("Rotation °",\GameObject.rotation,-360000.0...360000),("Opacity",\GameObject.opacity,0.0...1)] where caption != "Z" || project.dimension == .threeD {
             let label = gameLabel(caption); label.widthAnchor.constraint(equalToConstant:94).isActive = true
             properties.add(gameRow([label,GameNumber(object[keyPath:key],width:100,range:range) { [weak self] value in self?.editObject { $0[keyPath:key] = value } }]))
+        }
+        properties.add(gameLabel("DIMENSIONS · multiplied by Size",strong:true))
+        for (caption,key) in [("Width",\GameObject.scaleX),("Height",\GameObject.scaleY),("Depth",\GameObject.scaleZ)] where caption != "Depth" || project.dimension == .threeD {
+            let label = gameLabel(caption); label.widthAnchor.constraint(equalToConstant:94).isActive = true
+            properties.add(gameRow([label,GameNumber(object[keyPath:key],width:100,range:0.01...1000) { [weak self] value in self?.editObject { $0[keyPath:key] = value } }]))
         }
         let visible = GameButton(object.visible ? "◉ Visible" : "○ Hidden") { [weak self] in self?.editObject { $0.visible.toggle() }; self?.refreshInspector() }
         let solid = GameButton(object.solid ? "✓ Solid collider" : "+ Solid collider") { [weak self] in self?.editObject { $0.solid.toggle() }; self?.refreshInspector() }
@@ -193,10 +287,43 @@ final class GameEditorViewController: NSViewController, NSWindowDelegate, NSTabl
         let images = project.assets.filter { textures[$0.id] != nil }
         let picker = GamePopup(["Default colour"] + images.map { URL(fileURLWithPath:$0.path).lastPathComponent },selected:images.firstIndex(where: { $0.id == object.imageID }).map { $0+1 } ?? 0) { [weak self] i in self?.editObject { $0.imageID = i == 0 ? nil : images[i-1].id }; self?.rebuildScene() }
         picker.widthAnchor.constraint(equalToConstant:208).isActive = true; properties.add(picker)
+        properties.add(gameRow([gameLabel("Colour"),GameColourWell(gameObjectColour(object)) { [weak self] colour in guard let self, self.selected == object.id else { return }; self.editObject { $0.colour = colour }; self.rebuildScene() },GameButton("Reset") { [weak self] in self?.editObject { $0.colour = nil }; self?.rebuildScene(); self?.refreshInspector() }]))
+        properties.add(GameButton("Reset transform") { [weak self] in self?.editObject { $0.x = 0; $0.y = 0; $0.z = 0; $0.rotation = 0; $0.size = 1; $0.scaleX = 1; $0.scaleY = 1; $0.scaleZ = 1 }; self?.refreshInspector() })
         characterProperties(object)
-        for text in [project.dimension == .twoD ? "Drag sprites to position them. One world unit = 40 pixels. The game camera frames 21 × 13 units." : "Y is height. WASD moves on X/Z. Sprites are flat XY planes. Models are centered and normalized to one unit.","Solid objects block Move and WASD actions. Collisions use axis-aligned boxes. Set position teleports. No gravity is added automatically."] {
+        for text in [project.dimension == .twoD ? "Drag to move · Scroll to pan · Option-scroll to zoom. F focuses selection. One unit = 40 pixels." : "Drag coloured handles to move on X / Y / Z. Drag background to orbit; scroll to zoom. F focuses selection. Y is height.","Snap uses the toolbar grid size. Solid objects block Move and WASD actions with box colliders. No automatic gravity."] {
             let guide = NSTextField(wrappingLabelWithString:text); guide.font = .systemFont(ofSize:11); guide.textColor = .secondaryLabelColor; guide.widthAnchor.constraint(equalToConstant:208).isActive = true; properties.add(guide)
         }
+    }
+    private func toggleLogic() { logic.isHidden.toggle(); logicButton.title = logic.isHidden ? "Show logic" : "Hide logic" }
+    private func showLogic() { logic.isHidden = false; logicButton.title = "Hide logic"; refreshLogic(); logic.frameGraph() }
+    private func behaviourMenu() {
+        guard selectedObject != nil, play == nil else { return }
+        let menu = NSMenu()
+        for (index,recipe) in GameBehaviourRecipe.allCases.enumerated() {
+            let item = NSMenuItem(title:recipe.rawValue,action:#selector(addBehaviour(_:)),keyEquivalent:""); item.target = self; item.tag = index; menu.addItem(item)
+        }
+        menu.popUp(positioning:nil,at:NSPoint(x:12,y:properties.bounds.height-80),in:properties)
+    }
+    @objc private func addBehaviour(_ item: NSMenuItem) {
+        guard let object = selectedObject, play == nil else { return }
+        let recipe = GameBehaviourRecipe.allCases[item.tag]
+        var contact: UUID?
+        if recipe == .pickup {
+            let others = project.objects.filter { $0.id != object.id }
+            guard !others.isEmpty else { status.stringValue = "Add another object first, then choose which player can collect this object."; return }
+            let alert = NSAlert(); alert.messageText = "Who can collect \(object.name)?"; alert.informativeText = "Touching the selected object awards one point and removes this pickup."
+            let picker = NSPopUpButton(frame:NSRect(x:0,y:0,width:280,height:28)); picker.addItems(withTitles:others.map(\.name)); alert.accessoryView = picker
+            alert.addButton(withTitle:"Add behaviour"); alert.addButton(withTitle:"Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }; contact = others[picker.indexOfSelectedItem].id
+        }
+        addRecipe(recipe, contact:contact)
+    }
+    private func addRecipe(_ recipe: GameBehaviourRecipe, contact: UUID? = nil) {
+        guard let object = selectedObject else { return }
+        let rules = recipe.rules(for:object,contact:contact)
+        guard !rules.isEmpty, object.rules.count + rules.count <= 64 else { status.stringValue = "Cannot add this recipe: check its target and the 64-event limit."; return }
+        editObject { $0.rules += rules }; refresh(); showLogic(); logic.selectLastEvent()
+        status.stringValue = "Added \(recipe.rawValue). Edit the connected nodes below, then press Play."
     }
     private func characterProperties(_ object: GameObject) {
         if object.kind == .sprite {
@@ -264,18 +391,39 @@ final class GameEditorViewController: NSViewController, NSWindowDelegate, NSTabl
     private func redoEdit() { guard play == nil, let next = redoSteps.popLast() else { return }; undoSteps.append(project); project = next; titleField.stringValue = project.name; refreshAssets(); changed(); refresh(); rebuildScene() }
     private func drag(_ id: UUID, point: CGPoint, finished: Bool) {
         guard play == nil, let index = project.objects.firstIndex(where: { $0.id == id }) else { return }
-        if dragStart == nil { dragStart = project }; project.objects[index].x = max(-10000,min(10000,point.x)); project.objects[index].y = max(-10000,min(10000,point.y)); applyTransforms()
+        if dragStart == nil { dragStart = project }
+        project.objects[index].x = GameEditorMath.position(point.x,grid:snapEnabled ? grid : 0)
+        project.objects[index].y = GameEditorMath.position(point.y,grid:snapEnabled ? grid : 0)
+        applyTransforms(); finishDrag(finished)
+    }
+    private func drag3D(_ id: UUID, point: SCNVector3, finished: Bool) {
+        guard play == nil, let index = project.objects.firstIndex(where: { $0.id == id }) else { return }
+        if dragStart == nil { dragStart = project }
+        let old = dragStart!.objects[index]
+        // Only snap axes that actually moved; dragging X must not change Y/Z.
+        project.objects[index].x = point.x == old.x ? old.x : GameEditorMath.position(point.x,grid:snapEnabled ? grid : 0)
+        project.objects[index].y = point.y == old.y ? old.y : GameEditorMath.position(point.y,grid:snapEnabled ? grid : 0)
+        project.objects[index].z = point.z == old.z ? old.z : GameEditorMath.position(point.z,grid:snapEnabled ? grid : 0)
+        applyTransforms(); finishDrag(finished)
+    }
+    private func finishDrag(_ finished: Bool) {
         if finished { if let before = dragStart, before != project { remember(before); changed() }; dragStart = nil; refreshInspector() }
     }
     private func addObjectMenu() {
         guard play == nil else { return }; view.window?.makeFirstResponder(nil)
-        let titles = [project.dimension == .twoD ? "Rectangle" : "Cube",project.dimension == .twoD ? "Circle" : "Sphere","Empty object","Cancel"]
-        let alert = NSAlert(); alert.messageText = "Add an object"; alert.informativeText = "Objects start with no behaviours. Imported sprites and models are in Assets."; titles.forEach { alert.addButton(withTitle:$0) }
-        let response = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
-        if (0...2).contains(response) { addObject(GameObject(name:titles[response],kind:[.block,.coin,.empty][response])) }
+        let titles = [project.dimension == .twoD ? "Rectangle" : "Cube",project.dimension == .twoD ? "Circle" : "Sphere","Empty object",project.dimension == .twoD ? "Platform" : "Floor","Wall"]
+        let menu = NSMenu()
+        for (index,title) in titles.enumerated() { let item = NSMenuItem(title:title,action:#selector(addPrimitive(_:)),keyEquivalent:""); item.tag = index; item.target = self; menu.addItem(item) }
+        menu.popUp(positioning:nil,at:NSPoint(x:14,y:view.bounds.height-260),in:view)
+    }
+    @objc private func addPrimitive(_ item: NSMenuItem) {
+        var object = GameObject(name:item.title,kind:item.tag == 1 ? .coin : item.tag == 2 ? .empty : .block)
+        if item.tag == 3 { object.scaleX = 12; object.scaleY = 0.5; object.scaleZ = 12; object.y = project.dimension == .twoD ? -3 : -0.75; object.solid = true; object.colour = "#64748B" }
+        if item.tag == 4 { object.scaleX = 0.5; object.scaleY = 4; object.scaleZ = 8; object.x = 4; object.y = project.dimension == .twoD ? 0 : 1; object.solid = true; object.colour = "#94A3B8" }
+        addObject(object)
     }
     private func addObject(_ object: GameObject) {
-        guard play == nil, project.objects.count < 2000 else { return }; remember(); project.objects.append(object); selected = object.id; changed(); refresh(); rebuildScene()
+        guard play == nil, project.objects.count < 2000 else { return }; remember(); project.objects.append(object); selected = object.id; objectSearch.stringValue = ""; changed(); refresh(); rebuildScene()
     }
     private func moveLayer(_ delta:Int) {
         guard play == nil, let index = project.objects.firstIndex(where: { $0.id == selected }), project.objects.indices.contains(index+delta) else { return }
@@ -287,9 +435,11 @@ final class GameEditorViewController: NSViewController, NSWindowDelegate, NSTabl
             let old = object.rules[r]; var mapping: [UUID:UUID] = [old.id:UUID()]
             for a in old.actions { mapping[a.id] = UUID() }
             object.rules[r].id = mapping[old.id]!
+            if object.rules[r].otherID == selected { object.rules[r].otherID = object.id }
             for a in object.rules[r].actions.indices {
                 object.rules[r].actions[a].id = mapping[old.actions[a].id]!
                 if object.rules[r].actions[a].targetID == selected { object.rules[r].actions[a].targetID = nil }
+                if let selected, object.rules[r].actions[a].text == "patrol_" + selected.uuidString { object.rules[r].actions[a].text = "patrol_" + object.id.uuidString }
             }
             if var graph = old.graph {
                 graph.wires = graph.wires.map { GameWire(from:mapping[$0.from]!,port:$0.port,to:mapping[$0.to]!) }
@@ -374,34 +524,87 @@ final class GameEditorViewController: NSViewController, NSWindowDelegate, NSTabl
         previewTimer?.invalidate(); previewTimer = nil
         view.window?.makeFirstResponder(nil); renameGame()
         if play != nil {
-            timer?.invalidate(); timer = nil; play = nil; playButton.title = "▶ Play"; status.stringValue = "Stopped. Scene restored — gameplay never edits your saved objects."
+            timer?.invalidate(); timer = nil; play = nil; paused = false; playButton.title = "▶ Play"; status.stringValue = "Stopped. Scene restored — gameplay never edits your saved objects."
         } else {
+            editorCamera2D = spriteView.scene?.camera.map { ($0.position,$0.xScale) }
+            editorCamera3D = sceneView.pointOfView?.transform
+            logicWasHidden = logic.isHidden
             play = GamePlayState(objects:project.objects,dimension:project.dimension); playButton.title = "■ Stop"; lastTick = ProcessInfo.processInfo.systemUptime
             timer = Timer(timeInterval:1.0/60,repeats:true) { [weak self] _ in self?.tick() }; RunLoop.main.add(timer!,forMode:.common)
             status.stringValue = project.objects.isEmpty ? "Playing an empty scene. Stop and add objects to build your game." : "Playing your behaviour blocks. Esc to stop."
         }
         keys.removeAll(); spriteView.editing = play == nil; sceneView.editing = play == nil; titleField.isEnabled = play == nil
         editingButtons.forEach { $0.isEnabled = play == nil }; table.isEnabled = play == nil; assetTable.isEnabled = play == nil
-        properties.isHidden = play != nil; logic.setEditing(play == nil); empty.isHidden = play != nil || !project.objects.isEmpty; rebuildScene(); updateTitle()
+        logic.setEditing(play == nil)
+        if play == nil { logic.isHidden = logicWasHidden }
+        empty.isHidden = play != nil || !project.objects.isEmpty
+        rebuildScene(preserveCamera:false)
+        if play == nil {
+            if let saved = editorCamera2D { spriteView.scene?.camera?.position = saved.0; spriteView.scene?.camera?.setScale(saved.1) }
+            if let saved = editorCamera3D { sceneView.pointOfView?.transform = saved }
+            highlight()
+        }
+        refreshInspector(); updateTransport(); updateTitle()
+    }
+    private func updateTransport() {
+        pauseButton.isEnabled = play != nil; pauseButton.title = paused ? "▶ Resume" : "Pause"
+        stepButton.isEnabled = play != nil && paused; restartButton.isEnabled = play != nil
+    }
+    private func togglePause() {
+        guard play != nil else { return }; paused.toggle(); keys.removeAll(); lastTick = ProcessInfo.processInfo.systemUptime
+        updateTransport(); updateDebugger()
+    }
+    private func stepFrame() {
+        guard play != nil, paused else { return }; play?.step(keys:[],seconds:1.0/60); applyTransforms(); updateDebugger()
+    }
+    private func restartPlay() {
+        guard play != nil else { return }; play = GamePlayState(objects:project.objects,dimension:project.dimension)
+        keys.removeAll(); lastTick = ProcessInfo.processInfo.systemUptime; applyTransforms(); updateDebugger()
+    }
+    private func showDebugger() {
+        properties.clear(); properties.add(gameLabel("LIVE GAME STATE",strong:true))
+        debugText = NSTextField(wrappingLabelWithString: "")
+        debugText.font = .monospacedSystemFont(ofSize:12,weight:.regular); debugText.textColor = .labelColor
+        properties.add(debugText,fill:true)
+        let hint = NSTextField(wrappingLabelWithString:"Pause to inspect. Step advances one frame. Restart resets gameplay without leaving Play. Stop restores the original scene.")
+        hint.font = .systemFont(ofSize:11); hint.textColor = .secondaryLabelColor; properties.add(hint,fill:true)
+        updateDebugger()
+    }
+    private func updateDebugger() {
+        guard let play else { return }; lastDebugRefresh = play.elapsed
+        var lines = [paused ? "PAUSED" : "RUNNING",String(format:"Time       %.2f s",play.elapsed),String(format:"Score      %.0f",play.score),"Objects    \(play.objects.count-play.destroyed.count) / \(play.objects.count)","", "VARIABLES"]
+        if play.variables.isEmpty { lines.append("No variables yet") }
+        for key in play.variables.keys.sorted().prefix(30) { lines.append("\(key.prefix(20))\n  \(String(format:"%.3g",play.variables[key]!))") }
+        if let object = play.objects.first(where: { $0.id == selected }) {
+            lines += ["", "SELECTED OBJECT",object.name,String(format:"X %.2f  Y %.2f",object.x,object.y),String(format:"Z %.2f  Size %.2f",object.z,object.size),play.destroyed.contains(object.id) ? "Destroyed" : object.visible ? "Visible" : "Hidden"]
+        }
+        debugText.stringValue = lines.joined(separator:"\n")
+        status.stringValue = String(format:"%@ · %.2f s · Score %.0f · Esc to stop",paused ? "PAUSED" : "PLAY",play.elapsed,play.score)
     }
     private func tick() {
         let now = ProcessInfo.processInfo.systemUptime; let dt = now-lastTick; lastTick = now
-        guard play != nil, view.window?.isKeyWindow == true else { keys.removeAll(); return }; play?.step(keys:keys,seconds:dt); applyTransforms()
-        if let play { status.stringValue = String(format:"PLAY  ·  %.1f s  ·  Score %.0f  ·  Esc to stop",play.elapsed,play.score) }
+        guard play != nil, !paused, view.window?.isKeyWindow == true else { keys.removeAll(); return }; play?.step(keys:keys,seconds:dt); applyTransforms()
+        if let play, play.elapsed-lastDebugRefresh >= 0.15 { updateDebugger() }
     }
-    private func rebuildScene() {
+    private func rebuildScene(preserveCamera: Bool = true) {
+        let camera2D = play == nil && preserveCamera ? spriteView.scene?.camera.map { ($0.position,$0.xScale) } : nil
+        let camera3D = play == nil && preserveCamera ? sceneView.pointOfView?.transform : nil
         sprites.removeAll(); nodes.removeAll(); rigs.removeAll()
+        gizmo = nil
         if project.dimension == .twoD {
             let scene = SKScene(size:CGSize(width:840,height:520)); scene.anchorPoint = CGPoint(x:0.5,y:0.5); scene.scaleMode = .aspectFit; scene.backgroundColor = NSColor(calibratedRed:0.09,green:0.106,blue:0.137,alpha:1)
             let camera = SKCameraNode(); scene.addChild(camera); scene.camera = camera
+            if let previous = camera2D { camera.position = previous.0; camera.setScale(previous.1) }
             if play == nil {
                 for x in -50...50 { let line = SKShapeNode(rectOf:CGSize(width:1,height:4000)); line.position.x = CGFloat(x*40); line.fillColor = .darkGray; line.strokeColor = .clear; line.alpha = 0.2; line.zPosition = -1; scene.addChild(line) }
                 for y in -50...50 { let line = SKShapeNode(rectOf:CGSize(width:4000,height:1)); line.position.y = CGFloat(y*40); line.fillColor = .darkGray; line.strokeColor = .clear; line.alpha = 0.2; line.zPosition = -1; scene.addChild(line) }
+                let frame = SKShapeNode(rectOf:CGSize(width:840,height:520)); frame.strokeColor = NSColor.white.withAlphaComponent(0.35); frame.lineWidth = 1; frame.zPosition = -0.5; scene.addChild(frame)
+                let label = SKLabelNode(text:"GAME CAMERA · 21 × 13"); label.fontName = "Menlo"; label.fontSize = 11; label.fontColor = .gray; label.position = CGPoint(x:0,y:270); label.zPosition = -0.5; scene.addChild(label)
             }
             for object in project.objects {
                 let node: SKNode
-                if let id = object.imageID, let image = textures[id] { let sprite = SKSpriteNode(texture:SKTexture(image:image)); sprite.size = CGSize(width:40,height:40); node = sprite }
-                else { let shape = object.kind == .coin ? SKShapeNode(circleOfRadius:20) : SKShapeNode(rectOf:CGSize(width:40,height:40)); shape.fillColor = object.kind == .empty ? .clear : object.kind == .coin ? .systemYellow : .systemBlue; shape.strokeColor = object.kind == .empty ? .gray : .clear; node = shape }
+                if let id = object.imageID, let image = textures[id] { let sprite = SKSpriteNode(texture:SKTexture(image:image)); sprite.size = CGSize(width:40,height:40); sprite.color = gameObjectColour(object); sprite.colorBlendFactor = object.colour == nil ? 0 : 1; node = sprite }
+                else { let shape = object.kind == .coin ? SKShapeNode(circleOfRadius:20) : SKShapeNode(rectOf:CGSize(width:40,height:40)); shape.fillColor = object.kind == .empty ? .clear : gameObjectColour(object); shape.strokeColor = object.kind == .empty ? .gray : .clear; node = shape }
                 node.name = object.id.uuidString; scene.addChild(node); sprites[object.id] = node
             }; spriteView.presentScene(scene)
         } else {
@@ -419,7 +622,8 @@ final class GameEditorViewController: NSViewController, NSWindowDelegate, NSTabl
                 } else if object.kind == .sprite { geometry = SCNPlane(width:1,height:1) }
                 else if object.kind == .coin { geometry = SCNSphere(radius:0.5) }
                 else { geometry = SCNBox(width:1,height:1,length:1,chamferRadius:0) }
-                let material = SCNMaterial(); material.diffuse.contents = object.imageID.flatMap { textures[$0] } ?? (object.kind == .coin ? NSColor.systemYellow : NSColor.systemBlue); material.isDoubleSided = true
+                let material = SCNMaterial(); material.diffuse.contents = object.imageID.flatMap { textures[$0] } ?? gameObjectColour(object); material.isDoubleSided = true
+                if object.imageID != nil { material.multiply.contents = gameObjectColour(object) }
                 material.lightingModel = object.kind == .sprite || object.kind == .model ? .constant : .lambert; geometry.materials = [material]
                 let node: SCNNode
                 if let rig = object.rig, let id = object.modelID, let mesh = meshes[id] {
@@ -428,13 +632,14 @@ final class GameEditorViewController: NSViewController, NSWindowDelegate, NSTabl
                 } else { node = SCNNode(geometry:geometry) }
                 node.name = object.id.uuidString; scene.rootNode.addChildNode(node); nodes[object.id] = node
             }
+            if let previous = camera3D { camera.transform = previous }
             sceneView.scene = scene; sceneView.pointOfView = camera; sceneView.allowsCameraControl = play == nil; sceneView.antialiasingMode = .multisampling4X
         }; applyTransforms(); highlight()
     }
     private func applyTransforms() {
         for (i,o) in (play?.objects ?? project.objects).enumerated() {
             let hidden = !o.visible || play?.destroyed.contains(o.id) == true || (play != nil && o.kind == .empty)
-            if let node = sprites[o.id] { node.position = CGPoint(x:o.x*40,y:o.y*40); node.setScale(o.size); node.zRotation = o.rotation * .pi/180; node.zPosition = CGFloat(i)*0.001; node.alpha = o.opacity; node.isHidden = hidden }
+            if let node = sprites[o.id] { node.position = CGPoint(x:o.x*40,y:o.y*40); node.xScale = o.size*o.scaleX; node.yScale = o.size*o.scaleY; node.zRotation = o.rotation * .pi/180; node.zPosition = CGFloat(i)*0.001; node.alpha = o.opacity; node.isHidden = hidden }
             if let sprite = sprites[o.id] as? SKSpriteNode, let sheet = o.spriteSheet, let image = o.imageID.flatMap({ textures[$0] }) {
                 let animated = play?.animations[o.id] == "sprite"
                 let time = animated ? (play?.elapsed ?? 0) * (play?.animationSpeeds[o.id] ?? 1) : 0
@@ -453,26 +658,137 @@ final class GameEditorViewController: NSViewController, NSWindowDelegate, NSTabl
             if let rig = rigs[o.id] {
                 rig.pose(time:(play?.elapsed ?? previewTime)*(play?.animationSpeeds[o.id] ?? 1),walking:play?.animations[o.id] == "walk" || (previewTimer != nil && selected == o.id))
             }
-            if let node = nodes[o.id] { node.position = SCNVector3(o.x,o.y,o.z); node.scale = SCNVector3(o.size,o.size,o.size); node.eulerAngles.y = CGFloat(o.rotation * .pi/180); node.opacity = o.opacity; node.isHidden = hidden || o.kind == .empty }
+            if let node = nodes[o.id] { node.position = SCNVector3(o.x,o.y,o.z); node.scale = SCNVector3(o.size*o.scaleX,o.size*o.scaleY,o.size*o.scaleZ); node.eulerAngles.y = CGFloat(o.rotation * .pi/180); node.opacity = o.opacity; node.isHidden = hidden || o.kind == .empty }
         }
+        updateGizmo()
     }
     private func highlight() {
         for (id,node) in sprites { node.childNode(withName:"selection")?.removeFromParent(); if play == nil, id == selected { let border = SKShapeNode(rectOf:CGSize(width:44,height:44)); border.name = "selection"; border.strokeColor = .white; border.lineWidth = 1; border.zPosition = 1; node.addChild(border) } }
         for (id,renderer) in rigs { if play == nil, id == selected { renderer.guides(selected:jointIndex) } else { renderer.root.childNode(withName:"rig-guides",recursively:false)?.removeFromParentNode() } }
         for (id,node) in nodes { node.geometry?.firstMaterial?.emission.contents = play == nil && id == selected ? NSColor(calibratedWhite:0.15,alpha:1) : NSColor.black }
+        updateGizmo()
+    }
+    private func updateGizmo() {
+        guard play == nil, project.dimension == .threeD, let object = selectedObject, let scene = sceneView.scene else {
+            gizmo?.removeFromParentNode(); gizmo = nil; sceneView.selectedID = nil; return
+        }
+        if gizmo == nil {
+            let root = SCNNode()
+            for (axis,colour) in [NSColor.systemRed,.systemGreen,.systemBlue].enumerated() {
+                let arm = SCNNode()
+                if axis == 0 { arm.eulerAngles.z = -.pi/2 }; if axis == 2 { arm.eulerAngles.x = .pi/2 }
+                for (geometry,offset) in [(SCNCylinder(radius:0.035,height:0.85) as SCNGeometry,0.425),(SCNCone(topRadius:0,bottomRadius:0.12,height:0.3) as SCNGeometry,1.0)] {
+                    let material = SCNMaterial(); material.diffuse.contents = colour; material.lightingModel = .constant; material.readsFromDepthBuffer = false; material.writesToDepthBuffer = false
+                    geometry.materials = [material]
+                    let handle = SCNNode(geometry:geometry); handle.position.y = offset; handle.name = "gizmo-\(axis)"; handle.renderingOrder = 1000
+                    arm.addChildNode(handle)
+                }
+                root.addChildNode(arm)
+            }
+            scene.rootNode.addChildNode(root); gizmo = root
+        }
+        let position = SCNVector3(object.x,object.y,object.z)
+        gizmo?.position = position
+        let size = max(1.5,min(6,object.size*0.8))
+        gizmo?.scale = SCNVector3(size,size,size)
+        sceneView.selectedID = object.id; sceneView.selectedPosition = position
+    }
+    private func focusSelected() {
+        guard let object = selectedObject, play == nil else { return }
+        frameObjects([object]); status.stringValue = "Focused \(object.name). \(project.dimension == .threeD ? "Red X · Green Y · Blue Z handles move the object." : "Drag to move; scroll to pan; Option-scroll to zoom.")"
     }
     private func resetCamera() {
         if project.dimension == .twoD { spriteView.scene?.camera?.position = .zero; spriteView.scene?.camera?.setScale(1) }
         else { sceneView.pointOfView?.position = SCNVector3(0,15,17); sceneView.pointOfView?.look(at:SCNVector3Zero) }
     }
     private func frameScene() {
-        guard !project.objects.isEmpty else { resetCamera(); return }
-        let xs = project.objects.map(\.x), ys = project.objects.map(\.y), zs = project.objects.map(\.z)
-        let x = (xs.min()!+xs.max()!)/2, y = (ys.min()!+ys.max()!)/2, z = (zs.min()!+zs.max()!)/2
-        if project.dimension == .twoD { spriteView.scene?.camera?.position = CGPoint(x:x*40,y:y*40); spriteView.scene?.camera?.setScale(max(1,max((xs.max()!-xs.min()!+4)/21,(ys.max()!-ys.min()!+4)/13))) }
-        else { let span = max(10,max(xs.max()!-xs.min()!,max(ys.max()!-ys.min()!,zs.max()!-zs.min()!))+4); sceneView.pointOfView?.position = SCNVector3(x,y+span,z+span); sceneView.pointOfView?.look(at:SCNVector3(x,y,z)) }
+        frameObjects(project.objects.filter(\.visible))
+    }
+    private func frameObjects(_ objects: [GameObject]) {
+        guard !objects.isEmpty else { resetCamera(); return }
+        let lowX = objects.map { $0.x-$0.size*$0.scaleX/2 }.min()!, highX = objects.map { $0.x+$0.size*$0.scaleX/2 }.max()!
+        let lowY = objects.map { $0.y-$0.size*$0.scaleY/2 }.min()!, highY = objects.map { $0.y+$0.size*$0.scaleY/2 }.max()!
+        let lowZ = objects.map { $0.z-$0.size*$0.scaleZ/2 }.min()!, highZ = objects.map { $0.z+$0.size*$0.scaleZ/2 }.max()!
+        let x = (lowX+highX)/2, y = (lowY+highY)/2, z = (lowZ+highZ)/2
+        if project.dimension == .twoD { spriteView.scene?.camera?.position = CGPoint(x:x*40,y:y*40); spriteView.scene?.camera?.setScale(max(0.2,max((highX-lowX+2)/21,(highY-lowY+2)/13))) }
+        else {
+            let span = max(4,max(highX-lowX,max(highY-lowY,highZ-lowZ))*1.5+2)
+            sceneView.pointOfView?.position = SCNVector3(x,y+span,z+span); sceneView.pointOfView?.look(at:SCNVector3(x,y,z))
+        }
     }
     #if GAME_EDITOR_CHECKS
+    func checkWorkflowFeatures() throws {
+        let original = project
+        let actor = project.objects[0]
+        select(actor.id)
+        editObject { $0.scaleX = 3; $0.scaleY = 0.5; $0.scaleZ = 2; $0.colour = "#00FF80" }; rebuildScene()
+        if project.dimension == .twoD {
+            precondition(sprites[actor.id]?.xScale == actor.size*3 && sprites[actor.id]?.yScale == actor.size*0.5)
+            let colour = (sprites[actor.id] as? SKShapeNode)?.fillColor.usingColorSpace(.sRGB)
+            precondition(colour?.greenComponent == 1)
+        } else {
+            precondition(nodes[actor.id]?.scale.x == actor.size*3 && nodes[actor.id]?.scale.z == actor.size*2)
+            let colour = (nodes[actor.id]?.geometry?.firstMaterial?.diffuse.contents as? NSColor)?.usingColorSpace(.sRGB)
+            precondition(colour?.greenComponent == 1)
+        }
+        undoEdit(); precondition(project == original)
+        let undoCount = undoSteps.count
+        if project.dimension == .twoD {
+            drag(actor.id,point:CGPoint(x:1.24,y:-1.26),finished:false)
+            drag(actor.id,point:CGPoint(x:2.24,y:-2.26),finished:true)
+            precondition(selectedObject!.x == 2 && selectedObject!.y == -2.5)
+        } else {
+            drag3D(actor.id,point:SCNVector3(1.24,actor.y,actor.z),finished:false)
+            drag3D(actor.id,point:SCNVector3(2.24,actor.y,actor.z),finished:true)
+            precondition(selectedObject!.x == 2 && selectedObject!.y == actor.y)
+        }
+        precondition(undoSteps.count == undoCount+1,"A whole drag must create only one undo step")
+        undoEdit(); precondition(project == original)
+        addRecipe(.patrol)
+        duplicateObject()
+        let duplicate = selectedObject!
+        precondition(duplicate.rules.flatMap(\.actions).contains { $0.text == "patrol_"+duplicate.id.uuidString })
+        precondition(!duplicate.rules.flatMap(\.actions).contains { $0.text == "patrol_"+actor.id.uuidString })
+        objectSearch.stringValue = "copy"; filterObjects()
+        precondition(filteredObjects.count == 1 && filteredObjects[0].id == duplicate.id)
+        deleteObject(); precondition(project.objects.count == 1 && project.objects[0].id == actor.id)
+        objectSearch.stringValue = ""; filterObjects(); select(actor.id)
+        let beforePlay = project
+        togglePlay(); togglePause()
+        precondition(paused && stepButton.isEnabled && !debugText.stringValue.isEmpty)
+        let beforeTime = play!.elapsed
+        stepFrame(); precondition(abs(play!.elapsed-beforeTime-1.0/60) < 0.000001)
+        restartPlay(); precondition(play!.elapsed == 0 && paused)
+        togglePause(); precondition(!paused && !stepButton.isEnabled)
+        togglePlay(); precondition(project == beforePlay)
+        if project.dimension == .twoD {
+            spriteView.scene?.camera?.position = CGPoint(x:210,y:90); spriteView.scene?.camera?.setScale(2)
+            rebuildScene(); precondition(spriteView.scene?.camera?.position.x == 210 && spriteView.scene?.camera?.xScale == 2)
+            togglePlay(); togglePlay(); precondition(spriteView.scene?.camera?.position.x == 210)
+        } else {
+            sceneView.pointOfView?.position = SCNVector3(10,12,18)
+            rebuildScene(); precondition(sceneView.pointOfView?.position.x == 10)
+            togglePlay(); togglePlay(); precondition(sceneView.pointOfView?.position.x == 10)
+            resetCamera(); select(actor.id); view.layoutSubtreeIfNeeded()
+            _ = sceneView.snapshot()
+            // Drag the red X arrow with actual view mouse events.
+            let object = selectedObject!, scale = max(1.5,min(6,object.size*0.8))
+            let handle = sceneView.projectPoint(SCNVector3(object.x+scale,object.y,object.z))
+            let origin = sceneView.projectPoint(SCNVector3(object.x,object.y,object.z))
+            let unit = sceneView.projectPoint(SCNVector3(object.x+1,object.y,object.z))
+            let point = NSPoint(x:handle.x,y:handle.y)
+            precondition(sceneView.hitTest(point,options:nil).contains { $0.node.name == "gizmo-0" },"The visible X handle must be hit-testable")
+            func event(_ type:NSEvent.EventType,_ p:NSPoint) -> NSEvent {
+                NSEvent.mouseEvent(with:type,location:sceneView.convert(p,to:nil),modifierFlags:[],timestamp:0,windowNumber:view.window!.windowNumber,context:nil,eventNumber:1,clickCount:1,pressure:1)!
+            }
+            let end = NSPoint(x:point.x+(unit.x-origin.x)*2,y:point.y+(unit.y-origin.y)*2)
+            sceneView.mouseDown(with:event(.leftMouseDown,point)); sceneView.mouseDragged(with:event(.leftMouseDragged,end)); sceneView.mouseUp(with:event(.leftMouseUp,end))
+            precondition(abs(selectedObject!.x-object.x-2) < 0.001,"Mouse dragging a gizmo must change the scene, not orbit the camera")
+            undoEdit(); precondition(selectedObject?.x == object.x)
+        }
+        try project.validate()
+        print("PASS: \(project.dimension.rawValue) snap/undo, filtered deletion, independent patrols, Pause/Step/Restart, camera preservation and direct handles")
+    }
     func checkViewportRendering(width: Int) throws {
         let image: NSImage
         if project.dimension == .threeD { image = sceneView.snapshot() }

@@ -1,0 +1,32 @@
+NetVista Studio optional local 3D planning helper
+
+The app bundles a CPU-only llama.cpp completion executable, not a server or daemon.
+Upstream: https://github.com/ggml-org/llama.cpp
+Pinned release: b11379
+Pinned commit: 1537a0a8b2f8711d840878b0a0677ab2213c882c
+Source archive SHA-256: 372ba5251b9e1a88cd4dc9127686bf9fdd9fb5820884648e561f5c8c07d4ba34
+License: MIT. See LLAMA-CPP-LICENSE.txt and the vendor license files.
+
+NetVista modifications are provided in netvista-completion.patch:
+1. Generated completion token pieces go directly to stdout so --log-disable
+   suppresses diagnostics/EOS decorations without suppressing the JSON result.
+2. Global/user config.ini loading is disabled for the app-owned helper.
+The parent uses fixed local-file arguments and --offline. Server, subprocess,
+OpenSSL, GPU, dynamic backends and OpenMP support are not built. No C++ source
+or code produced by the model is executed. The executable is signed with the app.
+
+Optional data model (not bundled; downloaded only by explicit user request):
+Qwen2.5-0.5B-Instruct-GGUF, Q4_K_M quantization
+Publisher: Qwen team / Alibaba Cloud
+https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF
+Pinned revision: 9217f5db79a29953eb74d5343926648285ec7e67
+File: qwen2.5-0.5b-instruct-q4_k_m.gguf
+Size: 491400032 bytes
+SHA-256: 74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db
+License: Apache License 2.0. See QWEN-LICENSE.txt.
+The upstream model distribution at this revision does not include a NOTICE file.
+The model is unmodified data; NetVista changes only the bounded planning prompt.
+
+This is a small structured planning assistant, not a trained text-to-mesh model.
+It can suggest native modeling actions for the user to review and apply. It does
+not create production-quality topology, remesh arbitrary shapes or replace Blender.

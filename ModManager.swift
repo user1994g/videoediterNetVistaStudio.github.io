@@ -21,10 +21,12 @@ final class ModManager {
         return storedMods
     }
 
-    private init() {
+    // A supplied directory supports isolated creator tests without touching a
+    // user's installed mods. Normal app callers use the per-user default.
+    init(modsDirectory suppliedDirectory: URL? = nil) {
         let applicationSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)
-        modsDirectory = applicationSupport
+        modsDirectory = suppliedDirectory ?? applicationSupport
             .appendingPathComponent("NetVista Studio", isDirectory: true)
             .appendingPathComponent("Mods", isDirectory: true)
         stagingDirectory = modsDirectory.appendingPathComponent(".staging", isDirectory: true)
@@ -506,11 +508,12 @@ enum ModPackageValidator {
         return destination
     }
 
-    static func runTool(_ executable: String, arguments: [String], outputLimit: Int) throws -> String {
+    static func runTool(_ executable: String, arguments: [String], outputLimit: Int, currentDirectory: URL? = nil) throws -> String {
         let process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        process.currentDirectoryURL = currentDirectory
         process.standardOutput = pipe
         process.standardError = pipe
         do { try process.run() }

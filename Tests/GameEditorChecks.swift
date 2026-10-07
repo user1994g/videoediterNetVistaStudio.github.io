@@ -9,6 +9,7 @@ import Cocoa
             window.contentViewController = controller
             window.orderFront(nil)
             controller.checkEditingAndPlay()
+            try controller.checkWorkflowFeatures()
             try controller.checkCharacterFeatures()
             for (width, height) in [(1280,840), (1100,680)] {
                 window.setContentSize(NSSize(width: width, height: height)); window.layoutIfNeeded(); controller.view.layoutSubtreeIfNeeded()

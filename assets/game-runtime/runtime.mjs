@@ -5,7 +5,7 @@ export class GameRuntime {
     this.variables = Object.create(null); this.animations = {}; this.animationSpeeds = {}; this.previousKeys = new Set();
     this.score = 0; this.elapsed = 0; this.started = false; this.destroyed = new Set(); this.contacts = new Set();
   }
-  overlaps(a,b) { const r=(a.size+b.size)/2; return Math.abs(a.x-b.x)<r && Math.abs(a.y-b.y)<r && (this.dimension==='2D'||Math.abs(a.z-b.z)<r); }
+  overlaps(a,b) { const radius=axis=>(a.size*(a[axis]??1)+b.size*(b[axis]??1))/2; return Math.abs(a.x-b.x)<radius('scaleX') && Math.abs(a.y-b.y)<radius('scaleY') && (this.dimension==='2D'||Math.abs(a.z-b.z)<radius('scaleZ')); }
   move(o,dx,dy,dz) {
     for(const [axis,delta] of [['x',dx],['y',dy],['z',dz]]) {
       if(axis==='z'&&this.dimension==='2D') continue;

@@ -382,6 +382,13 @@ final class LocalShareServer {
     private var cachedState = LocalShareServerState()
     private let authority: SharePairingAuthority
     private let snapshotProvider: SnapshotProvider
+    private let collaborationSnapshot: (() -> ShareCollaborationSnapshot?)?
+    private let collaborationCommand: ((ShareCollaborationCommand, String, String) -> ShareCollaborationResult?)?
+    private let resetCollaboration: (() -> Void)?
+    private let previewProvider: ((String, UUID, Double, @escaping (Data?) -> Void) -> Void)?
+    private var csrfSeed = UUID().uuidString
+    private var commandBudgets: [String: (start: TimeInterval, count: Int)] = [:]
+    private var activePreviews = 0
     private let advertisesBonjour: Bool
     private var listener: NWListener?
     private var pathMonitor: NWPathMonitor?
@@ -402,12 +409,20 @@ final class LocalShareServer {
         authority: SharePairingAuthority = SharePairingAuthority(),
         advertisesBonjour: Bool = false,
         preferredPorts: [UInt16] = Array(8787...8796),
+        collaborationSnapshot: (() -> ShareCollaborationSnapshot?)? = nil,
+        collaborationCommand: ((ShareCollaborationCommand, String, String) -> ShareCollaborationResult?)? = nil,
+        resetCollaboration: (() -> Void)? = nil,
+        previewProvider: ((String, UUID, Double, @escaping (Data?) -> Void) -> Void)? = nil,
         snapshotProvider: @escaping SnapshotProvider
     ) {
         self.authority = authority
         self.advertisesBonjour = advertisesBonjour
         self.preferredPorts = preferredPorts.isEmpty ? [8787] : preferredPorts
         self.snapshotProvider = snapshotProvider
+        self.collaborationSnapshot = collaborationSnapshot
+        self.collaborationCommand = collaborationCommand
+        self.resetCollaboration = resetCollaboration
+        self.previewProvider = previewProvider
         cachedState.pairedDeviceCount = authority.pairedDeviceCount()
     }
 
@@ -447,6 +462,7 @@ final class LocalShareServer {
         queue.async { [weak self] in
             guard let self else { return }
             authority.forgetAllDevices()
+            resetCollaboration?()
             refreshLANState(challenge: authority.activeChallenge())
         }
     }
@@ -463,6 +479,8 @@ final class LocalShareServer {
             authority.clearChallenge(); allowedHostHeaders.removeAll()
             if let awakeActivity { ProcessInfo.processInfo.endActivity(awakeActivity); self.awakeActivity = nil }
             remoteConnectionCount = 0
+            activePreviews = 0; commandBudgets.removeAll(); csrfSeed = UUID().uuidString
+            resetCollaboration?()
             publish(LocalShareServerState(phase: .stopped, pairedDeviceCount: authority.pairedDeviceCount()))
         }
     }
@@ -490,7 +508,7 @@ final class LocalShareServer {
                         self.publishWaitingForLAN()
                     }
                 case .waiting(let error):
-                    self.publishFailure("Sharing is waiting for local-network access: \(error.localizedDescription)", stillRunning: true)
+                    self.publishFailure("The sharing listener is waiting: \(error.localizedDescription). Check the network connection, then try Restart Sharing.", stillRunning: true)
                 case .failed(let error):
                     listener.cancel()
                     self.listener = nil; self.port = nil
@@ -699,7 +717,9 @@ final class LocalShareServer {
         switch (request.method, request.path) {
         case ("GET", "/"), ("HEAD", "/"):
             let response: ShareHTTPResponse
-            if authenticated, let snapshot = snapshotProvider() { response = .html(200, dashboardHTML(snapshot: snapshot)) }
+            if authenticated, let token, collaborationSnapshot != nil {
+                response = .html(200, ShareCompanion.html(csrfToken: csrfToken(for: token)))
+            } else if authenticated, let snapshot = snapshotProvider() { response = .html(200, dashboardHTML(snapshot: snapshot)) }
             else {
                 var headers: [String: String] = [:]
                 if token != nil { headers["Set-Cookie"] = expiredCookie }
@@ -707,6 +727,56 @@ final class LocalShareServer {
             }
             let declaredLength = request.method == "HEAD" ? response.body.count : nil
             send(request.method == "HEAD" ? withoutBody(response) : response, over: connection, connectionID: id, declaredLength: declaredLength)
+
+        case ("GET", "/api/project"):
+            guard authenticated else { send(.text(401, "Pair this device first."), over: connection, connectionID: id); return }
+            guard let snapshot = collaborationSnapshot?(), let data = try? JSONEncoder().encode(snapshot) else {
+                send(.text(503, "The editor is unavailable."), over: connection, connectionID: id); return
+            }
+            send(ShareHTTPResponse(status: 200, headers: ["Content-Type": "application/json"], body: data), over: connection, connectionID: id)
+
+        case ("POST", "/api/command"):
+            guard authenticated, let token else { send(.text(401, "Pair this device first."), over: connection, connectionID: id); return }
+            guard let origin = request.headers["origin"], originMatchesHost(origin, host: host),
+                  request.headers["x-netvista-csrf"] == csrfToken(for: token),
+                  request.headers["content-type"]?.split(separator: ";").first?.trimmingCharacters(in: .whitespaces).lowercased() == "application/json" else {
+                send(.text(403, "Open the companion directly from the Share address before editing."), over: connection, connectionID: id); return
+            }
+            let deviceID = SharePairingAuthority.tokenHash(token)
+            guard consumeCommandBudget(deviceID), request.body.count <= ShareCollaborationHost.maxCommandBytes else {
+                send(.text(429, "Too many changes. Wait a moment before trying again."), over: connection, connectionID: id); return
+            }
+            guard let command = try? JSONDecoder().decode(ShareCollaborationCommand.self, from: request.body) else {
+                send(.text(400, "Invalid editing command."), over: connection, connectionID: id); return
+            }
+            let name = String((request.headers["x-netvista-device"] ?? "Companion").prefix(80))
+            guard let result = collaborationCommand?(command, deviceID, name), let data = try? JSONEncoder().encode(result) else {
+                send(.text(503, "The editor is unavailable."), over: connection, connectionID: id); return
+            }
+            send(ShareHTTPResponse(status: 200, headers: ["Content-Type": "application/json"], body: data), over: connection, connectionID: id)
+
+        case ("GET", "/preview.jpg"):
+            guard authenticated, let token else { send(.text(401, "Pair this device first."), over: connection, connectionID: id); return }
+            let query = URLComponents(string: "http://local\(request.target)")?.queryItems ?? []
+            let values = query.reduce(into: [String: String]()) { $0[$1.name] = $1.value }
+            guard let kind = values["kind"], ["clip", "scene"].contains(kind), let rawID = values["id"], let target = UUID(uuidString: rawID),
+                  let time = Double(values["time"] ?? "0"), time.isFinite, (0...31_536_000).contains(time), let previewProvider else {
+                send(.text(400, "Choose a valid clip or scene preview."), over: connection, connectionID: id); return
+            }
+            guard activePreviews < 2 else { send(.text(503, "The preview is busy."), over: connection, connectionID: id); return }
+            activePreviews += 1
+            let generation = csrfSeed
+            previewProvider(kind, target, time) { [weak self, weak connection] data in
+                guard let self, let connection else { return }
+                self.queue.async {
+                    guard self.csrfSeed == generation else { return }
+                    self.activePreviews = max(0, self.activePreviews - 1)
+                    guard self.connections[id] != nil else { return }
+                    guard self.authority.recognizes(token: token) else { self.send(.text(401, "Device access was revoked."), over: connection, connectionID: id); return }
+                    guard let data, data.count <= 2 * 1024 * 1024 else { self.send(.text(404, "Preview unavailable. Check the source media on the host."), over: connection, connectionID: id); return }
+                    self.send(ShareHTTPResponse(status: 200, headers: ["Content-Type": "image/jpeg"], body: data), over: connection, connectionID: id)
+                }
+            }
 
         case ("POST", "/pair"):
             if let origin = request.headers["origin"], !originMatchesHost(origin, host: host) {
@@ -768,6 +838,17 @@ final class LocalShareServer {
     }
 
     private var expiredCookie: String { "nv_device=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0" }
+
+    private func csrfToken(for token: String) -> String { SharePairingAuthority.tokenHash(csrfSeed + token) }
+
+    private func consumeCommandBudget(_ deviceID: String) -> Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        commandBudgets = commandBudgets.filter { now - $0.value.start < 60 }
+        let previous = commandBudgets[deviceID] ?? (start: now, count: 0)
+        guard previous.count < 600 else { return false }
+        commandBudgets[deviceID] = (previous.start, previous.count + 1)
+        return true
+    }
 
     private func sendUnauthorized(over connection: NWConnection, id: UUID, headOnly: Bool = false) {
         let response = ShareHTTPResponse.html(401, pairingHTML(message: "Pair this device before opening shared project data."), headers: ["Set-Cookie": expiredCookie])
@@ -859,7 +940,7 @@ final class LocalShareServer {
     private var securityHeaders: [String: String] {
         [
             "Cache-Control": "no-store",
-            "Content-Security-Policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; media-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+            "Content-Security-Policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' blob:; media-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
             "Cross-Origin-Resource-Policy": "same-origin",
             "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
             "Referrer-Policy": "no-referrer",

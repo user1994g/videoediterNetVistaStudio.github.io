@@ -10,5 +10,5 @@ for(const dimension of ['2D','3D']) {
   for(let i=0;i<runtime.objects.length;i++) for(const key of ['x','y','z','size','rotation','opacity','visible']) {
     const a=runtime.objects[i][key],b=expected.objects[i][key];assert(typeof a==='number'?Math.abs(a-b)<1e-8:a===b,`${dimension} ${key}`);
   }
-  console.log(`PASS: ${dimension} JavaScript export matches native runtime over 180 frames`);
+  console.log(`PASS: ${dimension} JavaScript export matches native runtime over ${expected.frames.length} frames`);
 }

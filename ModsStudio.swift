@@ -79,6 +79,7 @@ final class ModsStudioViewController: NSViewController {
     private let documentStack = NSStackView()
     private var selectedModID: String?
     private var observer: NSObjectProtocol?
+    private var creatorWindow: ModCreatorWindowController?
 
     init(manager: ModManager = .shared) {
         self.manager = manager
@@ -111,7 +112,7 @@ final class ModsStudioViewController: NSViewController {
         let header = NSStackView()
         header.orientation = .horizontal
         header.alignment = .centerY
-        let heading = NSTextField(labelWithString: "MODS")
+        let heading = NSTextField(labelWithString: "Mods")
         heading.font = .systemFont(ofSize: 20, weight: .bold)
         StudioTheme.shared.register(heading, as: .primaryText)
         let warning = NSTextField(labelWithString: "DECLARATIVE · CREATOR UNVERIFIED")
@@ -120,8 +121,10 @@ final class ModsStudioViewController: NSViewController {
         header.addArrangedSubview(heading)
         header.addArrangedSubview(warning)
         header.addArrangedSubview(NSView())
+        let create = button("Create Mod…", #selector(createMod))
+        StudioTheme.shared.register(create, as: .accentControl)
+        header.addArrangedSubview(create)
         let install = button("Install…", #selector(choosePackage))
-        StudioTheme.shared.register(install, as: .accentControl)
         header.addArrangedSubview(install)
         header.addArrangedSubview(button("Open Mods Folder", #selector(openFolder)))
         let rescan = button("Rescan", #selector(rescan))
@@ -132,7 +135,7 @@ final class ModsStudioViewController: NSViewController {
         drop.onPackagesDropped = { [weak self] in self?.installPackages($0) }
         root.addArrangedSubview(drop)
 
-        let explanation = NSTextField(wrappingLabelWithString: "NetVista mods can add bounded themes, native information/tool pages, catalog entries, scene maps, props, and presets. They cannot contain scripts, native libraries, shaders, HTML, CSS, or executable code. Installed mods start disabled.")
+        let explanation = NSTextField(wrappingLabelWithString: "Create a theme or native tool page without writing code. The creator exports a checked .netvistamod file with its manifest and hashes already included. Presets, maps and props are viewable catalog references in Mods v1, not automatic imports. New mods start disabled.")
         explanation.font = .systemFont(ofSize: 11)
         StudioTheme.shared.register(explanation, as: .secondaryText)
         root.addArrangedSubview(explanation)
@@ -195,7 +198,7 @@ final class ModsStudioViewController: NSViewController {
         }
         let mods = manager.installedMods
         if mods.isEmpty {
-            let empty = NSTextField(wrappingLabelWithString: "No mods installed yet. Drop a .netvistamod package above. You can also put packages in this app's Mods folder, but packages become installed only after opening them here so the safety checks can run.")
+            let empty = NSTextField(wrappingLabelWithString: "Make Studio your own. Choose Create Mod… to build a theme or tool page, then Test Install to try it. Already have a package? Drop it above or choose Install…. Packages copied to the Mods folder still need to be installed here so their checks can run.")
             empty.alignment = .center
             StudioTheme.shared.register(empty, as: .secondaryText)
             documentStack.addArrangedSubview(empty)
@@ -357,6 +360,20 @@ final class ModsStudioViewController: NSViewController {
         panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
         guard panel.runModal() == .OK else { return }
         installPackages(panel.urls)
+    }
+
+    @objc private func createMod() {
+        if let creatorWindow, creatorWindow.window?.isVisible == true {
+            creatorWindow.showWindow(nil)
+            creatorWindow.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        creatorWindow = ModCreatorWindowController(manager: manager) { [weak self] text in
+            self?.onStatus?(text)
+            self?.reload()
+        }
+        creatorWindow?.showWindow(nil)
+        creatorWindow?.window?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func openFolder() { onAction?(.openModsFolder) }

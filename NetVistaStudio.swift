@@ -574,7 +574,7 @@ private final class FlippedWorkspaceDocumentView: NSView {
     override var isFlipped: Bool { true }
 }
 
-final class EditorController: NSViewController {
+final class EditorController: NSViewController, NSWindowDelegate {
     var onShowStudioHome: (() -> Void)?
     var onCheckForUpdates: (() -> Void)?
     private var media: [MediaAsset] = []
@@ -665,6 +665,10 @@ final class EditorController: NSViewController {
     private var activeKeyframeProperty: AnimatableProperty = .opacity
     private var colorStudioWindow: NSWindow?
     private var colorStudioController: AdvancedColorStudioViewController?
+    private let colourScopeLoader = ColourScopeFrameLoader()
+    private var colourScopeClip: TimelineClip?
+    private var colourScopeTime: Double = -1
+    private var colourScopeImage: CIImage?
     private var liftColorControl = ColorWheelAdjustment()
     private var midtoneColorControl = ColorWheelAdjustment()
     private var gainColorControl = ColorWheelAdjustment()
@@ -681,6 +685,15 @@ final class EditorController: NSViewController {
     private var shareWindow: NSWindow?
     private var sharePanelController: SharePanelViewController?
     private var shareServer: LocalShareServer?
+    private var shareProjectID = UUID()
+    private let sharePreviewRenderer = SharePreviewRenderer()
+    private lazy var collaborationHost = ShareCollaborationHost(
+        provider: { [weak self] in self?.collaborationProject() },
+        applyColour: { [weak self] id, values in self?.applySharedColour(id, values: values) ?? false },
+        applyTransform: { [weak self] scene, object, values in self?.applySharedTransform(scene, objectID: object, values: values) ?? false },
+        applyAddObject: { [weak self] scene, object, kind in self?.addSharedObject(scene, objectID: object, kind: kind) ?? false },
+        applyDeleteObject: { [weak self] scene, object in self?.deleteSharedObject(scene, objectID: object) ?? false }
+    )
     private weak var updateButton: NSButton?
     private var exportWorkspaceController: ExportWorkspaceViewController?
     private var activeExportJob: TimelineExportJob?
@@ -1246,7 +1259,9 @@ final class EditorController: NSViewController {
     private func spacer() -> NSView { let v = NSView(); v.setContentHuggingPriority(.defaultLow, for: .horizontal); v.setContentHuggingPriority(.defaultLow, for: .vertical); return v }
     private func button(_ title: String, _ action: Selector) -> NSButton { let b = NSButton(title: title, target: self, action: action); b.bezelStyle = .rounded; b.font = .systemFont(ofSize: 11, weight: .medium); return b }
     private func fieldLabel(_ text: String) -> NSTextField { let l = NSTextField(labelWithString: text); l.font = .systemFont(ofSize: 9, weight: .bold); l.textColor = .secondaryLabelColor; return l }
-    private func replaceTimeline(_ next: [TimelineClip], action: String, selection requestedSelection: Set<UUID>? = nil, primary requestedPrimary: UUID? = nil, playhead requestedPlayhead: Double? = nil) {
+    private func replaceTimeline(_ next: [TimelineClip], action: String, selection requestedSelection: Set<UUID>? = nil, primary requestedPrimary: UUID? = nil, playhead requestedPlayhead: Double? = nil, preservingColourDrafts: Bool = false, preservingEffectsDrafts: Bool = false) {
+        let colourDrafts = preservingColourDrafts ? liveColourPreviewValues : [:]
+        let effectsDrafts = preservingEffectsDrafts ? liveEffectsPreviewValues : [:]
         clearAllLivePreviews()
         let previous = timelineClips
         let previousSelection = selectedClipIDs
@@ -1254,6 +1269,11 @@ final class EditorController: NSViewController {
         let previousPlayhead = timelineView.currentPlayheadTime
         timelineClips = next
         let validIDs = Set(next.map(\.id))
+        // Preserve the *other* open tool's draft before playhead callbacks or
+        // player rebuilding can put saved values back into its controls.
+        liveColourPreviewValues = colourDrafts.filter { validIDs.contains($0.key) }
+        liveEffectsPreviewValues = effectsDrafts.filter { validIDs.contains($0.key) }
+        rebuildLivePreviewStore()
         if let requestedSelection {
             selectedClipIDs = requestedSelection.intersection(validIDs)
             selectedClipID = requestedPrimary.flatMap { selectedClipIDs.contains($0) ? $0 : nil } ?? selectedClipIDs.first
@@ -1283,6 +1303,7 @@ final class EditorController: NSViewController {
         }
         projectUndoManager.setActionName(action)
         reloadTimeline()
+        refreshVideoToolSelection()
         if !next.isEmpty {
             let end = next.map { $0.timelineStart + clipDuration($0) }.max() ?? 0
             previewTimeline(at: min(requestedPlayhead ?? previousPlayhead, end))
@@ -1302,8 +1323,15 @@ final class EditorController: NSViewController {
         projectUndoManager.redo(); refreshOpenStudiosAfterHistory(); rebuildInspector(); status("Redid last edit.")
     }
     private func refreshOpenStudiosAfterHistory() {
+        refreshVideoToolSelection()
+    }
+    private func refreshVideoToolSelection() {
         if let video = primarySelectedVideo() { loadEditingControls(from: video) }
-        else { colorStudioController?.load(ColorControlValues(), selectionName: "No timeline video selected", isEnabled: false) }
+        else {
+            colorStudioController?.load(ColorControlValues(), selectionName: "No timeline video selected", isEnabled: false)
+            effectsStudioController?.load(EffectControlValues(), selectionName: "No timeline video selected", property: activeKeyframeProperty, interpolation: activeKeyframeInterpolation, keyframeText: "Select a timeline video clip to edit effects.", clip: nil, timelineTime: 0)
+            refreshColourScope()
+        }
     }
 
     private func rebuildInspector() {
@@ -1620,6 +1648,7 @@ final class EditorController: NSViewController {
         let minutes = (totalFrames / 1800) % 60
         let hours = totalFrames / 108000
         playheadLabel.stringValue = String(format: "%02d:%02d:%02d:%02d", hours, minutes, seconds, frames)
+        if colorStudioWindow?.isVisible == true { _ = currentScopeImage() }
         if let clip = primarySelectedVideo(), time >= clip.timelineStart, time <= clip.timelineStart + clipDuration(clip) {
             effectsStudioController?.updatePlayhead(
                 localTime: clip.localTime(at: time),
@@ -1771,10 +1800,6 @@ final class EditorController: NSViewController {
         status("Selected \(media[index].name). Drag it onto Video 1 to edit it.")
     }
     func selectTimeline(index: Int, additive: Bool = false, solo: Bool = false) {
-        // A floating Effect Controls window may be holding an unapplied live
-        // preview. Never let that transient snapshot follow the user to a
-        // different timeline selection.
-        clearAllLivePreviews()
         guard timelineClips.indices.contains(index) else { return }
         let clip = timelineClips[index]
         let linkedIDs = Set(timelineClips.filter { candidate in candidate.groupID != nil && candidate.groupID == clip.groupID }.map(\.id))
@@ -2402,7 +2427,30 @@ final class EditorController: NSViewController {
         if let existing = shareServer {
             server = existing
         } else {
-            server = LocalShareServer { [weak self] in
+            server = LocalShareServer(
+                collaborationSnapshot: { [weak self] in
+                    guard let self else { return nil }
+                    return self.shareOnMain { self.collaborationHost.snapshot() }
+                },
+                collaborationCommand: { [weak self] command, device, name in
+                    guard let self else { return nil }
+                    return self.shareOnMain { self.collaborationHost.process(command, deviceID: device, deviceName: name) }
+                },
+                resetCollaboration: { [weak self] in DispatchQueue.main.async { self?.collaborationHost.reset() } },
+                previewProvider: { [weak self] kind, id, time, completion in
+                    guard let self else { completion(nil); return }
+                    let source: SharePreviewRenderer.Source? = self.shareOnMain {
+                        if kind == "clip", let clip = self.timelineClips.first(where: { $0.id == id && $0.kind == .video }) { return .clip(clip) }
+                        if kind == "scene" {
+                            self.syncOpenSceneIntoProject()
+                            if let scene = self.storedScenes.first(where: { $0.id == id }) { return .scene(scene.document) }
+                        }
+                        return nil
+                    }
+                    guard let source else { completion(nil); return }
+                    self.sharePreviewRenderer.render(source, time: time, completion: completion)
+                }
+            ) { [weak self] in
                 guard let self else { return nil }
                 if Thread.isMainThread { return self.currentShareSnapshot() }
                 return DispatchQueue.main.sync { self.currentShareSnapshot() }
@@ -2420,8 +2468,120 @@ final class EditorController: NSViewController {
         sharePanelController?.beginNewPairing()
         status("Starting local Share. Open the address on your iPad, then enter the temporary code.")
     }
+
+    private func shareOnMain<T>(_ body: () -> T) -> T {
+        Thread.isMainThread ? body() : DispatchQueue.main.sync(execute: body)
+    }
+
+    private func sharedColourValues(_ clip: TimelineClip) -> ShareColourValues {
+        .init(exposure: clip.colorExtras.exposure, contrast: clip.contrast, saturation: clip.saturation,
+              temperature: clip.temperature, tint: clip.colorExtras.tint, vibrance: clip.colorExtras.vibrance)
+    }
+
+    private func canShareColour(_ clip: TimelineClip) -> Bool {
+        let remoteProperties: Set<AnimatableProperty> = [.exposure, .contrast, .saturation, .temperature, .tint, .vibrance]
+        return activeExportJob == nil && liveColourPreviewValues[clip.id] == nil
+            && !clip.animation.channels.contains { remoteProperties.contains($0.property) && !$0.keyframes.isEmpty }
+            && sharedColourValues(clip).isValid
+    }
+
+    private func collaborationProject() -> ShareCollaborationProject {
+        precondition(Thread.isMainThread)
+        syncOpenSceneIntoProject()
+        let clips = timelineClips.filter { $0.kind == .video }.map { clip in
+            ShareColourClip(id: clip.id, name: clip.name, mediaID: clip.assetID, values: sharedColourValues(clip),
+                            duration: clipDuration(clip), editable: canShareColour(clip))
+        }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let scenes = storedScenes.map { stored -> ShareSceneState in
+            let editor = sceneEditorWindow?.sceneEditor
+            let isOpenScene = editor?.document.projectSceneID == stored.id
+            let available = activeExportJob == nil && (!isOpenScene || editor?.acceptsCollaborationEdits == true)
+            let objects = stored.document.objects.map { object in
+                ShareSceneObject(id: object.id, name: object.name, kind: object.kind.rawValue,
+                    transform: .init(position: .init(x: object.position.x, y: object.position.y, z: object.position.z),
+                                     rotation: .init(x: object.rotation.x, y: object.rotation.y, z: object.rotation.z),
+                                     scale: .init(x: object.scale.x, y: object.scale.y, z: object.scale.z)),
+                    editable: available && object.transformKeyframes.isEmpty,
+                    changeToken: (try? encoder.encode(object)).map { SharePairingAuthority.tokenHash($0.base64EncodedString()) })
+            }
+            return ShareSceneState(id: stored.id, name: stored.document.title, objects: objects,
+                                   duration: stored.document.duration, editable: available)
+        }
+        return ShareCollaborationProject(projectID: shareProjectID, title: projectTitle.stringValue, clips: clips, scenes: scenes)
+    }
+
+    private func applySharedColour(_ id: UUID, values: ShareColourValues) -> Bool {
+        guard values.isValid, let index = timelineClips.firstIndex(where: { $0.id == id && $0.kind == .video }), canShareColour(timelineClips[index]) else { return false }
+        var next = timelineClips
+        next[index].colorExtras.exposure = values.exposure; next[index].contrast = values.contrast
+        next[index].saturation = values.saturation; next[index].temperature = values.temperature
+        next[index].colorExtras.tint = values.tint; next[index].colorExtras.vibrance = values.vibrance
+        replaceTimeline(next, action: "Collaborator Colour", preservingColourDrafts: true, preservingEffectsDrafts: true)
+        if let clip = primarySelectedVideo(), liveColourPreviewValues[clip.id] == nil { loadEditingControls(from: clip) }
+        refreshColourScope()
+        status("A collaborator updated \(next[index].name)’s grade. Save your work to keep it.")
+        return true
+    }
+
+    private func applySharedTransform(_ sceneID: UUID, objectID: UUID, values: ShareObjectTransform) -> Bool {
+        guard values.isValid else { return false }
+        let transform = SceneTransform(position: .init(x: values.position.x, y: values.position.y, z: values.position.z),
+            rotation: .init(x: values.rotation.x, y: values.rotation.y, z: values.rotation.z),
+            scale: .init(x: values.scale.x, y: values.scale.y, z: values.scale.z))
+        return mutateSharedScene(sceneID, action: "Collaborator Transform", activeEdit: { $0.applyCollaborationTransform(objectID: objectID, transform: transform) }) { document in
+            guard let index = document.objects.firstIndex(where: { $0.id == objectID }), document.objects[index].transformKeyframes.isEmpty else { return false }
+            document.objects[index].position = transform.position; document.objects[index].rotation = transform.rotation; document.objects[index].scale = transform.scale
+            return true
+        }
+    }
+
+    private func addSharedObject(_ sceneID: UUID, objectID: UUID, kind: String) -> Bool {
+        guard ShareCollaborationHost.primitiveKinds.contains(kind), let kind = SceneObjectKind(rawValue: kind) else { return false }
+        let object = SceneObjectRecord(id: objectID, name: "\(kind.rawValue.capitalized) · Collaborator", kind: kind, position: .init(y: 0.5))
+        return mutateSharedScene(sceneID, action: "Collaborator Add Object", activeEdit: { $0.addCollaborationObject(object) }) { document in
+            guard document.objects.count < ShareCollaborationHost.maximumSceneObjects, !document.objects.contains(where: { $0.id == objectID }) else { return false }
+            document.objects.append(object); return true
+        }
+    }
+
+    private func deleteSharedObject(_ sceneID: UUID, objectID: UUID) -> Bool {
+        mutateSharedScene(sceneID, action: "Collaborator Delete Object", activeEdit: { $0.deleteCollaborationObject(objectID) }) { document in
+            guard document.objects.contains(where: { $0.id == objectID }) else { return false }
+            document.objects.removeAll { $0.id == objectID }; return true
+        }
+    }
+
+    private func mutateSharedScene(_ sceneID: UUID, action: String, activeEdit: (SceneEditorViewController) -> Bool,
+                                   storedEdit: (inout NetVistaSceneDocument) -> Bool) -> Bool {
+        guard activeExportJob == nil else { return false }
+        syncOpenSceneIntoProject()
+        guard let index = storedScenes.firstIndex(where: { $0.id == sceneID }) else { return false }
+        if let editor = sceneEditorWindow?.sceneEditor, editor.document.projectSceneID == sceneID {
+            guard activeEdit(editor) else { return false }
+            storedScenes[index].document = editor.snapshotDocument()
+        } else {
+            var next = storedScenes[index].document
+            guard storedEdit(&next) else { return false }
+            restoreSharedScene(sceneID, document: next, action: action)
+        }
+        refresh3DProjectUI(); status("\(action). Save your work on this Mac to keep scene changes.")
+        return true
+    }
+
+    private func restoreSharedScene(_ sceneID: UUID, document: NetVistaSceneDocument, action: String) {
+        syncOpenSceneIntoProject()
+        guard let index = storedScenes.firstIndex(where: { $0.id == sceneID }) else { return }
+        let old = storedScenes[index].document
+        storedScenes[index].document = document
+        if let editor = sceneEditorWindow?.sceneEditor, editor.document.projectSceneID == sceneID { editor.replaceDocument(document, sourceURL: sceneMarkerURL(sceneID)) }
+        projectUndoManager.registerUndo(withTarget: self) { $0.restoreSharedScene(sceneID, document: old, action: action) }
+        projectUndoManager.setActionName(action)
+        refresh3DProjectUI()
+    }
     @objc private func openColorStudio() {
         let clip = primarySelectedVideo()
+        let wasOpen = colorStudioWindow.map { $0.isVisible || $0.isMiniaturized } ?? false
         if colorStudioController == nil {
             let controller = AdvancedColorStudioViewController()
             controller.onPreview = { [weak self] values in self?.receiveColorStudioPreview(values) }
@@ -2429,15 +2589,21 @@ final class EditorController: NSViewController {
             controller.onCancelPreview = { [weak self] in self?.cancelColorPreview() }
             controller.onRequestSavedValues = { [weak self] in self?.primarySelectedVideo().map(ColorControlValues.init) }
             controller.onExportLUT = { [weak self] nodes, dimension in self?.exportAdvancedLUT(nodes: nodes, dimension: dimension) }
-            controller.onRequestScopeImage = { [weak self] in self?.currentScopeImage() }
-            let window = studioWindow(title: "NetVista Studio — Colour", size: NSSize(width: 1_120, height: 860), controller: controller)
-            window.minSize = NSSize(width: 820, height: 620)
+            controller.onRequestScopeImage = { [weak self] in
+                guard let self, self.colorStudioWindow?.isVisible == true else { return nil }
+                return self.currentScopeImage()
+            }
+            let window = videoToolWindow(title: "NetVista Studio — Colour", size: NSSize(width: 1_120, height: 860), controller: controller)
             colorStudioController = controller; colorStudioWindow = window
         }
-        colorStudioController?.load(clip.map(ColorControlValues.init) ?? ColorControlValues(), selectionName: colourSelectionDescription(for: clip), isEnabled: clip != nil)
-        if let window = colorStudioWindow { keepStudioWindowVisible(window) }
-        colorStudioWindow?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        // Focusing an already-open tool must not reset its draft, selected
+        // grade node, bypass state or scroll position.
+        if !wasOpen {
+            let values = clip.map { liveColourPreviewValues[$0.id] ?? ColorControlValues($0) } ?? ColorControlValues()
+            colorStudioController?.load(values, selectionName: colourSelectionDescription(for: clip), isEnabled: clip != nil)
+        }
+        presentVideoToolWindow(colorStudioWindow)
+        refreshColourScope()
     }
 
     private func exportAdvancedLUT(nodes: [GradeNode], dimension: Int) {
@@ -2456,23 +2622,45 @@ final class EditorController: NSViewController {
     }
 
     private func currentScopeImage() -> CIImage? {
-        guard let clip = primarySelectedVideo() else { return nil }
-        let asset = AVAsset(url: clip.url)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 640, height: 360)
-        let localTime = max(0, timelineView.currentPlayheadTime - clip.timelineStart) + clip.inPoint
-        guard let cgImage = try? generator.copyCGImage(at: CMTime(seconds: localTime, preferredTimescale: 600), actualTime: nil) else { return nil }
-        let source = CIImage(cgImage: cgImage)
-        // Scopes should describe what the editor is showing, including the
-        // current live node grade, rather than an unrelated ungraded source.
-        return NativeTimelineVisualPipeline.applyGrade(to: source, clip: clip, timelineTime: timelineView.currentPlayheadTime)
+        guard let selected = primarySelectedVideo() else {
+            colourScopeLoader.invalidate(); colourScopeClip = nil; colourScopeTime = -1; colourScopeImage = nil
+            colorStudioController?.updateScopeImage(nil)
+            return nil
+        }
+        let clip = TimelineLiveEffectStore.shared.resolved(selected)
+        // Four sampled updates per second is enough for preview scopes and
+        // avoids decoding media on every 30 fps playhead tick.
+        let time = floor(timelineView.currentPlayheadTime * 4) / 4
+        guard colourScopeClip != clip || colourScopeTime != time else { return colourScopeImage }
+        if colourScopeClip?.id != clip.id { colourScopeImage = nil; colorStudioController?.updateScopeImage(nil) }
+        colourScopeClip = clip; colourScopeTime = time
+        let duration = clipDuration(clip)
+        colourScopeLoader.request(makeImage: {
+            let generator = AVAssetImageGenerator(asset: AVAsset(url: clip.url))
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 640, height: 360)
+            let local = min(max(0, time - clip.timelineStart), max(0, duration - 1 / 30.0)) + clip.inPoint
+            guard let cgImage = try? generator.copyCGImage(at: CMTime(seconds: local, preferredTimescale: 600), actualTime: nil) else { return nil }
+            return NativeTimelineVisualPipeline.applyGrade(to: CIImage(cgImage: cgImage), clip: clip, timelineTime: time)
+        }, completion: { [weak self] image in
+            self?.colourScopeImage = image
+            self?.colorStudioController?.updateScopeImage(image)
+        })
+        return colourScopeImage
+    }
+    private func refreshColourScope() {
+        guard colorStudioWindow?.isVisible == true else {
+            colourScopeLoader.invalidate(); colourScopeClip = nil; return
+        }
+        _ = currentScopeImage()
     }
     @objc private func openEffectsStudio() {
         let clip = primarySelectedVideo()
+        let wasOpen = effectsStudioWindow.map { $0.isVisible || $0.isMiniaturized } ?? false
         if effectsStudioController == nil {
             let controller = EffectsStudioViewController()
             controller.onPreview = { [weak self] values in self?.receiveEffectsStudioPreview(values) }
+            controller.canRemoveAIMatte = { [weak self] in self?.activeExportJob == nil }
             controller.onApplyTransform = { [weak self] values in self?.receiveEffectsStudioTransform(values) }
             controller.onApplyEffects = { [weak self] values in self?.receiveEffectsStudioEffects(values) }
             controller.onApplyAll = { [weak self] values, removedProperties in self?.receiveEffectsStudioApplyAll(values, removedProperties: removedProperties) }
@@ -2491,14 +2679,61 @@ final class EditorController: NSViewController {
             controller.onMonitorFit = { [weak self] in self?.fitProgramMonitor() }
             controller.onCancelPreview = { [weak self] in self?.cancelEffectsPreview() }
             controller.onReset = { [weak self] in self?.resetSelectedGrades() }
-            let window = studioWindow(title: "NetVista Studio — Effects", size: NSSize(width: 1240, height: 840), controller: controller)
-            window.minSize = NSSize(width: 980, height: 640)
+            let window = videoToolWindow(title: "NetVista Studio — Effects", size: NSSize(width: 1240, height: 840), controller: controller)
             effectsStudioController = controller; effectsStudioWindow = window
         }
-        effectsStudioController?.load(clip.map(EffectControlValues.init) ?? EffectControlValues(), selectionName: clip?.name ?? "No video clip selected", property: activeKeyframeProperty, interpolation: activeKeyframeInterpolation, keyframeText: keyframeSummary(), clip: clip, timelineTime: timelineView.currentPlayheadTime)
-        if let window = effectsStudioWindow { keepStudioWindowVisible(window) }
-        effectsStudioWindow?.makeKeyAndOrderFront(nil)
+        if !wasOpen {
+            let values = clip.map { liveEffectsPreviewValues[$0.id] ?? EffectControlValues($0) } ?? EffectControlValues()
+            effectsStudioController?.load(values, selectionName: clip?.name ?? "No video clip selected", property: activeKeyframeProperty, interpolation: activeKeyframeInterpolation, keyframeText: keyframeSummary(), clip: clip, timelineTime: timelineView.currentPlayheadTime)
+        }
+        presentVideoToolWindow(effectsStudioWindow)
+    }
+
+    func showVideoEffectsWindow() { openEffectsStudio() }
+    func showVideoColourWindow() { openColorStudio() }
+    func showVideoSceneWindow() { open3DSceneEditor() }
+    func showVideoToolWindowsTogether() {
+        openEffectsStudio(); openColorStudio()
+        arrangeVideoToolWindows()
+    }
+    func arrangeVideoToolWindows() {
+        let windows = [effectsStudioWindow, colorStudioWindow].compactMap { $0 }.filter { $0.isVisible || $0.isMiniaturized }
+        guard !windows.isEmpty,
+              let visible = (view.window?.screen ?? windows.first?.screen ?? NSScreen.main)?.visibleFrame else { return }
+        let minimums = windows.map { NSWindow.frameRect(forContentRect: NSRect(origin: .zero, size: $0.contentMinSize), styleMask: $0.styleMask).size }
+        let frames = VideoToolWindowLayout.arrangedFrames(currentFrames: windows.map(\.frame), minimumSizes: minimums, visibleFrame: visible)
+        for (window, frame) in zip(windows, frames) {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.setFrame(frame, display: true)
+            window.orderFront(nil)
+        }
+        status("Effects and Colour stay open together. Drag their title bars to arrange your workspace.")
+    }
+    private func videoToolWindow(title: String, size: NSSize, controller: NSViewController) -> NSWindow {
+        let panel = VideoToolPanel(contentSize: size, title: title, controller: controller)
+        panel.delegate = self
+        if let visible = (view.window?.screen ?? NSScreen.main)?.visibleFrame {
+            let others = [effectsStudioWindow, colorStudioWindow].compactMap { $0 }.filter { $0.isVisible || $0.isMiniaturized }.map(\.frame)
+            panel.setFrame(VideoToolWindowLayout.initialFrame(size: panel.frame.size, visibleFrame: visible, existingFrames: others), display: false)
+        } else { panel.center() }
+        return panel
+    }
+    private func presentVideoToolWindow(_ window: NSWindow?) {
+        guard let window else { return }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        keepStudioWindowVisible(window)
+        window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        // Explicit Close/Revert discards only this tool's pending preview.
+        // Focus changes, minimizing and changing editor pages never do.
+        if window === colorStudioWindow {
+            cancelColorPreview()
+            colourScopeLoader.invalidate(); colourScopeClip = nil; colourScopeImage = nil; colourScopeTime = -1
+            colorStudioController?.updateScopeImage(nil)
+        } else if window === effectsStudioWindow { cancelEffectsPreview() }
     }
     private func studioWindow(title: String, size: NSSize, controller: NSViewController) -> NSWindow {
         let visible = (view.window?.screen ?? NSScreen.main)?.visibleFrame
@@ -2508,25 +2743,28 @@ final class EditorController: NSViewController {
         )
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: fitted), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = title; window.minSize = NSSize(width: 360, height: 480); window.isReleasedWhenClosed = false; window.contentViewController = controller
+        if let visible { window.setFrame(VideoToolWindowLayout.initialFrame(size: window.frame.size, visibleFrame: visible, existingFrames: []), display: false) }
         keepStudioWindowVisible(window)
         DispatchQueue.main.async { [weak self, weak window] in if let window { self?.keepStudioWindowVisible(window) } }
         return window
     }
     private func keepStudioWindowVisible(_ window: NSWindow) {
-        guard let visible = (view.window?.screen ?? window.screen ?? NSScreen.main)?.visibleFrame else { window.center(); return }
-        var frame = window.frame
-        frame.size.width = min(frame.width, visible.width - 32)
-        frame.size.height = min(frame.height, visible.height - 32)
-        frame.origin.x = min(max(visible.minX + 16, visible.midX - frame.width / 2), visible.maxX - frame.width - 16)
-        frame.origin.y = min(max(visible.minY + 16, visible.midY - frame.height / 2), visible.maxY - frame.height - 16)
-        window.setFrame(frame, display: true)
+        guard let visible = (window.screen ?? view.window?.screen ?? NSScreen.main)?.visibleFrame else { return }
+        let frame = VideoToolWindowLayout.clamp(frame: window.frame, visibleFrame: visible)
+        if frame != window.frame { window.setFrame(frame, display: true) }
     }
     private func receiveColorStudioPreview(_ values: ColorControlValues) { setColorControls(values); previewGrade() }
     private func receiveColorStudioApply(_ values: ColorControlValues) { setColorControls(values); applyColorGrade() }
     private func cancelColorPreview() {
         liveColourPreviewValues.removeAll()
         rebuildLivePreviewStore()
+        if let clip = primarySelectedVideo() {
+            let saved = ColorControlValues(clip)
+            setColorControls(saved)
+            colorStudioController?.load(saved, selectionName: colourSelectionDescription(for: clip), isEnabled: true)
+        }
         if !timelineClips.isEmpty { player.pause(); previewTimeline(at: timelineView.currentPlayheadTime) }
+        refreshColourScope()
         status("Live colour preview reverted to the saved grade.")
     }
     private func receiveEffectsStudioPreview(_ values: EffectControlValues) { setEffectControls(values); previewEffects() }
@@ -2536,7 +2774,7 @@ final class EditorController: NSViewController {
         setEffectControls(values)
         let preservedColourPreview = liveColourPreviewValues
         let removed = Set(removedProperties)
-        let count = mutateSelectedVideoClips(action: "Effect Controls") { clip in
+        let count = mutateSelectedVideoClips(action: "Effect Controls", preservingColourDrafts: true) { clip in
             self.applyTransformControls(to: &clip)
             self.applyEffectControls(to: &clip)
             if !removed.isEmpty { clip.animation.channels.removeAll { removed.contains($0.property) } }
@@ -2549,18 +2787,257 @@ final class EditorController: NSViewController {
         status("Applied Motion, Opacity and effects to \(count) selected clip\(count == 1 ? "" : "s")\(removed.isEmpty ? "." : ", including pending removals.")")
     }
     private func receiveEffectsStudioKeyframe(_ values: EffectControlValues, property: AnimatableProperty, interpolation: KeyframeInterpolation) {
-        setEffectControls(values); activeKeyframeProperty = property; activeKeyframeInterpolation = interpolation; addKeyframeAtPlayhead()
+        setEffectControls(values); activeKeyframeProperty = property; activeKeyframeInterpolation = interpolation
+        let time = timelineView.currentPlayheadTime, value = controlValue(for: property)
+        let colourPreview = liveColourPreviewValues
+        let count = mutateSelectedVideoClips(action: "Add Effect Keyframe", preservingColourDrafts: true) { clip in
+            // Keep pending non-keyframed settings (including AI, key colour
+            // and effect order) in the same undo step as the new diamond.
+            self.apply(values, to: &clip)
+            clip.setBaseValue(value, for: property)
+            clip.animation.setKeyframe(property: property, time: clip.localTime(at: time), value: value, interpolation: interpolation)
+        }
+        finishEffectsStudioKeyframeEdit(count: count, colourPreview: colourPreview)
+        if count > 0 { status("Keyframe added for \(property.title) at \(formattedTime(time)).") }
     }
     private func receiveEffectsStudioRemoveKeyframe(_ values: EffectControlValues, property: AnimatableProperty) {
-        setEffectControls(values); activeKeyframeProperty = property; removeKeyframeAtPlayhead()
+        setEffectControls(values); activeKeyframeProperty = property
+        let time = timelineView.currentPlayheadTime, colourPreview = liveColourPreviewValues
+        let count = mutateSelectedVideoClips(action: "Remove Effect Keyframe", preservingColourDrafts: true) { clip in
+            self.apply(values, to: &clip)
+            clip.animation.removeKeyframe(property: property, near: clip.localTime(at: time))
+        }
+        finishEffectsStudioKeyframeEdit(count: count, colourPreview: colourPreview)
+        if count > 0 { status("Removed \(property.title) keyframe at the playhead.") }
     }
     private func receiveEffectsStudioClearKeyframes(_ values: EffectControlValues, property: AnimatableProperty) {
-        setEffectControls(values); activeKeyframeProperty = property; clearSelectedKeyframes()
+        setEffectControls(values); activeKeyframeProperty = property
+        let colourPreview = liveColourPreviewValues
+        let count = mutateSelectedVideoClips(action: "Clear Effect Keyframes", preservingColourDrafts: true) { clip in
+            self.apply(values, to: &clip)
+            clip.animation.channels.removeAll { $0.property == property }
+        }
+        finishEffectsStudioKeyframeEdit(count: count, colourPreview: colourPreview)
+        if count > 0 { status("Cleared \(property.title) keyframes on \(count) selected clips.") }
     }
+    private func finishEffectsStudioKeyframeEdit(count: Int, colourPreview: [UUID: ColorControlValues]) {
+        guard count > 0 else { return }
+        liveColourPreviewValues = colourPreview.filter { id, _ in timelineClips.contains { $0.id == id } }
+        liveEffectsPreviewValues.removeAll()
+        rebuildLivePreviewStore()
+        rebuildInspector()
+        if let clip = primarySelectedVideo() { loadEditingControls(from: clip) }
+    }
+
+#if NETVISTA_STUDIO_TESTING
+    func checkShareCollaboration() {
+        _ = view
+        var clip = TimelineClip(assetID: UUID(), name: "Shared clip", url: URL(fileURLWithPath: "/private/tmp/share-fixture.mov"), outPoint: 3)
+        clip.effects.blurRadius = 2; clip.colorExtras.hue = 24
+        timelineClips = [clip]; selectedClipIDs = [clip.id]; selectedClipID = clip.id
+        var document = NetVistaSceneDocument(); let sceneID = UUID(); document.projectSceneID = sceneID
+        let object = SceneObjectRecord(name: "Shared cube", kind: .cube)
+        document.objects = [object]; storedScenes = [StoredScene(id: sceneID, document: document)]
+        let initial = collaborationHost.snapshot()
+        let colour = collaborationHost.process(.init(kind: .join, projectID: initial.projectID, domain: .colour), deviceID: "ipad", deviceName: "iPad")
+        let scene = collaborationHost.process(.init(kind: .join, projectID: initial.projectID, domain: .scene), deviceID: "laptop", deviceName: "Laptop")
+        precondition(colour.status == .ok && scene.status == .ok && scene.snapshot.sessions.count == 2)
+        var values = ShareColourValues(); values.exposure = 1.25
+        var effectDraft = EffectControlValues(); effectDraft.transform.opacity = 0.4
+        liveEffectsPreviewValues[clip.id] = effectDraft
+        let graded = collaborationHost.process(.init(kind: .colour, projectID: initial.projectID, sessionID: colour.sessionID,
+            targetID: clip.id, expectedRevision: initial.clips[0].revision, colour: values), deviceID: "ipad", deviceName: "iPad")
+        precondition(graded.status == .ok && timelineClips[0].colorExtras.exposure == 1.25)
+        precondition(timelineClips[0].effects.blurRadius == 2 && timelineClips[0].colorExtras.hue == 24 && liveEffectsPreviewValues[clip.id]?.transform.opacity == 0.4)
+        var transform = ShareObjectTransform(); transform.position.x = 2
+        let moved = collaborationHost.process(.init(kind: .transform, projectID: initial.projectID, sessionID: scene.sessionID,
+            targetID: object.id, sceneID: sceneID, expectedRevision: initial.scenes[0].objects[0].revision, transform: transform), deviceID: "laptop", deviceName: "Laptop")
+        precondition(moved.status == .ok && storedScenes[0].document.objects[0].position.x == 2 && timelineClips[0].colorExtras.exposure == 1.25)
+        let save = currentProjectFile()
+        precondition(save.timeline[0].colorExtras.exposure == 1.25 && save.scenes[0].document.objects[0].position.x == 2)
+        liveColourPreviewValues[clip.id] = ColorControlValues()
+        var blockedValues = values; blockedValues.exposure = 2
+        let blocked = collaborationHost.process(.init(kind: .colour, projectID: initial.projectID, sessionID: colour.sessionID,
+            targetID: clip.id, expectedRevision: graded.snapshot.clips[0].revision, colour: blockedValues), deviceID: "ipad", deviceName: "iPad")
+        precondition(blocked.status == .busy && timelineClips[0].colorExtras.exposure == 1.25)
+        clearAllLivePreviews()
+        let addedID = UUID(); let current = collaborationHost.snapshot()
+        let added = collaborationHost.process(.init(kind: .addObject, projectID: current.projectID, sessionID: scene.sessionID,
+            targetID: addedID, sceneID: sceneID, expectedRevision: current.scenes[0].revision, objectKind: "sphere"), deviceID: "laptop", deviceName: "Laptop")
+        precondition(added.status == .ok && storedScenes[0].document.objects.count == 2)
+        // HTTP changes arrive in distinct main run-loop events. End the Add
+        // event before testing Delete's native event-grouped Undo action.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+        let deleted = collaborationHost.process(.init(kind: .deleteObject, projectID: current.projectID, sessionID: scene.sessionID,
+            targetID: addedID, sceneID: sceneID, expectedRevision: added.snapshot.scenes[0].objects.first { $0.id == addedID }!.revision), deviceID: "laptop", deviceName: "Laptop")
+        precondition(deleted.status == .ok && storedScenes[0].document.objects.count == 1)
+        projectUndoManager.undo()
+        precondition(storedScenes[0].document.objects.count == 2)
+        let native = SceneEditorViewController(document: storedScenes[0].document)
+        precondition(native.applyCollaborationTransform(objectID: object.id, transform: .init(position: .init(x: 3))))
+        precondition(native.snapshotDocument().objects[0].position.x == 3)
+        native.undoManager?.undo()
+        precondition(native.snapshotDocument().objects[0].position.x == 2)
+        let data = try! JSONEncoder().encode(collaborationHost.snapshot())
+        precondition(!String(decoding: data, as: UTF8.self).contains("/private/tmp"), "Companion snapshots must not expose paths")
+        player.pause(); player.replaceCurrentItem(with: nil)
+        print("PASS: native collaboration grade/3D concurrency, persisted project, Effects draft preservation, Colour draft protection, primitive/delete/Undo, native scene Undo, path-free snapshots")
+    }
+
+    func checkConcurrentVideoToolWindows(mediaURL: URL) {
+        _ = view
+        let first = TimelineClip(assetID: UUID(), name: "Concurrent tools 1", url: mediaURL, outPoint: 10)
+        let second = TimelineClip(assetID: UUID(), name: "Concurrent tools 2", url: mediaURL, outPoint: 10, timelineStart: 12)
+        timelineClips = [first, second]; selectedClipIDs = [first.id]; selectedClipID = first.id
+        timelineView.updatePlaybackPlayhead(2)
+        loadEditingControls(from: first)
+        openColorStudio(); openEffectsStudio()
+        let colour = colorStudioWindow!, effects = effectsStudioWindow!
+        defer { colour.close(); effects.close(); clearAllLivePreviews(); colourScopeLoader.invalidate(); player.pause(); player.replaceCurrentItem(with: nil) }
+        func settle() { RunLoop.current.run(until: Date().addingTimeInterval(0.15)) }
+        func allViews(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(allViews) }
+        func slider(_ id: String, in controller: NSViewController) -> NSSlider {
+            allViews(controller.view).first { $0.identifier?.rawValue == id } as! NSSlider
+        }
+        func change(_ slider: NSSlider, to value: Double) {
+            slider.doubleValue = value
+            precondition(NSApp.sendAction(slider.action!, to: slider.target, from: slider))
+        }
+        func assertCombined(exposure: Double, opacity: Double) {
+            let resolved = TimelineLiveEffectStore.shared.resolved(timelineClips[0])
+            precondition(abs(resolved.colorExtras.exposure - exposure) < 0.001 && abs(resolved.transform.opacity - opacity) < 0.001, "Both studios must compose in the same renderer snapshot")
+        }
+        settle()
+        precondition(colour !== effects && colour.isVisible && effects.isVisible)
+        precondition(colour is VideoToolPanel && effects is VideoToolPanel)
+        precondition(colour.tabbingMode == .disallowed && effects.tabbingMode == .disallowed)
+        precondition(colour.attachedSheet == nil && effects.attachedSheet == nil && NSApp.modalWindow == nil)
+        precondition(colour.frame.origin != effects.frame.origin, "Tools must not open on top of one another identically")
+        let colourSlider = slider("colour-base-exposure", in: colorStudioController!)
+        let opacitySlider = slider("effects-property-opacity", in: effectsStudioController!)
+        let autoKey = allViews(effectsStudioController!.view).compactMap { $0 as? NSButton }.first { $0.title == "Auto Keyframe" }!
+        autoKey.state = .off; NSApp.sendAction(autoKey.action!, to: autoKey.target, from: autoKey)
+        change(colourSlider, to: 0.7); change(opacitySlider, to: 0.4)
+        assertCombined(exposure: 0.7, opacity: 0.4)
+        let visible = (effects.screen ?? NSScreen.main)!.visibleFrame
+        let moved = VideoToolWindowLayout.clamp(frame: NSRect(x: visible.minX + 30, y: visible.minY + 45, width: 850, height: 680), visibleFrame: visible)
+        effects.setFrame(moved, display: true)
+        let expectedFrame = effects.frame
+        openColorStudio(); openEffectsStudio(); settle()
+        precondition(effects.frame == expectedFrame, "Focus must preserve the user's window placement")
+        precondition(abs(colorStudioController!.currentValues.exposure - 0.7) < 0.001)
+        precondition(abs(effectsStudioController!.currentValues.transform.opacity - 0.4) < 0.001)
+        selectTimeline(index: 0); assertCombined(exposure: 0.7, opacity: 0.4)
+        selectPage(.edit); settle()
+        precondition(colour.isVisible && effects.isVisible, "Changing the main page must not close either tool")
+        assertCombined(exposure: 0.7, opacity: 0.4)
+        // AppKit can hide/disappear a view when its panel minimizes. That is
+        // not an explicit Close/Revert operation.
+        effects.miniaturize(nil); settle()
+        precondition(effects.isMiniaturized)
+        assertCombined(exposure: 0.7, opacity: 0.4)
+        openEffectsStudio(); settle()
+        precondition(!effects.isMiniaturized && effects.isVisible && colour.isVisible)
+        assertCombined(exposure: 0.7, opacity: 0.4)
+        print("PASS: two visible tools retain drafts across focus, move, page switch and minimizing")
+
+        projectUndoManager.groupsByEvent = false
+        projectUndoManager.beginUndoGrouping()
+        receiveEffectsStudioApplyAll(effectsStudioController!.currentValues, removedProperties: [])
+        projectUndoManager.endUndoGrouping(); settle()
+        precondition(timelineClips[0].transform.opacity == 0.4 && timelineClips[0].colorExtras.exposure == 0)
+        precondition(colorStudioController!.currentValues.exposure == 0.7 && liveColourPreviewValues[first.id]?.exposure == 0.7, "Applying Effects must preserve Colour's controls and preview")
+        change(opacitySlider, to: 0.55)
+        projectUndoManager.beginUndoGrouping()
+        receiveColorStudioApply(colorStudioController!.currentValues)
+        projectUndoManager.endUndoGrouping(); settle()
+        precondition(timelineClips[0].colorExtras.exposure == 0.7 && timelineClips[0].transform.opacity == 0.4)
+        precondition(abs(effectsStudioController!.currentValues.transform.opacity - 0.55) < 0.001 && liveEffectsPreviewValues[first.id] != nil, "Applying Colour must preserve Effects' controls and preview")
+        assertCombined(exposure: 0.7, opacity: 0.55)
+
+        change(colourSlider, to: 1.1)
+        effects.close(); settle()
+        precondition(!effects.isVisible && colour.isVisible && liveEffectsPreviewValues.isEmpty)
+        precondition(liveColourPreviewValues[first.id]?.exposure == 1.1)
+        assertCombined(exposure: 1.1, opacity: 0.4)
+        openEffectsStudio(); settle()
+        precondition(effectsStudioWindow === effects && colour.isVisible && effects.isVisible)
+        change(opacitySlider, to: 0.6)
+        colour.close(); settle()
+        precondition(effects.isVisible && liveColourPreviewValues.isEmpty && liveEffectsPreviewValues[first.id] != nil)
+        assertCombined(exposure: 0.7, opacity: 0.6)
+        openColorStudio(); settle()
+        precondition(colorStudioWindow === colour && colorStudioController!.currentValues.exposure == 0.7)
+        print("PASS: independent Apply, Close and Reopen preserve the opposite workspace")
+        showVideoToolWindowsTogether(); settle()
+        precondition(colour.isVisible && effects.isVisible && colour.frame != effects.frame)
+        cancelEffectsPreview()
+        var keyed = timelineClips
+        keyed[0].animation.setKeyframe(property: .scale, time: 1, value: 1.2, interpolation: .linear)
+        projectUndoManager.beginUndoGrouping()
+        replaceTimeline(keyed, action: "Fixture keyframe", selection: selectedClipIDs, primary: selectedClipID, preservingColourDrafts: true)
+        projectUndoManager.endUndoGrouping()
+        change(colourSlider, to: 1.3)
+        let keyID = timelineClips[0].animation.channels.first { $0.property == .scale }!.keyframes[0].id
+        projectUndoManager.beginUndoGrouping()
+        moveEffectsKeyframe(property: .scale, id: keyID, to: 3)
+        projectUndoManager.endUndoGrouping(); settle()
+        precondition(liveColourPreviewValues[first.id]?.exposure == 1.3 && colorStudioController!.currentValues.exposure == 1.3, "Dragging an Effects diamond must retain the other open Colour draft")
+        selectTimeline(index: 1); settle()
+        precondition(liveColourPreviewValues.isEmpty && liveEffectsPreviewValues.isEmpty)
+        precondition(colorStudioController!.currentValues.exposure == 0 && effectsStudioController!.currentValues.transform.opacity == 1)
+        projectUndoManager.beginUndoGrouping(); removeClip(); projectUndoManager.endUndoGrouping(); settle()
+        precondition(!colourSlider.isEnabled && !opacitySlider.isEnabled, "Deleting the selection disables both tool panels")
+        undoEdit(); settle()
+        precondition(colourSlider.isEnabled && opacitySlider.isEnabled && selectedClipID == second.id, "Undo refreshes both restored tool selections")
+        autoKey.state = .on
+        change(opacitySlider, to: 0.33)
+        selectTimeline(index: 0)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        precondition(timelineClips.allSatisfy { !$0.animation.channels.contains { $0.property == .opacity } }, "A delayed Auto Keyframe must not follow a new selection")
+        change(opacitySlider, to: 0.72)
+        effects.close()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        precondition(timelineClips.allSatisfy { !$0.animation.channels.contains { $0.property == .opacity } }, "Closing a tool cancels its delayed Auto Keyframe")
+        print("PASS: simultaneous native tools, focus/move/minimize/page changes, shared previews, independent apply/close/reopen and selection changes")
+    }
+
+    func checkEffectsAIMatteKeyframePersistence() {
+        _ = view
+        let first = TimelineClip(assetID: UUID(), name: "AI test 1", url: URL(fileURLWithPath: "/private/tmp/ai-check-1.mov"), outPoint: 10)
+        let second = TimelineClip(assetID: UUID(), name: "AI test 2", url: URL(fileURLWithPath: "/private/tmp/ai-check-2.mov"), outPoint: 10, timelineStart: 12)
+        timelineClips = [first, second]; selectedClipIDs = [first.id, second.id]; selectedClipID = first.id
+        timelineView.updatePlaybackPlayhead(3)
+        var values = EffectControlValues(first)
+        values.effects.ultraKey.enabled = true; values.effects.ultraKey.aiAssistEnabled = true
+        values.effects.ultraKey.aiAssistStrength = 0.42; values.effects.ultraKey.tolerance = 0.47
+        var colour = ColorControlValues(first); colour.brightness = 0.11
+        liveColourPreviewValues[first.id] = colour
+        projectUndoManager.groupsByEvent = false; projectUndoManager.beginUndoGrouping()
+        receiveEffectsStudioKeyframe(values, property: .ultraKeyTolerance, interpolation: .linear)
+        projectUndoManager.endUndoGrouping()
+        precondition(timelineClips.allSatisfy { $0.effects.ultraKey.aiAssistEnabled && $0.effects.ultraKey.aiAssistStrength == 0.42 })
+        precondition(timelineClips.allSatisfy { $0.animation.channels.contains { $0.property == .ultraKeyTolerance && $0.keyframes.count == 1 } })
+        precondition(liveColourPreviewValues[first.id]?.brightness == 0.11)
+        projectUndoManager.undo(); precondition(timelineClips == [first, second], "One undo must restore settings and keyframes together")
+        projectUndoManager.redo(); precondition(timelineClips.allSatisfy { $0.effects.ultraKey.aiAssistEnabled })
+        values.effects.ultraKey.aiAssistStrength = 0.27
+        projectUndoManager.beginUndoGrouping()
+        receiveEffectsStudioRemoveKeyframe(values, property: .ultraKeyTolerance)
+        projectUndoManager.endUndoGrouping()
+        precondition(timelineClips.allSatisfy { $0.effects.ultraKey.aiAssistStrength == 0.27 })
+        projectUndoManager.beginUndoGrouping()
+        receiveEffectsStudioKeyframe(values, property: .ultraKeyTolerance, interpolation: .linear)
+        receiveEffectsStudioClearKeyframes(values, property: .ultraKeyTolerance)
+        projectUndoManager.endUndoGrouping()
+        precondition(timelineClips.allSatisfy { $0.effects.ultraKey.aiAssistEnabled && !$0.animation.channels.contains { $0.property == .ultraKeyTolerance } })
+        print("PASS: batched Effects keyframe add/remove/clear preserve pending AI settings and colour preview, with single-step undo/redo")
+    }
+#endif
     private func receiveEffectsStudioRemoveEffect(_ values: EffectControlValues, properties: [AnimatableProperty]) {
         setEffectControls(values)
         let removed = Set(properties)
-        let count = mutateSelectedVideoClips(action: "Remove Effect") { clip in
+        let count = mutateSelectedVideoClips(action: "Remove Effect", preservingColourDrafts: true) { clip in
             self.applyTransformControls(to: &clip)
             self.applyEffectControls(to: &clip)
             clip.animation.channels.removeAll { removed.contains($0.property) }
@@ -2572,6 +3049,7 @@ final class EditorController: NSViewController {
     private func cancelEffectsPreview() {
         liveEffectsPreviewValues.removeAll()
         rebuildLivePreviewStore()
+        refreshColourScope()
         if !timelineClips.isEmpty { previewTimeline(at: timelineView.currentPlayheadTime) }
         if let clip = primarySelectedVideo() {
             let selectedVideos = timelineClips.filter { selectedClipIDs.contains($0.id) && $0.kind == .video }
@@ -2608,7 +3086,8 @@ final class EditorController: NSViewController {
             action: "Move Keyframe",
             selection: selectedClipIDs,
             primary: selectedClipID,
-            playhead: timelineView.currentPlayheadTime
+            playhead: timelineView.currentPlayheadTime,
+            preservingColourDrafts: true
         )
         if let clip = primarySelectedVideo() { loadEditingControls(from: clip) }
     }
@@ -2625,7 +3104,7 @@ final class EditorController: NSViewController {
         blurSlider.doubleValue = values.effects.blurRadius; sharpenSlider.doubleValue = values.effects.sharpenAmount; vignetteSlider.doubleValue = values.effects.vignetteIntensity; monochromeSlider.doubleValue = values.effects.monochromeAmount; sepiaSlider.doubleValue = values.effects.sepiaAmount
     }
     @discardableResult
-    private func mutateSelectedVideoClips(action: String, _ change: (inout TimelineClip) -> Void) -> Int {
+    private func mutateSelectedVideoClips(action: String, preservingColourDrafts: Bool = false, preservingEffectsDrafts: Bool = false, _ change: (inout TimelineClip) -> Void) -> Int {
         guard !selectedClipIDs.isEmpty else { status("Select one or more video clips first."); return 0 }
         var updated = timelineClips
         var count = 0
@@ -2639,18 +3118,26 @@ final class EditorController: NSViewController {
             action: action,
             selection: selectedClipIDs,
             primary: selectedClipID,
-            playhead: timelineView.currentPlayheadTime
+            playhead: timelineView.currentPlayheadTime,
+            preservingColourDrafts: preservingColourDrafts,
+            preservingEffectsDrafts: preservingEffectsDrafts
         )
         return count
     }
     private func loadEditingControls(from clip: TimelineClip) {
         if let video = clip.kind == .video ? clip : primarySelectedVideo() {
-            setColorControls(ColorControlValues(video))
-            setEffectControls(EffectControlValues(video))
+            let colourValues = liveColourPreviewValues[video.id] ?? ColorControlValues(video)
+            let effectValues = liveEffectsPreviewValues[video.id] ?? EffectControlValues(video)
+            setColorControls(colourValues)
+            setEffectControls(effectValues)
             let selectedVideos = timelineClips.filter { selectedClipIDs.contains($0.id) && $0.kind == .video }
             let effectsSelectionName = selectedVideos.count > 1 ? "\(selectedVideos.count) video clips • values from \(video.name)" : video.name
-            colorStudioController?.load(ColorControlValues(video), selectionName: colourSelectionDescription(for: video), isEnabled: true)
-            effectsStudioController?.load(EffectControlValues(video), selectionName: effectsSelectionName, property: activeKeyframeProperty, interpolation: activeKeyframeInterpolation, keyframeText: keyframeSummary(), clip: video, timelineTime: timelineView.currentPlayheadTime)
+            if liveColourPreviewValues[video.id] == nil {
+                colorStudioController?.load(colourValues, selectionName: colourSelectionDescription(for: video), isEnabled: true)
+            }
+            if liveEffectsPreviewValues[video.id] == nil {
+                effectsStudioController?.load(effectValues, selectionName: effectsSelectionName, property: activeKeyframeProperty, interpolation: activeKeyframeInterpolation, keyframeText: keyframeSummary(), clip: video, timelineTime: timelineView.currentPlayheadTime)
+            }
         } else {
             colorStudioController?.load(ColorControlValues(), selectionName: "No timeline video selected", isEnabled: false)
             effectsStudioController?.load(EffectControlValues(), selectionName: "No timeline video selected", property: activeKeyframeProperty, interpolation: activeKeyframeInterpolation, keyframeText: "Select a timeline video clip to edit effects.", clip: nil, timelineTime: 0)
@@ -2752,11 +3239,13 @@ final class EditorController: NSViewController {
     }
     @objc private func applyColorGrade() {
         let preservedEffectsPreview = liveEffectsPreviewValues
-        let count = mutateSelectedVideoClips(action: "Color Grade") { self.applyColorControls(to: &$0) }
+        let count = mutateSelectedVideoClips(action: "Color Grade", preservingEffectsDrafts: true) { self.applyColorControls(to: &$0) }
         guard count > 0 else { return }
         liveColourPreviewValues.removeAll()
         liveEffectsPreviewValues = preservedEffectsPreview.filter { id, _ in timelineClips.contains { $0.id == id } }
         rebuildLivePreviewStore()
+        if let clip = primarySelectedVideo() { loadEditingControls(from: clip) }
+        refreshColourScope()
         status("Applied color grade to \(count) video clip\(count == 1 ? "" : "s").")
     }
     @objc private func previewGrade() {
@@ -2767,6 +3256,7 @@ final class EditorController: NSViewController {
         rebuildLivePreviewStore()
         player.pause()
         previewTimeline(at: timelineView.currentPlayheadTime)
+        refreshColourScope()
         status("Live colour preview — Apply Grade to save these controls.")
     }
     @objc private func resetColorGrade() {
@@ -2787,15 +3277,16 @@ final class EditorController: NSViewController {
         rebuildLivePreviewStore()
         player.pause()
         previewTimeline(at: timelineView.currentPlayheadTime)
+        refreshColourScope()
         status("Live effects preview — Apply to save these controls.")
     }
     @objc private func applyTransform() {
-        let count = mutateSelectedVideoClips(action: "Transform") { self.applyTransformControls(to: &$0) }
+        let count = mutateSelectedVideoClips(action: "Transform", preservingColourDrafts: true) { self.applyTransformControls(to: &$0) }
         guard count > 0 else { return }
         status("Applied transform to \(count) video clip\(count == 1 ? "" : "s").")
     }
     @objc private func applyEffects() {
-        let count = mutateSelectedVideoClips(action: "Effects") { self.applyEffectControls(to: &$0) }
+        let count = mutateSelectedVideoClips(action: "Effects", preservingColourDrafts: true) { self.applyEffectControls(to: &$0) }
         guard count > 0 else { return }
         status("Applied effects to \(count) video clip\(count == 1 ? "" : "s").")
     }
@@ -2813,7 +3304,7 @@ final class EditorController: NSViewController {
             .ultraKeyTolerance, .ultraKeySoftness, .ultraKeyChoke, .ultraKeySpill,
             .blurRadius, .sharpenAmount, .vignetteIntensity, .monochromeAmount, .sepiaAmount
         ]
-        let count = mutateSelectedVideoClips(action: "Reset Effects") { clip in
+        let count = mutateSelectedVideoClips(action: "Reset Effects", preservingColourDrafts: true) { clip in
             clip.effects = .init(); clip.transform = .init()
             clip.animation.channels.removeAll { effectProperties.contains($0.property) }
         }
@@ -3242,6 +3733,8 @@ final class EditorController: NSViewController {
             // A listener is deliberately scoped to the project the user chose
             // to share. Opening another project requires pressing Share again.
             shareServer?.stop()
+            shareProjectID = UUID()
+            collaborationHost.reset()
             sceneEditorWindow?.close()
             sceneEditorWindow = nil
             projectTitle.stringValue = project.title
@@ -3317,6 +3810,19 @@ final class EditorController: NSViewController {
     private func beginNativeExport(options: TimelineExportOptions) {
         guard activeExportJob == nil else { status("An export is already running."); return }
         guard timelineClips.contains(where: { $0.kind == .video }) else { status("Add a video or rendered 3D scene to the timeline before exporting."); return }
+        var exportClips = timelineClips
+        let usesAIMatte = exportClips.contains { $0.kind == .video && $0.effects.ultraKey.enabled && $0.effects.ultraKey.aiAssistEnabled && $0.effects.ultraKey.aiAssistStrength > 0 }
+        if usesAIMatte && !LocalAIMatte.shared.status.isInstalled {
+            let alert = NSAlert(); alert.alertStyle = .warning
+            alert.messageText = "The AI person model is not installed"
+            alert.informativeText = "Some clips use AI-assisted cutout. Download the model in Effects → Ultra Key for that result, or explicitly export using chroma key only. No model will be downloaded automatically."
+            alert.addButton(withTitle: "Cancel Export")
+            alert.addButton(withTitle: "Export Chroma Key Only")
+            guard alert.runModal() == .alertSecondButtonReturn else { return }
+            // Freeze the explicit fallback for the whole movie, even if an
+            // in-progress model download finishes while the export runs.
+            for index in exportClips.indices { exportClips[index].effects.ultraKey.aiAssistEnabled = false }
+        }
         if let problem = colourLUTExportProblem() {
             status(problem)
             let alert = NSAlert()
@@ -3338,7 +3844,7 @@ final class EditorController: NSViewController {
         exportWorkspaceController?.beginExport(options: options)
         status("Preparing \(options.resolution.title) export…")
         activeExportJob = NativeTimelineExportEngine.export(
-            clips: timelineClips,
+            clips: exportClips,
             to: output,
             options: options,
             progress: { [weak self] progress in
@@ -3531,13 +4037,14 @@ final class ColorWheelControl: NSControl {
     }
 
     override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
         if event.clickCount > 1 {
             adjustment.red = 0; adjustment.green = 0; adjustment.blue = 0
             sendAction(action, to: target); return
         }
         updatePuck(with: event)
     }
-    override func mouseDragged(with event: NSEvent) { updatePuck(with: event) }
+    override func mouseDragged(with event: NSEvent) { guard isEnabled else { return }; updatePuck(with: event) }
 
     private func updatePuck(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
@@ -4122,6 +4629,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var photoWindow: NSWindow?
     private var gameEditors: [GameEditorViewController] = []
     private var gameWindows: [NSWindow] = []
+    private var modelEditors: [ModelingEditorController] = []
+    private var modelWindows: [NSWindow] = []
     private var welcome: WelcomeViewController?
     private var pendingOpenURLs: [URL] = []
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -4149,6 +4658,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         welcome.onOpenVideoEditor = { [weak self] in self?.showVideoEditor() }
         welcome.onOpenPhotoEditor = { [weak self] in self?.showPhotoEditor() }
         welcome.onOpenGameMaker = { [weak self] in self?.chooseGameType() }
+        welcome.onOpen3DEditor = { [weak self] in self?.showModelEditor() }
         welcome.onOpenProject = { [weak self] url in
             guard let self else { return }
             self.handleOpenURLs([url])
@@ -4205,6 +4715,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         photoItem.target = self
         let gameItem = studioMenu.addItem(withTitle: "Game Maker…", action: #selector(chooseGameType), keyEquivalent: "3")
         gameItem.target = self
+        let modelItem = studioMenu.addItem(withTitle:"3D Editor",action:#selector(showModelEditorFromMenu),keyEquivalent:"4")
+        modelItem.target = self
         main.addItem(studioItem)
 
         let windowItem = NSMenuItem()
@@ -4212,6 +4724,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windowItem.submenu = windowMenu
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
+        let effectsItem = windowMenu.addItem(withTitle: "Video Effects", action: #selector(showVideoEffectsFromMenu), keyEquivalent: "e")
+        effectsItem.target = self; effectsItem.keyEquivalentModifierMask = [.command, .option]
+        let colourItem = windowMenu.addItem(withTitle: "Video Colour", action: #selector(showVideoColourFromMenu), keyEquivalent: "c")
+        colourItem.target = self; colourItem.keyEquivalentModifierMask = [.command, .option]
+        let sceneItem = windowMenu.addItem(withTitle: "Video 3D Scene", action: #selector(showVideoSceneFromMenu), keyEquivalent: "")
+        sceneItem.target = self
+        let together = windowMenu.addItem(withTitle: "Open Effects & Colour Together", action: #selector(showVideoToolsTogetherFromMenu), keyEquivalent: "")
+        together.target = self
+        let arrange = windowMenu.addItem(withTitle: "Arrange Video Tool Windows", action: #selector(arrangeVideoToolsFromMenu), keyEquivalent: "")
+        arrange.target = self
         windowMenu.addItem(.separator())
         windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
         main.addItem(windowItem)
@@ -4221,7 +4744,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showStudioHomeFromMenu() { showStudioHome() }
     @objc private func showVideoEditorFromMenu() { _ = showVideoEditor() }
+    @objc private func showVideoEffectsFromMenu() { showVideoEditor().showVideoEffectsWindow() }
+    @objc private func showVideoColourFromMenu() { showVideoEditor().showVideoColourWindow() }
+    @objc private func showVideoSceneFromMenu() { showVideoEditor().showVideoSceneWindow() }
+    @objc private func showVideoToolsTogetherFromMenu() { showVideoEditor().showVideoToolWindowsTogether() }
+    @objc private func arrangeVideoToolsFromMenu() { showVideoEditor().arrangeVideoToolWindows() }
     @objc private func showPhotoEditorFromMenu() { _ = showPhotoEditor() }
+    @objc private func showModelEditorFromMenu() { showModelEditor() }
     @objc private func checkForUpdatesFromMenu() { updater.check() }
     @objc private func showAccount() {
         if accountWindow == nil { accountWindow = StudioAccountWindow(account: account) }
@@ -4234,6 +4763,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleOpenURLs(_ urls: [URL]) {
+        for url in urls where url.pathExtension.lowercased() == "netvistamodel" {
+            if let existing = modelEditors.first(where: { $0.projectURL?.standardizedFileURL == url.standardizedFileURL }) { existing.view.window?.makeKeyAndOrderFront(nil); continue }
+            do { showModelEditor(try ModelingDocument.open(url),url:url); NSDocumentController.shared.noteNewRecentDocumentURL(url) }
+            catch { NSAlert(error:error).runModal() }
+        }
         for url in urls where url.pathExtension.lowercased() == "netvistagame" {
             if let existing = gameEditors.first(where: { $0.projectURL?.standardizedFileURL == url.standardizedFileURL }) {
                 existing.view.window?.makeKeyAndOrderFront(nil); continue
@@ -4245,7 +4779,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let photoProjects = urls.filter(PhotoEditorViewController.supportsPhotoProject)
         let photos = urls.filter(PhotoEditorViewController.supportsImage)
-        let editorFiles = urls.filter { $0.pathExtension.lowercased() != "netvistagame" && !PhotoEditorViewController.supportsImage($0) && !PhotoEditorViewController.supportsPhotoProject($0) }
+        let editorFiles = urls.filter { !["netvistagame","netvistamodel"].contains($0.pathExtension.lowercased()) && !PhotoEditorViewController.supportsImage($0) && !PhotoEditorViewController.supportsPhotoProject($0) }
         if !photoProjects.isEmpty {
             let photoEditor = showPhotoEditor()
             photoProjects.forEach { photoEditor.openPhotoProject($0) }
@@ -4254,6 +4788,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !editorFiles.isEmpty { route(editorFiles, to: showVideoEditor()) }
     }
 
+    private func showModelEditor(_ document: ModelingDocument = ModelingDocument(), url:URL? = nil) {
+        let controller = ModelingEditorController(document:document,url:url)
+        let modelWindow = NSWindow(contentRect:NSRect(x:0,y:0,width:1280,height:840),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
+        modelWindow.contentMinSize = NSSize(width:1050,height:680); modelWindow.isReleasedWhenClosed = false; modelWindow.contentViewController = controller
+        controller.onShowStudioHome = { [weak self] in self?.showStudioHome() }
+        controller.onClose = { [weak self, weak controller, weak modelWindow] in self?.modelEditors.removeAll { $0 === controller }; self?.modelWindows.removeAll { $0 === modelWindow } }
+        modelEditors.append(controller); modelWindows.append(modelWindow); modelWindow.center(); modelWindow.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true)
+    }
     @objc private func chooseGameType() {
         let alert = NSAlert()
         alert.messageText = "What kind of game do you want to make?"
@@ -4363,7 +4905,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updateMenuItem?.isEnabled = enabled
         }
         updater.canRestart = { [weak self] in
-            self?.editor?.updateRestartBlocker ?? self?.photoEditor?.updateRestartBlocker ?? (self?.gameEditors.isEmpty == false ? "Close your Game Maker windows before updating. You will be asked to save your game files." : nil)
+            if self?.modelEditors.isEmpty == false { return "Close your 3D Editor windows before updating. You will be asked to save your models." }
+            return self?.editor?.updateRestartBlocker ?? self?.photoEditor?.updateRestartBlocker ?? (self?.gameEditors.isEmpty == false ? "Close your Game Maker windows before updating. You will be asked to save your game files." : nil)
         }
         updater.prepareRecovery = { [weak self] in
             guard let self else { throw NetVistaUpdateError.invalidResponse }
@@ -4419,6 +4962,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard updater.mayQuit() else { return .terminateCancel }
         for game in gameEditors where !game.confirmClose() { return .terminateCancel }
+        for model in modelEditors where !model.confirmClose() { return .terminateCancel }
         return .terminateNow
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

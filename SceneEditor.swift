@@ -604,6 +604,42 @@ public final class SceneEditorViewController: NSViewController, NSTableViewDataS
         return document
     }
 
+    /// Remote granular edits use the same document, viewport and Undo history.
+    /// Never replace the whole scene or interrupt a local drag/play/render.
+    var acceptsCollaborationEdits: Bool { !isRendering && !isScenePlaying && dragDocument == nil }
+
+    func applyCollaborationTransform(objectID: UUID, transform: SceneTransform) -> Bool {
+        guard acceptsCollaborationEdits else { return false }
+        let before = snapshotDocument()
+        guard let index = document.objects.firstIndex(where: { $0.id == objectID }), document.objects[index].transformKeyframes.isEmpty else { return false }
+        document.objects[index].position = transform.position
+        document.objects[index].rotation = transform.rotation
+        document.objects[index].scale = transform.scale
+        recordUndo(before, name: "Collaborator Transform")
+        rebuildRuntimeScene(); refreshControlsFromDocument()
+        return true
+    }
+
+    func addCollaborationObject(_ object: SceneObjectRecord) -> Bool {
+        guard acceptsCollaborationEdits, document.objects.count < 1_000,
+              !document.objects.contains(where: { $0.id == object.id }) else { return false }
+        let before = snapshotDocument()
+        document.objects.append(object); selectedObjectID = object.id
+        recordUndo(before, name: "Collaborator Add Object")
+        rebuildRuntimeScene(); refreshControlsFromDocument()
+        return true
+    }
+
+    func deleteCollaborationObject(_ objectID: UUID) -> Bool {
+        guard acceptsCollaborationEdits, document.objects.contains(where: { $0.id == objectID }) else { return false }
+        let before = snapshotDocument()
+        document.objects.removeAll { $0.id == objectID }
+        if selectedObjectID == objectID { selectedObjectID = document.objects.first?.id }
+        recordUndo(before, name: "Collaborator Delete Object")
+        rebuildRuntimeScene(); refreshControlsFromDocument()
+        return true
+    }
+
     public func saveScene(to url: URL) throws {
         if !isViewLoaded { _ = view }
         syncDocumentFromScene()
@@ -3283,6 +3319,22 @@ private enum SceneMovieRenderer {
         guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else { return nil }
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
         return pixelBuffer
+    }
+}
+
+enum SceneSharePreviewRenderer {
+    static func jpeg(document: NetVistaSceneDocument, time: Double) -> Data? {
+        let runtime = OfflineScene(document: document)
+        let seconds = min(max(0, time), max(0, document.duration))
+        runtime.update(at: seconds)
+        let renderer = SCNRenderer(device: nil, options: nil)
+        renderer.scene = runtime.scene; renderer.pointOfView = runtime.camera
+        renderer.sceneTime = seconds
+        let aspect = Double(max(1, document.canvasWidth)) / Double(max(1, document.canvasHeight))
+        let size = aspect >= 16.0 / 9.0 ? CGSize(width: 960, height: max(1, 960 / aspect)) : CGSize(width: max(1, 540 * aspect), height: 540)
+        let image = renderer.snapshot(atTime: seconds, with: size, antialiasingMode: .multisampling2X)
+        guard let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
+        return bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.72])
     }
 }
 

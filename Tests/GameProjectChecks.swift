@@ -75,7 +75,7 @@ import ImageIO
         var old = try JSONSerialization.jsonObject(with:JSONEncoder().encode(legacy)) as! [String:Any]; old["version"] = 1
         var oldObjects = old["objects"] as! [[String:Any]]; for i in oldObjects.indices { ["rules","z","solid"].forEach { oldObjects[i].removeValue(forKey:$0) } }; old["objects"] = oldObjects
         let oldURL = root.appendingPathComponent("legacy.netvistagame"); try JSONSerialization.data(withJSONObject:old).write(to:oldURL)
-        let migrated = try GameProject.open(oldURL); precondition(migrated.version == 3 && migrated.objects[0].z == -2 && !migrated.objects[0].rules.isEmpty)
+        let migrated = try GameProject.open(oldURL); precondition(migrated.version == 4 && migrated.objects[0].z == -2 && !migrated.objects[0].rules.isEmpty)
         try fm.removeItem(at:root.appendingPathComponent("Source"))
         let portable = try GameProject.open(root.appendingPathComponent("3D.netvistagame")); precondition(portable.assets.contains { $0.data == texture })
         print("PASS: version-one migration and assets survive deletion of source folder")

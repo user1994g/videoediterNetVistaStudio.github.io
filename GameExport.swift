@@ -42,7 +42,7 @@ enum GameExporter {
         The scene, imported asset bytes and event/action rules are included. No NetVista installation is required.
         Start, every-frame, held-key, key-press, timer and contact-entry events run in object/rule order. Connected nodes follow wire order; conditions take only their Yes or No branch. Disconnected nodes never run.
         Move/rotate rates use seconds. Opacity uses 0–1. In 3D, Y is height and WASD moves on X/Z.
-        Sprite/model size is square/unit-normalized. Colliders are axis-aligned boxes, even when artwork is rotated.
+        Size multiplies the object's independent width, height and depth. Imported models start unit-normalized. Colours tint textures. Colliders use the scaled axis-aligned box, even when artwork is rotated.
         Camera: fixed at (0, 15, 17) looking at origin in 3D; 21 × 13 world-unit view in 2D.
         Variables and key/score/contact/variable branches are included. No automatic player, score logic, floor, gravity or multiplayer is added. Native character and sprite-sheet animation are not supported by this source exporter.
         Add the blocks you need in the editor. Stop/Play or restart the exported game to reset state.

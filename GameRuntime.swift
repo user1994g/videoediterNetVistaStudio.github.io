@@ -17,8 +17,10 @@ struct GamePlayState {
     init(objects: [GameObject], dimension: GameDimension = .twoD) { self.objects = objects; self.dimension = dimension }
 
     func overlaps(_ a: GameObject, _ b: GameObject) -> Bool {
-        let radius = (a.size + b.size) / 2
-        return abs(a.x-b.x) < radius && abs(a.y-b.y) < radius && (dimension == .twoD || abs(a.z-b.z) < radius)
+        let rx = (a.size*a.scaleX + b.size*b.scaleX)/2
+        let ry = (a.size*a.scaleY + b.size*b.scaleY)/2
+        let rz = (a.size*a.scaleZ + b.size*b.scaleZ)/2
+        return abs(a.x-b.x) < rx && abs(a.y-b.y) < ry && (dimension == .twoD || abs(a.z-b.z) < rz)
     }
     mutating func step(keys: Set<String>, seconds: Double) {
         let dt = seconds.isFinite ? min(max(seconds, 0), 0.05) : 0

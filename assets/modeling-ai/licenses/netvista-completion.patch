@@ -1,0 +1,30 @@
+--- a/tools/completion/completion.cpp
++++ b/tools/completion/completion.cpp
+@@ -705,8 +705,11 @@
+             for (auto id : embd) {
+                 const std::string token_str = common_token_to_piece(ctx, id, params.special);
+ 
+-                // Console/Stream Output
+-                LOG("%s", token_str.c_str());
++                // NetVista modification: completion data must survive --log-disable.
++                // Diagnostics and the human-readable EOS marker remain disabled.
++                // Only these generated pieces are written to the parent's JSON pipe.
++                fputs(token_str.c_str(), stdout);
++                fflush(stdout);
+ 
+                 // Record Displayed Tokens To Log
+                 // Note: Generated tokens are created one by one hence this check
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -768,8 +768,9 @@
+     // setup log directly from params.verbosity: see tools/cli/cli.cpp
+     common_log_set_verbosity_thold(params.verbosity);
+ 
+-    // config file applies first, so env variables and CLI arguments override it
+-    common_params_apply_system_config(params, ctx_arg.ex);
++    // NetVista modification: this app-owned helper must not inherit global/user
++    // config.ini options such as remote models, log paths or prompt-cache files.
++    // Its parent supplies fixed arguments and an isolated environment instead.
+ 
+     std::unordered_map<std::string, std::pair<common_arg *, bool>> arg_to_options;
+     for (auto & opt : ctx_arg.options) {

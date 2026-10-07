@@ -321,6 +321,7 @@ private enum EffectsPanelKind: String, CaseIterable {
 }
 
 final class EffectsStudioViewController: NSViewController {
+    var currentValues: EffectControlValues { values() }
     var onPreview: ((EffectControlValues) -> Void)?
     var onApplyTransform: ((EffectControlValues) -> Void)?
     var onApplyEffects: ((EffectControlValues) -> Void)?
@@ -336,6 +337,7 @@ final class EffectsStudioViewController: NSViewController {
     var onMonitorFit: (() -> Void)?
     var onCancelPreview: (() -> Void)?
     var onReset: (() -> Void)?
+    var canRemoveAIMatte: (() -> Bool)?
 
     private let properties: [AnimatableProperty] = [
         .positionX, .positionY, .scale, .rotation, .opacity,
@@ -346,6 +348,10 @@ final class EffectsStudioViewController: NSViewController {
     private let selectionLabel = NSTextField(labelWithString: "No video clip selected")
     private let keyframeLabel = NSTextField(wrappingLabelWithString: "No keyframes on this clip yet.")
     private let searchField = NSSearchField()
+    private let workspaceTabs = NSSegmentedControl(labels: ["Effects", "Keyframes"], trackingMode: .selectOne, target: nil, action: nil)
+    private let workspaceContent = NSStackView()
+    private var workspacePages: [NSView] = []
+    private let browserEmptyLabel = NSTextField(wrappingLabelWithString: "No matching effects. Try a different search.")
     private let propertyPicker = NSPopUpButton()
     private let curvePicker = NSPopUpButton()
     private let autoKeyButton = NSButton(checkboxWithTitle: "Auto Keyframe", target: nil, action: nil)
@@ -355,6 +361,8 @@ final class EffectsStudioViewController: NSViewController {
     private weak var gridScrollView: NSScrollView?
     private let gridZoomLabel = NSTextField(labelWithString: "Fit")
     private let keyframeTimeLabel = NSTextField(labelWithString: "00:00:00")
+    private let keyframeValueSlider = NSSlider(value: 1, minValue: 0, maxValue: 1, target: nil, action: nil)
+    private let keyframeValueField = NSTextField(string: "100.0%")
     private let appliedCountLabel = NSTextField(labelWithString: "2 stages")
     private let settingsTitleLabel = NSTextField(labelWithString: "Motion")
     private let settingsSummaryLabel = NSTextField(labelWithString: "Position, scale and rotation")
@@ -406,6 +414,15 @@ final class EffectsStudioViewController: NSViewController {
     private let keyOutput = NSPopUpButton()
     private let keyColor = NSColorWell()
     private var colorSampler: NSColorSampler?
+    private let aiMatteEnabled = NSButton(checkboxWithTitle: "AI-assisted person cutout", target: nil, action: nil)
+    private let aiMatteStrength = NSSlider(value: 0.8, minValue: 0, maxValue: 1, target: nil, action: nil)
+    private let aiMatteStatus = NSTextField(wrappingLabelWithString: "")
+    private let aiMatteProgress = NSProgressIndicator()
+    private lazy var aiMatteDownload = makeButton("Download Model…", #selector(downloadAIMatte))
+    private lazy var aiMatteCancel = makeButton("Cancel", #selector(cancelAIMatteDownload))
+    private lazy var aiMatteRemove = makeButton("Remove Model", #selector(removeAIMatte))
+    private var aiMatteObserver: NSObjectProtocol?
+    private var lastAIMattePhase: LocalAIMattePhase?
     private let transparency = NSSlider(value: 0.45, minValue: 0, maxValue: 1, target: nil, action: nil)
     private let highlight = NSSlider(value: 0.10, minValue: 0, maxValue: 1, target: nil, action: nil)
     private let shadow = NSSlider(value: 0.50, minValue: 0, maxValue: 1, target: nil, action: nil)
@@ -427,47 +444,56 @@ final class EffectsStudioViewController: NSViewController {
     private let showBounds = NSButton(checkboxWithTitle: "Transform bounds", target: nil, action: nil)
 
     override func loadView() {
-        view = NSView(); view.wantsLayer = true; view.layer?.backgroundColor = NSColor(hex: "0E1116").cgColor
+        view = NSView(frame: NSRect(x: 0, y: 0, width: 1040, height: 760)); view.appearance = NSAppearance(named: .darkAqua)
+        StudioTheme.shared.register(view, as: .workspace)
         let root = NSStackView(); root.orientation = .vertical; root.alignment = .width; root.spacing = 10; root.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 10, right: 12); root.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(root)
         NSLayoutConstraint.activate([root.leadingAnchor.constraint(equalTo: view.leadingAnchor), root.trailingAnchor.constraint(equalTo: view.trailingAnchor), root.topAnchor.constraint(equalTo: view.topAnchor), root.bottomAnchor.constraint(equalTo: view.bottomAnchor)])
 
-        let header = NSStackView(); header.orientation = .horizontal; header.alignment = .centerY; header.spacing = 12; header.edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14); header.wantsLayer = true; header.layer?.backgroundColor = NSColor(hex: "181D25").cgColor; header.layer?.cornerRadius = 10; header.layer?.borderColor = NSColor(hex: "2B3340").cgColor; header.layer?.borderWidth = 1
-        let identity = NSStackView(); identity.orientation = .vertical; identity.alignment = .leading; identity.spacing = 2
-        let eyebrow = NSTextField(labelWithString: "NETVISTA STUDIO  /  EFFECTS"); eyebrow.font = .monospacedSystemFont(ofSize: 9, weight: .bold); eyebrow.textColor = .systemPurple
-        let title = NSTextField(labelWithString: "Effect Controls"); title.font = .systemFont(ofSize: 18, weight: .bold); title.textColor = .white
-        identity.addArrangedSubview(eyebrow); identity.addArrangedSubview(title)
-        selectionLabel.font = .systemFont(ofSize: 11, weight: .semibold); selectionLabel.textColor = NSColor(hex: "AEB8C8"); selectionLabel.lineBreakMode = .byTruncatingMiddle
         searchField.placeholderString = "Search effect browser"; searchField.target = self; searchField.action = #selector(filterChanged); searchField.sendsSearchStringImmediately = true
-        let live = NSTextField(labelWithString: "●  LIVE PREVIEW"); live.font = .monospacedSystemFont(ofSize: 9, weight: .bold); live.textColor = .systemGreen
-        header.addArrangedSubview(identity); header.addArrangedSubview(dividerView(height: 34)); header.addArrangedSubview(selectionLabel); header.addArrangedSubview(NSView()); header.addArrangedSubview(live); header.addArrangedSubview(searchField); searchField.widthAnchor.constraint(equalToConstant: 260).isActive = true
-        root.addArrangedSubview(header)
+        searchField.identifier = NSUserInterfaceItemIdentifier("effects-browser-search")
+        root.addArrangedSubview(StudioWorkspaceUI.header(title: "Effect Controls", selection: selectionLabel))
 
-        let monitorTools = NSStackView(); monitorTools.orientation = .horizontal; monitorTools.alignment = .centerY; monitorTools.spacing = 7; monitorTools.edgeInsets = NSEdgeInsets(top: 5, left: 10, bottom: 5, right: 10); monitorTools.wantsLayer = true; monitorTools.layer?.backgroundColor = NSColor(hex: "141920").cgColor; monitorTools.layer?.cornerRadius = 8
+        workspaceTabs.target = self; workspaceTabs.action = #selector(workspaceTabChanged)
+        workspaceTabs.selectedSegment = 0; workspaceTabs.identifier = NSUserInterfaceItemIdentifier("effects-workspace-tabs")
+        let navigation = NSStackView(); navigation.orientation = .horizontal; navigation.alignment = .centerY; navigation.spacing = 10
+        navigation.addArrangedSubview(workspaceTabs); navigation.addArrangedSubview(NSView())
+        navigation.addArrangedSubview(StudioWorkspaceUI.label("Select a stage to edit • diamonds animate its values", size: 10))
+        root.addArrangedSubview(navigation)
+
+        let monitorTools = NSStackView(); monitorTools.orientation = .horizontal; monitorTools.alignment = .centerY; monitorTools.spacing = 7; monitorTools.edgeInsets = NSEdgeInsets(top: 5, left: 10, bottom: 5, right: 10); StudioWorkspaceUI.panel(monitorTools)
         let monitorTitle = NSTextField(labelWithString: "PROGRAM VIEW"); monitorTitle.font = .systemFont(ofSize: 9, weight: .bold); monitorTitle.textColor = NSColor(hex: "8D99AB")
         monitorTools.addArrangedSubview(monitorTitle)
         monitorTools.addArrangedSubview(makeButton("−", #selector(monitorZoomOut)))
         monitorTools.addArrangedSubview(makeButton("Fit", #selector(monitorFit)))
         monitorTools.addArrangedSubview(makeButton("+", #selector(monitorZoomIn)))
-        let safety = NSTextField(labelWithString: "Video surface is inspection-only — use the transport bar to play."); safety.font = .systemFont(ofSize: 10); safety.textColor = NSColor(hex: "7F8A9B")
+        let safety = NSTextField(labelWithString: "Inspect only • playback uses the transport bar"); safety.font = .systemFont(ofSize: 10); safety.textColor = NSColor(hex: "7F8A9B")
         monitorTools.addArrangedSubview(safety); monitorTools.addArrangedSubview(NSView())
         [showGrid, showSafe, showBounds].forEach { $0.target = self; $0.action = #selector(overlaysChanged); monitorTools.addArrangedSubview($0) }
-        root.addArrangedSubview(monitorTools)
+        root.addArrangedSubview(StudioWorkspaceUI.toolbar(monitorTools))
 
-        let split = NSSplitView(); split.isVertical = true; split.dividerStyle = .thin
-        let controls = makeControlsPane(); controls.widthAnchor.constraint(greaterThanOrEqualToConstant: 440).isActive = true
-        let keyframes = makeKeyframePane(); keyframes.widthAnchor.constraint(greaterThanOrEqualToConstant: 500).isActive = true
-        split.addArrangedSubview(controls); split.addArrangedSubview(keyframes); split.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
-        root.addArrangedSubview(split)
+        workspaceContent.orientation = .vertical; workspaceContent.alignment = .width; workspaceContent.spacing = 0
+        workspacePages = [makeControlsPane(), makeKeyframePane()]
+        workspacePages.forEach { workspaceContent.addArrangedSubview($0) }
+        workspacePages[1].isHidden = true
+        root.addArrangedSubview(workspaceContent)
+        workspaceContent.setContentHuggingPriority(.defaultLow, for: .vertical)
+        workspaceContent.heightAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
 
-        let actions = NSStackView(); actions.orientation = .horizontal; actions.alignment = .centerY; actions.spacing = 8; actions.edgeInsets = NSEdgeInsets(top: 7, left: 10, bottom: 7, right: 10); actions.wantsLayer = true; actions.layer?.backgroundColor = NSColor(hex: "171C23").cgColor; actions.layer?.cornerRadius = 8
-        let fitNote = NSTextField(labelWithString: "Changes preview at the current frame. Add diamonds to animate values over time."); fitNote.font = .systemFont(ofSize: 10); fitNote.textColor = NSColor(hex: "8F99A9")
-        actions.addArrangedSubview(fitNote); actions.addArrangedSubview(NSView())
-        actions.addArrangedSubview(makeButton("Revert Preview", #selector(revertPreview)))
-        actions.addArrangedSubview(makeButton("Reset Selected", #selector(reset)))
-        let apply = makeButton("Apply to Clip", #selector(applyAll)); apply.contentTintColor = .systemBlue; actions.addArrangedSubview(apply)
-        root.addArrangedSubview(actions)
+        let apply = makeButton("Apply to Selected Clips", #selector(applyAll)); StudioTheme.shared.register(apply, as: .accentControl)
+        root.addArrangedSubview(StudioWorkspaceUI.footer(note: "Changes preview immediately. Apply saves the effect stack to the selected clips; Revert restores the saved edit.", buttons: [makeButton("Revert Preview", #selector(revertPreview)), makeButton("Reset Selected Effect", #selector(reset)), apply]))
         showGrid.state = .off; showSafe.state = .off; showBounds.state = .off
+        aiMatteObserver = NotificationCenter.default.addObserver(forName: LocalAIMatte.statusDidChange, object: LocalAIMatte.shared, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            let phase = LocalAIMatte.shared.status.phase
+            let changed = phase != self.lastAIMattePhase
+            self.refreshAIMatteStatus()
+            if changed && self.hasClipSelection && self.aiMatteEnabled.state == .on {
+                self.onPreview?(self.values())
+            }
+        }
+        refreshAIMatteStatus()
+        StudioWorkspaceUI.alignContent(root)
         DispatchQueue.main.async { [weak self] in self?.overlaysChanged() }
     }
 
@@ -476,15 +502,23 @@ final class EffectsStudioViewController: NSViewController {
         updateGridWidth(revealPlayhead: false)
     }
 
-    override func viewDidDisappear() { super.viewDidDisappear(); onCancelPreview?() }
+    @objc private func workspaceTabChanged() {
+        let selected = max(0, workspaceTabs.selectedSegment)
+        for (index, page) in workspacePages.enumerated() { page.isHidden = index != selected }
+        if selected == 1 { updateGridWidth(revealPlayhead: true); revealSelectedProperty() }
+    }
+
+    deinit {
+        if let observer = aiMatteObserver { NotificationCenter.default.removeObserver(observer) }
+    }
 
     private func makeControlsPane() -> NSView {
         let split = NSSplitView(); split.isVertical = true; split.dividerStyle = .thin
         let sidebar = makeEffectSidebar()
         let settings = makeEffectSettingsPane()
-        sidebar.widthAnchor.constraint(greaterThanOrEqualToConstant: 184).isActive = true
-        let sidebarMaximum = sidebar.widthAnchor.constraint(lessThanOrEqualToConstant: 260); sidebarMaximum.priority = .defaultHigh; sidebarMaximum.isActive = true
-        settings.widthAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
+        sidebar.widthAnchor.constraint(greaterThanOrEqualToConstant: 264).isActive = true
+        let sidebarMaximum = sidebar.widthAnchor.constraint(lessThanOrEqualToConstant: 310); sidebarMaximum.priority = .defaultHigh; sidebarMaximum.isActive = true
+        settings.widthAnchor.constraint(greaterThanOrEqualToConstant: 330).isActive = true
         split.addArrangedSubview(sidebar)
         split.addArrangedSubview(settings)
         split.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
@@ -496,7 +530,7 @@ final class EffectsStudioViewController: NSViewController {
     }
 
     private func makeEffectSidebar() -> NSView {
-        let pane = NSStackView(); pane.orientation = .vertical; pane.alignment = .width; pane.spacing = 8; pane.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10); pane.wantsLayer = true; pane.layer?.backgroundColor = NSColor(hex: "11161D").cgColor; pane.layer?.cornerRadius = 9; pane.layer?.borderColor = NSColor(hex: "29313D").cgColor; pane.layer?.borderWidth = 1
+        let pane = NSStackView(); pane.orientation = .vertical; pane.alignment = .width; pane.spacing = 8; pane.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10); StudioWorkspaceUI.panel(pane)
 
         let appliedHeader = NSStackView(); appliedHeader.orientation = .horizontal; appliedHeader.alignment = .centerY
         let appliedTitle = sectionLabel("APPLIED EFFECTS")
@@ -506,12 +540,13 @@ final class EffectsStudioViewController: NSViewController {
 
         appliedEffectsStack.orientation = .vertical; appliedEffectsStack.alignment = .width; appliedEffectsStack.spacing = 5; appliedEffectsStack.translatesAutoresizingMaskIntoConstraints = false
         let appliedScroll = effectListScroll(appliedEffectsStack)
-        let appliedHeight = appliedScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150); appliedHeight.priority = .defaultHigh; appliedHeight.isActive = true
+        let appliedHeight = appliedScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 90); appliedHeight.priority = .defaultHigh; appliedHeight.isActive = true
         pane.addArrangedSubview(appliedScroll)
 
         let divider = NSView(); divider.wantsLayer = true; divider.layer?.backgroundColor = NSColor(hex: "2B323D").cgColor; divider.heightAnchor.constraint(equalToConstant: 1).isActive = true; pane.addArrangedSubview(divider)
         let browseTitle = sectionLabel("EFFECT BROWSER")
         pane.addArrangedSubview(browseTitle)
+        pane.addArrangedSubview(searchField)
         let browseHelp = NSTextField(wrappingLabelWithString: "Add an effect once, then edit it directly. Search filters this list immediately.")
         browseHelp.font = .systemFont(ofSize: 9); browseHelp.textColor = NSColor(hex: "768294"); browseHelp.maximumNumberOfLines = 3; pane.addArrangedSubview(browseHelp)
 
@@ -522,19 +557,21 @@ final class EffectsStudioViewController: NSViewController {
             browserEffectsStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: browserEffectsStack.widthAnchor).isActive = true
         }
+        browserEmptyLabel.font = .systemFont(ofSize: 11); browserEmptyLabel.textColor = .secondaryLabelColor
+        browserEffectsStack.addArrangedSubview(browserEmptyLabel); browserEmptyLabel.isHidden = true
         let browserScroll = effectListScroll(browserEffectsStack)
-        browserScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
+        let browserHeight = browserScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 100); browserHeight.priority = .defaultHigh; browserHeight.isActive = true
         pane.addArrangedSubview(browserScroll)
         return pane
     }
 
     private func makeEffectSettingsPane() -> NSView {
-        let pane = NSStackView(); pane.orientation = .vertical; pane.alignment = .width; pane.spacing = 8; pane.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10); pane.wantsLayer = true; pane.layer?.backgroundColor = NSColor(hex: "12171E").cgColor; pane.layer?.cornerRadius = 9; pane.layer?.borderColor = NSColor(hex: "29313D").cgColor; pane.layer?.borderWidth = 1
+        let pane = NSStackView(); pane.orientation = .vertical; pane.alignment = .width; pane.spacing = 8; pane.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10); StudioWorkspaceUI.panel(pane)
 
         let heading = NSStackView(); heading.orientation = .horizontal; heading.alignment = .centerY; heading.spacing = 8
         let identity = NSStackView(); identity.orientation = .vertical; identity.alignment = .leading; identity.spacing = 2
         settingsTitleLabel.font = .systemFont(ofSize: 14, weight: .bold); settingsTitleLabel.textColor = .white
-        settingsSummaryLabel.font = .systemFont(ofSize: 9); settingsSummaryLabel.textColor = NSColor(hex: "8793A5")
+        settingsSummaryLabel.font = .systemFont(ofSize: 10); settingsSummaryLabel.textColor = NSColor(hex: "8793A5"); settingsSummaryLabel.lineBreakMode = .byTruncatingTail; settingsSummaryLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         identity.addArrangedSubview(settingsTitleLabel); identity.addArrangedSubview(settingsSummaryLabel)
         heading.addArrangedSubview(identity); heading.addArrangedSubview(NSView())
         let resetButton = makeButton("Reset Effect", #selector(reset)); resetButton.toolTip = "Reset only the effect currently shown"; heading.addArrangedSubview(resetButton)
@@ -566,7 +603,27 @@ final class EffectsStudioViewController: NSViewController {
         keyEnabled.target = self; keyEnabled.action = #selector(controlChanged); ultraStack.addArrangedSubview(keyEnabled)
         UltraKeyOutputMode.allCases.forEach { keyOutput.addItem(withTitle: $0.title) }; keyOutput.target = self; keyOutput.action = #selector(controlChanged); ultraStack.addArrangedSubview(popupRow("Output", keyOutput))
         keyColor.target = self; keyColor.action = #selector(controlChanged); ultraStack.addArrangedSubview(colorRow())
-        let presets = NSStackView(); presets.orientation = .horizontal; presets.spacing = 6; presets.addArrangedSubview(makeButton("Green Screen", #selector(greenScreen))); presets.addArrangedSubview(makeButton("Blue Screen", #selector(blueScreen))); presets.addArrangedSubview(makeButton("Relaxed", #selector(relaxedKey))); presets.addArrangedSubview(makeButton("Aggressive", #selector(aggressiveKey))); ultraStack.addArrangedSubview(presets)
+        let presets = NSStackView(); presets.orientation = .horizontal; presets.spacing = 6; presets.addArrangedSubview(makeButton("Green Screen", #selector(greenScreen))); presets.addArrangedSubview(makeButton("Blue Screen", #selector(blueScreen))); presets.addArrangedSubview(makeButton("Relaxed", #selector(relaxedKey))); presets.addArrangedSubview(makeButton("Aggressive", #selector(aggressiveKey))); ultraStack.addArrangedSubview(StudioWorkspaceUI.toolbar(presets))
+        addSubheading("OPTIONAL LOCAL AI", to: ultraStack)
+        aiMatteEnabled.identifier = NSUserInterfaceItemIdentifier("ai-matte-enabled")
+        aiMatteEnabled.target = self; aiMatteEnabled.action = #selector(aiMatteChanged)
+        ultraStack.addArrangedSubview(aiMatteEnabled)
+        aiMatteStrength.identifier = NSUserInterfaceItemIdentifier("ai-matte-strength")
+        ultraStack.addArrangedSubview(parameterRow("AI Strength", aiMatteStrength, scale: 100, suffix: "%"))
+        let aiNote = NSTextField(wrappingLabelWithString: "For people footage. AI protects the person and cleans the background; chroma key refines the edges. Not a hair-detail or general-object matting model.")
+        aiNote.font = .systemFont(ofSize: 10); aiNote.textColor = .secondaryLabelColor
+        ultraStack.addArrangedSubview(aiNote)
+        aiMatteStatus.identifier = NSUserInterfaceItemIdentifier("ai-matte-status")
+        aiMatteStatus.font = .systemFont(ofSize: 10); aiMatteStatus.maximumNumberOfLines = 5
+        ultraStack.addArrangedSubview(aiMatteStatus)
+        aiMatteProgress.style = .bar; aiMatteProgress.isIndeterminate = false; aiMatteProgress.minValue = 0; aiMatteProgress.maxValue = 1
+        ultraStack.addArrangedSubview(aiMatteProgress)
+        let modelActions = NSStackView(); modelActions.orientation = .horizontal; modelActions.spacing = 5
+        aiMatteDownload.identifier = NSUserInterfaceItemIdentifier("ai-matte-download")
+        aiMatteCancel.identifier = NSUserInterfaceItemIdentifier("ai-matte-cancel")
+        aiMatteRemove.identifier = NSUserInterfaceItemIdentifier("ai-matte-remove")
+        [aiMatteDownload, aiMatteCancel, aiMatteRemove].forEach { $0.font = .systemFont(ofSize: 10); modelActions.addArrangedSubview($0) }
+        ultraStack.addArrangedSubview(modelActions)
         addSubheading("MATTE GENERATION", to: ultraStack)
         [parameterRow("Transparency", transparency, scale: 100, suffix: "%"), parameterRow("Highlight", highlight, scale: 100, suffix: "%"), parameterRow("Shadow", shadow, scale: 100, suffix: "%"), parameterRow("Tolerance", tolerance, scale: 100, suffix: "%", property: .ultraKeyTolerance), parameterRow("Pedestal", pedestal, scale: 100, suffix: "%")].forEach { ultraStack.addArrangedSubview($0) }
         addSubheading("MATTE CLEANUP", to: ultraStack)
@@ -620,10 +677,10 @@ final class EffectsStudioViewController: NSViewController {
     }
 
     private func makeKeyframePane() -> NSView {
-        let pane = NSStackView(); pane.orientation = .vertical; pane.alignment = .width; pane.spacing = 8; pane.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10); pane.wantsLayer = true; pane.layer?.backgroundColor = NSColor(hex: "12161C").cgColor; pane.layer?.cornerRadius = 9; pane.layer?.borderColor = NSColor(hex: "29313D").cgColor; pane.layer?.borderWidth = 1
+        let pane = NSStackView(); pane.orientation = .vertical; pane.alignment = .width; pane.spacing = 8; pane.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10); StudioWorkspaceUI.panel(pane)
         let timelineHeader = NSStackView(); timelineHeader.orientation = .horizontal; timelineHeader.alignment = .centerY; timelineHeader.spacing = 6
         let heading = NSTextField(labelWithString: "KEYFRAME EDITOR"); heading.font = .systemFont(ofSize: 11, weight: .bold); heading.textColor = NSColor(hex: "C7CFDC")
-        let hint = NSTextField(labelWithString: "Move the playhead, then adjust a control to add a point"); hint.font = .systemFont(ofSize: 9); hint.textColor = NSColor(hex: "8995A7")
+        let hint = StudioWorkspaceUI.label("Drag diamonds to retime", size: 10)
         gridZoomLabel.font = .monospacedDigitSystemFont(ofSize: 9, weight: .semibold); gridZoomLabel.textColor = NSColor(hex: "9AA6B8"); gridZoomLabel.alignment = .center; gridZoomLabel.widthAnchor.constraint(equalToConstant: 38).isActive = true
         timelineHeader.addArrangedSubview(heading); timelineHeader.addArrangedSubview(hint); timelineHeader.addArrangedSubview(NSView())
         timelineHeader.addArrangedSubview(makeButton("−", #selector(zoomKeyframesOut))); timelineHeader.addArrangedSubview(gridZoomLabel); timelineHeader.addArrangedSubview(makeButton("+", #selector(zoomKeyframesIn))); timelineHeader.addArrangedSubview(makeButton("Fit", #selector(fitKeyframes)))
@@ -637,14 +694,22 @@ final class EffectsStudioViewController: NSViewController {
         keyframeTimeLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .bold); keyframeTimeLabel.textColor = .systemRed
         autoKeyButton.target = self; autoKeyButton.action = #selector(autoKeyChanged); autoKeyButton.toolTip = "When enabled, changing an animatable slider writes a keyframe at the current playhead after you finish dragging."
         autoKeyButton.state = .on
-        selectors.addArrangedSubview(propertyLabel); selectors.addArrangedSubview(propertyPicker); selectors.addArrangedSubview(curveLabel); selectors.addArrangedSubview(curvePicker); selectors.addArrangedSubview(NSView()); selectors.addArrangedSubview(autoKeyButton); selectors.addArrangedSubview(keyframeTimeLabel); pane.addArrangedSubview(selectors)
+        selectors.addArrangedSubview(propertyLabel); selectors.addArrangedSubview(propertyPicker); selectors.addArrangedSubview(curveLabel); selectors.addArrangedSubview(curvePicker); selectors.addArrangedSubview(NSView()); selectors.addArrangedSubview(autoKeyButton); selectors.addArrangedSubview(keyframeTimeLabel); pane.addArrangedSubview(StudioWorkspaceUI.toolbar(selectors))
+        let valueRow = NSStackView(); valueRow.orientation = .horizontal; valueRow.alignment = .centerY; valueRow.spacing = 10
+        valueRow.addArrangedSubview(StudioWorkspaceUI.label("Value at playhead", weight: .medium, secondary: false))
+        keyframeValueSlider.target = self; keyframeValueSlider.action = #selector(keyframeValueChanged); keyframeValueSlider.isContinuous = true
+        keyframeValueSlider.identifier = NSUserInterfaceItemIdentifier("keyframe-property-value")
+        keyframeValueField.target = self; keyframeValueField.action = #selector(keyframeValueEntered)
+        StudioWorkspaceUI.numericField(keyframeValueField, title: "Keyframe property")
+        valueRow.addArrangedSubview(keyframeValueSlider); valueRow.addArrangedSubview(keyframeValueField)
+        pane.addArrangedSubview(valueRow)
         let keyActions = NSStackView(); keyActions.orientation = .horizontal; keyActions.spacing = 6
         keyActions.addArrangedSubview(makeButton("◀ Previous", #selector(previousKeyframe)))
         let add = makeButton("◆ Add / Update", #selector(addKeyframe)); add.contentTintColor = .systemOrange; keyActions.addArrangedSubview(add)
         keyActions.addArrangedSubview(makeButton("Next ▶", #selector(nextKeyframe)))
         keyActions.addArrangedSubview(makeButton("Remove Here", #selector(removeKeyframe)))
         keyActions.addArrangedSubview(makeButton("Clear Property", #selector(clearKeyframes)))
-        pane.addArrangedSubview(keyActions)
+        pane.addArrangedSubview(StudioWorkspaceUI.toolbar(keyActions))
 
         let gridScroll = NSScrollView(); gridScroll.drawsBackground = true; gridScroll.backgroundColor = NSColor(hex: "0D1116"); gridScroll.hasVerticalScroller = true; gridScroll.hasHorizontalScroller = true; gridScroll.autohidesScrollers = true; gridScroll.borderType = .lineBorder; grid.translatesAutoresizingMaskIntoConstraints = false; gridScroll.documentView = grid; gridScrollView = gridScroll
         gridWidthConstraint = grid.widthAnchor.constraint(equalToConstant: 640); gridWidthConstraint?.isActive = true
@@ -665,6 +730,12 @@ final class EffectsStudioViewController: NSViewController {
     }
 
     func load(_ values: EffectControlValues, selectionName: String, property: AnimatableProperty, interpolation: KeyframeInterpolation, keyframeText: String, clip: TimelineClip?, timelineTime: Double) {
+        // Loading a different selection or reverting/closing the tool must
+        // not let a delayed Auto Keyframe write into the newly loaded clip.
+        // Focusing another open tool does not call load, so its edit survives.
+        pendingAutoKeyframe?.cancel(); pendingAutoKeyframe = nil
+        resumePlayheadControlUpdates?.cancel(); resumePlayheadControlUpdates = nil
+        isEditingControl = false
         hasClipSelection = clip != nil
         pendingRemovedProperties.removeAll()
         selectionLabel.stringValue = "Selected: \(selectionName)"; keyframeLabel.stringValue = keyframeText
@@ -728,6 +799,9 @@ final class EffectsStudioViewController: NSViewController {
         choke.doubleValue = key.choke; soften.doubleValue = key.soften; matteContrast.doubleValue = key.matteContrast; midpoint.doubleValue = key.midpoint
         desaturate.doubleValue = key.desaturate; spillRange.doubleValue = key.spillRange; spill.doubleValue = key.spill; luma.doubleValue = key.luma
         keySaturation.doubleValue = key.saturation; keyHue.doubleValue = key.hueDegrees; keyLuminance.doubleValue = key.luminance
+        aiMatteEnabled.state = key.aiAssistEnabled ? .on : .off
+        aiMatteStrength.doubleValue = key.aiAssistStrength
+        refreshAIMatteStatus()
     }
 
     private func values() -> EffectControlValues {
@@ -743,6 +817,8 @@ final class EffectsStudioViewController: NSViewController {
         key.choke = choke.doubleValue; key.soften = soften.doubleValue; key.matteContrast = matteContrast.doubleValue; key.midpoint = midpoint.doubleValue
         key.desaturate = desaturate.doubleValue; key.spillRange = spillRange.doubleValue; key.spill = spill.doubleValue; key.luma = luma.doubleValue
         key.saturation = keySaturation.doubleValue; key.hueDegrees = keyHue.doubleValue; key.luminance = keyLuminance.doubleValue; value.effects.ultraKey = key
+        value.effects.ultraKey.aiAssistEnabled = aiMatteEnabled.state == .on
+        value.effects.ultraKey.aiAssistStrength = aiMatteStrength.doubleValue
         return value
     }
 
@@ -762,9 +838,35 @@ final class EffectsStudioViewController: NSViewController {
     }
     @objc private func numericChanged(_ sender: NSTextField) {
         guard let mapping = fieldToSlider[ObjectIdentifier(sender)] else { return }
-        mapping.slider.doubleValue = sender.doubleValue / mapping.scale
+        let suffix = numericFields[ObjectIdentifier(mapping.slider)]?.suffix ?? ""
+        let text = sender.stringValue.replacingOccurrences(of: suffix, with: "").replacingOccurrences(of: ",", with: ".")
+        guard let number = Double(text), number.isFinite else { updateNumericFields(); return }
+        mapping.slider.doubleValue = min(mapping.slider.maxValue, max(mapping.slider.minValue, number / mapping.scale))
         controlChanged()
         if let property = sliderProperties[ObjectIdentifier(mapping.slider)] { scheduleAutoKeyframe(for: property) }
+    }
+    private var keyframeValueEntry: (field: NSTextField, slider: NSSlider, scale: Double, suffix: String)? {
+        numericFields.first { sliderProperties[$0.key] == selectedProperty }?.value
+    }
+    private func syncKeyframeValue() {
+        guard let entry = keyframeValueEntry else { return }
+        keyframeValueSlider.minValue = entry.slider.minValue; keyframeValueSlider.maxValue = entry.slider.maxValue
+        keyframeValueSlider.doubleValue = entry.slider.doubleValue
+        keyframeValueSlider.isEnabled = hasClipSelection && entry.slider.isEnabled
+        keyframeValueField.isEnabled = keyframeValueSlider.isEnabled
+        keyframeValueField.stringValue = String(format: "%.1f", entry.slider.doubleValue * entry.scale) + entry.suffix
+        keyframeValueSlider.setAccessibilityLabel("\(selectedProperty.title) at playhead")
+    }
+    @objc private func keyframeValueChanged() {
+        guard hasClipSelection, let entry = keyframeValueEntry else { return }
+        entry.slider.doubleValue = keyframeValueSlider.doubleValue; sliderChanged(entry.slider)
+    }
+    @objc private func keyframeValueEntered() {
+        guard hasClipSelection, let entry = keyframeValueEntry else { return }
+        let text = keyframeValueField.stringValue.replacingOccurrences(of: entry.suffix, with: "").replacingOccurrences(of: ",", with: ".")
+        guard let number = Double(text), number.isFinite else { syncKeyframeValue(); return }
+        entry.slider.doubleValue = min(entry.slider.maxValue, max(entry.slider.minValue, number / entry.scale))
+        sliderChanged(entry.slider)
     }
     @objc private func propertyChanged() { gridSelectionChanged() }
     @objc private func addKeyframe() { onKeyframe?(values(), selectedProperty, selectedCurve); keyframeLabel.stringValue = "Keyframe added or updated at the program playhead." }
@@ -997,6 +1099,74 @@ final class EffectsStudioViewController: NSViewController {
             node.subviews.forEach(visit)
         }
         visit(view)
+        // Navigation and searching remain useful in the empty selection state.
+        workspaceTabs.isEnabled = true; searchField.isEnabled = true
+        syncKeyframeValue()
+        refreshAIMatteStatus()
+    }
+
+    private func refreshAIMatteStatus() {
+        let status = LocalAIMatte.shared.status
+        lastAIMattePhase = status.phase
+        aiMatteStatus.stringValue = status.message + (aiMatteEnabled.state == .on && !status.isInstalled ? "\nAI unavailable: preview uses chroma key only." : "")
+        aiMatteStatus.textColor = status.phase == .failed ? .systemOrange : .secondaryLabelColor
+        aiMatteProgress.isHidden = !status.isBusy
+        aiMatteProgress.isIndeterminate = status.phase == .installing
+        aiMatteProgress.doubleValue = status.progress
+        if status.phase == .installing { aiMatteProgress.startAnimation(nil) } else { aiMatteProgress.stopAnimation(nil) }
+        aiMatteDownload.isHidden = status.isInstalled || status.isBusy
+        aiMatteDownload.isEnabled = !status.isBusy
+        aiMatteCancel.isHidden = !status.canCancel
+        aiMatteCancel.isEnabled = status.canCancel
+        aiMatteRemove.isHidden = !status.isInstalled || status.isBusy
+        aiMatteRemove.isEnabled = status.isInstalled && !status.isBusy
+        // Allow disabling a saved AI setting even if the model has been removed.
+        aiMatteEnabled.isEnabled = hasClipSelection && (status.isInstalled || aiMatteEnabled.state == .on)
+        let canAdjust = hasClipSelection && status.isInstalled && aiMatteEnabled.state == .on
+        aiMatteStrength.isEnabled = canAdjust
+        numericFields[ObjectIdentifier(aiMatteStrength)]?.field.isEnabled = canAdjust
+    }
+
+    @objc private func aiMatteChanged() {
+        if aiMatteEnabled.state == .on {
+            guard LocalAIMatte.shared.status.isInstalled else {
+                aiMatteEnabled.state = .off; refreshAIMatteStatus(); return
+            }
+            keyEnabled.state = .on
+        }
+        refreshAIMatteStatus()
+        controlChanged()
+    }
+
+    @objc private func downloadAIMatte() {
+        let alert = NSAlert()
+        alert.messageText = "Download the local AI person model?"
+        alert.informativeText = "Download Apple's DeepLabV3 FP16 model (about 4.3 MB). It runs on this Mac; your video frames are never uploaded. This is an image segmentation model, not a text LLM. It helps with people footage, but fine hair and fast motion still need chroma-key adjustment. The model stays separate from project files and can be removed here. After downloading, enable AI-assisted person cutout for the selected clip."
+        alert.addButton(withTitle: "Download")
+        alert.addButton(withTitle: "Not Now")
+        alert.addButton(withTitle: "Model & License")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: LocalAIMatte.shared.download()
+        case .alertThirdButtonReturn:
+            NSWorkspace.shared.open(LocalAIMatte.modelInformationURL)
+            NSWorkspace.shared.open(LocalAIMatte.modelLicenseURL)
+        default: break
+        }
+    }
+
+    @objc private func cancelAIMatteDownload() { LocalAIMatte.shared.cancelDownload() }
+
+    @objc private func removeAIMatte() {
+        if canRemoveAIMatte?() == false {
+            let alert = NSAlert(); alert.messageText = "An export is using the AI model"
+            alert.informativeText = "Let the export finish or cancel it before removing the model, so the cutout stays consistent throughout the movie."
+            alert.addButton(withTitle: "OK"); alert.runModal(); return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Remove the downloaded AI model?"
+        alert.informativeText = "Project settings and videos will stay untouched. Clips using AI will preview with chroma key only until you download the model again. Export will ask you before using that fallback."
+        alert.addButton(withTitle: "Remove Model"); alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn { LocalAIMatte.shared.removeModel() }
     }
 
     private func makeAppliedRow(_ kind: EffectsPanelKind, reorderableIndex: Int?, reorderableCount: Int) -> NSView {
@@ -1070,6 +1240,7 @@ final class EffectsStudioViewController: NSViewController {
     private func select(_ property: AnimatableProperty) { propertyPicker.selectItem(at: properties.firstIndex(of: property) ?? 0); gridSelectionChanged() }
     private func gridSelectionChanged() {
         grid.selectProperty(selectedProperty)
+        syncKeyframeValue()
         revealSelectedProperty()
     }
 
@@ -1134,12 +1305,13 @@ final class EffectsStudioViewController: NSViewController {
     @objc private func filterChanged() {
         let query = searchField.stringValue.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         for (kind, row) in browserRows { row.isHidden = !query.isEmpty && !kind.keywords.contains(query) }
+        browserEmptyLabel.isHidden = browserRows.values.contains { !$0.isHidden }
     }
 
     private func effectCard(_ title: String, subtitle: String, controls: [NSView]) -> NSStackView {
-        let card = NSStackView(); card.orientation = .vertical; card.alignment = .width; card.spacing = 8; card.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 13, right: 12); card.wantsLayer = true; card.layer?.backgroundColor = NSColor(hex: "1B212A").cgColor; card.layer?.cornerRadius = 9; card.layer?.borderColor = NSColor(hex: "2C3542").cgColor; card.layer?.borderWidth = 1
+        let card = NSStackView(); card.orientation = .vertical; card.alignment = .width; card.spacing = 8; card.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 13, right: 12); StudioWorkspaceUI.panel(card, role: .card)
         let heading = NSTextField(labelWithString: "▾  \(title)"); heading.font = .systemFont(ofSize: 11, weight: .bold); heading.textColor = .white
-        let detail = NSTextField(labelWithString: subtitle); detail.font = .systemFont(ofSize: 9); detail.textColor = NSColor(hex: "8893A4")
+        let detail = StudioWorkspaceUI.label(subtitle, size: 10, wrapping: true)
         card.addArrangedSubview(heading); card.addArrangedSubview(detail); controls.forEach { card.addArrangedSubview($0) }; return card
     }
     private func parameterRow(_ title: String, _ slider: NSSlider, scale displayScale: Double = 1, suffix: String = "", property: AnimatableProperty? = nil) -> NSStackView {
@@ -1148,12 +1320,13 @@ final class EffectsStudioViewController: NSViewController {
         let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 10, weight: .medium); label.textColor = NSColor(hex: "CFD5DF"); label.widthAnchor.constraint(equalToConstant: 102).isActive = true
         let keyframe = NSButton(title: property == nil ? "·" : "◇", target: self, action: #selector(quickKeyframe(_:))); keyframe.isBordered = false; keyframe.font = .systemFont(ofSize: 13, weight: .bold); keyframe.contentTintColor = property == nil ? NSColor(hex: "4C5666") : .systemOrange; keyframe.widthAnchor.constraint(equalToConstant: 18).isActive = true; keyframe.isEnabled = property != nil
         if let property {
+            slider.identifier = NSUserInterfaceItemIdentifier("effects-property-\(property.rawValue)")
             keyframeButtonProperties[ObjectIdentifier(keyframe)] = property
             keyframeButtons.append((keyframe, property))
             sliderProperties[ObjectIdentifier(slider)] = property
             keyframe.toolTip = "Add or update a \(property.title) keyframe at the playhead"
         }
-        let field = NSTextField(string: ""); field.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium); field.alignment = .right; field.target = self; field.action = #selector(numericChanged(_:)); field.widthAnchor.constraint(equalToConstant: 66).isActive = true
+        let field = NSTextField(string: ""); StudioWorkspaceUI.numericField(field, title: title); field.target = self; field.action = #selector(numericChanged(_:))
         row.addArrangedSubview(keyframe); row.addArrangedSubview(label); row.addArrangedSubview(slider); row.addArrangedSubview(field)
         numericFields[ObjectIdentifier(slider)] = (field, slider, displayScale, suffix); fieldToSlider[ObjectIdentifier(field)] = (slider, displayScale)
         return row
@@ -1169,7 +1342,7 @@ final class EffectsStudioViewController: NSViewController {
         }
     }
     private func addSubheading(_ text: String, to stack: NSStackView) { let label = NSTextField(labelWithString: text); label.font = .systemFont(ofSize: 9, weight: .bold); label.textColor = NSColor(hex: "7FA9FF"); stack.addArrangedSubview(label) }
-    private func updateNumericFields() { for entry in numericFields.values { entry.field.stringValue = String(format: "%.1f\(entry.suffix)", entry.slider.doubleValue * entry.scale) } }
+    private func updateNumericFields() { for entry in numericFields.values { entry.field.stringValue = String(format: "%.1f", entry.slider.doubleValue * entry.scale) + entry.suffix }; syncKeyframeValue() }
     private func scrollingView(_ document: NSView) -> NSScrollView {
         let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.documentView = document
         NSLayoutConstraint.activate([
@@ -1179,7 +1352,7 @@ final class EffectsStudioViewController: NSViewController {
         ])
         return scroll
     }
-    private func makeButton(_ title: String, _ action: Selector) -> NSButton { let button = NSButton(title: title, target: self, action: action); button.bezelStyle = .rounded; button.font = .systemFont(ofSize: 10, weight: .medium); return button }
+    private func makeButton(_ title: String, _ action: Selector) -> NSButton { StudioWorkspaceUI.button(title, target: self, action: action) }
     private func compactButton(_ title: String, _ action: Selector) -> NSButton {
         let button = NSButton(title: title, target: self, action: action); button.bezelStyle = .inline; button.font = .systemFont(ofSize: 10, weight: .bold); button.widthAnchor.constraint(equalToConstant: 22).isActive = true; button.heightAnchor.constraint(equalToConstant: 22).isActive = true; return button
     }

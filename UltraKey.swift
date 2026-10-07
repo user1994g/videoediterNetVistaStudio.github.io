@@ -27,6 +27,11 @@ struct UltraKeySettings: Codable, Equatable {
     var keyGreen = 1.0
     var keyBlue = 0.0
 
+    // Optional downloaded person segmentation. Off by default; ordinary
+    // green/blue-screen projects do not require a model or network access.
+    var aiAssistEnabled = false
+    var aiAssistStrength = 0.8
+
     // Matte Generation
     var transparency = 0.45
     var highlight = 0.10
@@ -52,7 +57,7 @@ struct UltraKeySettings: Codable, Equatable {
     var luminance = 1.0
 
     private enum CodingKeys: String, CodingKey {
-        case enabled, output, keyRed, keyGreen, keyBlue
+        case enabled, output, keyRed, keyGreen, keyBlue, aiAssistEnabled, aiAssistStrength
         case transparency, highlight, shadow, tolerance, pedestal
         case choke, soften, matteContrast, midpoint
         case desaturate, spillRange, spill, luma
@@ -68,6 +73,8 @@ struct UltraKeySettings: Codable, Equatable {
         keyRed = try c.decodeIfPresent(Double.self, forKey: .keyRed) ?? 0
         keyGreen = try c.decodeIfPresent(Double.self, forKey: .keyGreen) ?? 1
         keyBlue = try c.decodeIfPresent(Double.self, forKey: .keyBlue) ?? 0
+        aiAssistEnabled = try c.decodeIfPresent(Bool.self, forKey: .aiAssistEnabled) ?? false
+        aiAssistStrength = try c.decodeIfPresent(Double.self, forKey: .aiAssistStrength) ?? 0.8
         transparency = try c.decodeIfPresent(Double.self, forKey: .transparency) ?? 0.45
         highlight = try c.decodeIfPresent(Double.self, forKey: .highlight) ?? 0.10
         shadow = try c.decodeIfPresent(Double.self, forKey: .shadow) ?? 0.50
@@ -88,22 +95,100 @@ struct UltraKeySettings: Codable, Equatable {
 }
 
 /// Core Image implementation of NetVista's Ultra Key workflow. A cached 3D
-/// color cube creates a luminance-independent chroma matte and despills the key
-/// channel. This keeps paused-frame interaction responsive and is supported by
-/// the same GPU-backed Core Image path used by timeline export.
+/// color cube creates a luminance-independent chroma matte; a separate cube
+/// despills the foreground. Keeping the matte separate avoids interpolating
+/// unassociated RGB into transparent pixels (the source of green edge halos).
+/// Preview and export share this same GPU-backed path.
 enum UltraKeyRuntime {
     private static let cubeDimension = 32
     private static let cache = NSCache<NSString, NSData>()
     private static let cacheLock = NSLock()
 
-    static func apply(to source: CIImage, settings: UltraKeySettings) -> CIImage {
+    /// `foregroundMask` is an optional, aligned grayscale person silhouette:
+    /// white is person, black is background. A semantic silhouette is not a
+    /// hair-accurate alpha matte. It protects the eroded person interior (e.g.
+    /// green clothes), while the chroma key still resolves the fine edge.
+    /// Non-person footage should leave AI assist off. Missing masks fall back
+    /// to the ordinary keyer, so a model download never blocks rendering.
+    static func apply(to source: CIImage, settings: UltraKeySettings, foregroundMask: CIImage? = nil) -> CIImage {
         guard settings.enabled else { return source }
-        let data = cubeData(for: settings)
-        var image = source.applyingFilter("CIColorCube", parameters: [
+        guard source.extent.isFinite, !source.extent.isEmpty else { return source }
+        let extent = source.extent
+        let pixelScale = max(0.5, min(4, min(extent.width, extent.height) / 1080))
+        // The cubes are opaque by design. Core Image retains the input alpha,
+        // and the final blend multiplies it by the cleaned matte exactly once.
+        // This also preserves semitransparent imported images and overlays.
+        var foreground = source.applyingFilter("CIColorCube", parameters: [
             "inputCubeDimension": cubeDimension,
-            "inputCubeData": data
+            "inputCubeData": cubeData(for: settings, purpose: .foreground)
         ])
-        guard settings.output == .composite else { return image.cropped(to: source.extent) }
+        var matte = source.applyingFilter("CIColorCube", parameters: [
+            "inputCubeDimension": cubeDimension,
+            "inputCubeData": cubeData(for: settings, purpose: .matte)
+        ]).applyingFilter("CIColorMatrix", parameters: [
+            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+            "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 1)
+        ]).cropped(to: extent)
+
+        if settings.aiAssistEnabled, let person = foregroundMask,
+           person.extent.isFinite, !person.extent.isEmpty,
+           person.extent.intersection(extent).width >= extent.width * 0.99,
+           person.extent.intersection(extent).height >= extent.height * 0.99 {
+            let strength = clamp(settings.aiAssistStrength)
+            if strength > 0 {
+                let silhouette = person.cropped(to: extent).applyingFilter("CIColorClamp", parameters: [
+                    "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 1),
+                    "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 1)
+                ])
+                let interior = silhouette.clampedToExtent().applyingFilter("CIMorphologyMinimum", parameters: ["inputRadius": 2 * pixelScale]).cropped(to: extent)
+                let boundary = silhouette.clampedToExtent().applyingFilter("CIMorphologyMaximum", parameters: ["inputRadius": 4 * pixelScale])
+                    .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 1.2 * pixelScale]).cropped(to: extent)
+                let protected = matte.applyingFilter("CIMaximumCompositing", parameters: [kCIInputBackgroundImageKey: interior])
+                    .applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: boundary]).cropped(to: extent)
+                let mix = CIImage(color: CIColor(red: strength, green: strength, blue: strength)).cropped(to: extent)
+                matte = protected.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: matte, kCIInputMaskImageKey: mix]).cropped(to: extent)
+                // If AI protects green clothing in the person interior, do
+                // not also treat that clothing as unwanted reflected spill.
+                let protectedColor = interior.applyingFilter("CIColorMatrix", parameters: [
+                    "inputRVector": CIVector(x: strength, y: 0, z: 0, w: 0),
+                    "inputGVector": CIVector(x: 0, y: strength, z: 0, w: 0),
+                    "inputBVector": CIVector(x: 0, y: 0, z: strength, w: 0)
+                ])
+                foreground = source.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: foreground, kCIInputMaskImageKey: protectedColor]).cropped(to: extent)
+            }
+        }
+
+        // Choke is a real spatial edge contraction, not a color-distance
+        // threshold. Both radii are bounded and scale modestly with footage.
+        let chokeRadius = clamp(settings.choke) * 6 * pixelScale
+        if chokeRadius > 0.001 {
+            matte = matte.clampedToExtent().applyingFilter("CIMorphologyMinimum", parameters: ["inputRadius": chokeRadius]).cropped(to: extent)
+        }
+        let softenRadius = clamp(settings.soften) * 4 * pixelScale
+        if softenRadius > 0.001 {
+            matte = matte.clampedToExtent().applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: softenRadius]).cropped(to: extent)
+        }
+        let clear = CIImage(color: .clear).cropped(to: extent)
+        var image = foreground.applyingFilter("CIBlendWithMask", parameters: [
+            kCIInputBackgroundImageKey: clear, kCIInputMaskImageKey: matte
+        ]).cropped(to: extent)
+
+        if settings.output != .composite {
+            let alpha = image.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+                "inputGVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+                "inputBVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+                "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 1)
+            ])
+            guard settings.output == .color else { return alpha.cropped(to: extent) }
+            return alpha.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: -clamp(settings.keyRed), y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: -clamp(settings.keyGreen), y: 0, z: 0, w: 0),
+                "inputBVector": CIVector(x: -clamp(settings.keyBlue), y: 0, z: 0, w: 0),
+                "inputBiasVector": CIVector(x: clamp(settings.keyRed), y: clamp(settings.keyGreen), z: clamp(settings.keyBlue), w: 0)
+            ]).cropped(to: extent)
+        }
 
         if abs(settings.saturation - 1) > 0.0001 {
             image = image.applyingFilter("CIColorControls", parameters: [
@@ -130,12 +215,20 @@ enum UltraKeyRuntime {
     /// Deterministic scalar form used by tests and by the color-cube builder.
     /// Keeping this public to the module makes the matte testable even on Macs
     /// where a headless Core Image context cannot allocate a render device.
-    static func diagnosticSample(red: Double, green: Double, blue: Double, settings: UltraKeySettings) -> (red: Double, green: Double, blue: Double, alpha: Double) {
-        Evaluator(settings: settings).sample(red: red, green: green, blue: blue)
+    static func diagnosticSample(red: Double, green: Double, blue: Double, inputAlpha: Double = 1, settings: UltraKeySettings) -> (red: Double, green: Double, blue: Double, alpha: Double) {
+        let sample = Evaluator(settings: settings).sample(red: red, green: green, blue: blue)
+        let alpha = sample.alpha * clamp(inputAlpha)
+        switch settings.output {
+        case .composite: return (sample.red, sample.green, sample.blue, alpha)
+        case .alpha: return (alpha, alpha, alpha, 1)
+        case .color: return (clamp(settings.keyRed) * (1 - alpha), clamp(settings.keyGreen) * (1 - alpha), clamp(settings.keyBlue) * (1 - alpha), 1)
+        }
     }
 
-    private static func cubeData(for settings: UltraKeySettings) -> Data {
-        let key = cacheKey(settings) as NSString
+    private enum CubePurpose: String { case matte, foreground }
+
+    private static func cubeData(for settings: UltraKeySettings, purpose: CubePurpose) -> Data {
+        let key = (purpose.rawValue + "|" + cacheKey(settings)) as NSString
         cacheLock.lock()
         if let cached = cache.object(forKey: key) {
             cacheLock.unlock()
@@ -155,7 +248,10 @@ enum UltraKeyRuntime {
                 for redIndex in 0..<dimension {
                     let red = Double(redIndex) / Double(dimension - 1)
                     let sample = evaluator.sample(red: red, green: green, blue: blue)
-                    values += [Float(sample.red), Float(sample.green), Float(sample.blue), Float(sample.alpha)]
+                    switch purpose {
+                    case .matte: values += [Float(sample.alpha), Float(sample.alpha), Float(sample.alpha), 1]
+                    case .foreground: values += [Float(sample.red), Float(sample.green), Float(sample.blue), 1]
+                    }
                 }
             }
         }
@@ -169,8 +265,10 @@ enum UltraKeyRuntime {
     }
 
     private static func cacheKey(_ s: UltraKeySettings) -> String {
-        let values: [Double] = [s.keyRed, s.keyGreen, s.keyBlue, s.transparency, s.highlight, s.shadow, s.tolerance, s.pedestal, s.choke, s.soften, s.matteContrast, s.midpoint, s.desaturate, s.spillRange, s.spill, s.luma]
-        return ([s.output.rawValue] + values.map { String(format: "%.4f", $0) }).joined(separator: "|")
+        // Spatial cleanup, AI blending, diagnostic mode and correction run
+        // after the cube; changing those does not rebuild 32³ lookup tables.
+        let values: [Double] = [s.keyRed, s.keyGreen, s.keyBlue, s.transparency, s.highlight, s.shadow, s.tolerance, s.pedestal, s.soften, s.matteContrast, s.midpoint, s.desaturate, s.spillRange, s.spill, s.luma]
+        return values.map { String(format: "%.4f", clamp($0)) }.joined(separator: "|")
     }
 
     private struct Evaluator {
@@ -189,26 +287,32 @@ enum UltraKeyRuntime {
             let keyTotal = max(0.0001, keyRGB.reduce(0, +))
             keyChroma = keyRGB.map { $0 / keyTotal }
             dominantKeyChannel = keyRGB.enumerated().max(by: { $0.element < $1.element })?.offset ?? 1
-            threshold = 0.025 + clamp(settings.tolerance) * 0.42 + clamp(settings.transparency) * 0.10 + clamp(settings.pedestal) * 0.10 + clamp(settings.choke) * 0.08
-            feather = 0.008 + clamp(settings.soften) * 0.30
+            threshold = 0.025 + clamp(settings.tolerance) * 0.42 + clamp(settings.transparency) * 0.10 + clamp(settings.pedestal) * 0.10
+            // A small intrinsic transition prevents a binary, aliased matte.
+            // Soften adds a bounded chroma transition as well as spatial blur.
+            feather = 0.018 + clamp(settings.soften) * 0.14
             matteScale = 1 + clamp(settings.matteContrast) * 4
             midpoint = clamp(settings.midpoint)
         }
 
         func sample(red: Double, green: Double, blue: Double) -> (red: Double, green: Double, blue: Double, alpha: Double) {
-            var rgb = [red, green, blue]
-            let total = max(0.0001, red + green + blue)
+            var rgb = [clamp(red), clamp(green), clamp(blue)]
+            let total = max(0.0001, rgb.reduce(0, +))
             let chroma = rgb.map { $0 / total }
             let distance = sqrt(zip(chroma, keyChroma).reduce(0) { $0 + pow($1.0 - $1.1, 2) })
             var alpha = smoothstep(threshold, threshold + feather, distance)
-            let luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722
+            let luminance = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722
             let edge = alpha * (1 - alpha)
             alpha += edge * (max(0, luminance - 0.5) * clamp(settings.highlight) + max(0, 0.5 - luminance) * clamp(settings.shadow))
             alpha = clamp((alpha - midpoint) * matteScale + midpoint)
 
             let otherMaximum = rgb.enumerated().filter { $0.offset != dominantKeyChannel }.map(\.element).max() ?? 0
             let dominance = max(0, rgb[dominantKeyChannel] - otherMaximum)
-            let spillWeight = clamp((1 - alpha) * clamp(settings.spill) * (0.35 + clamp(settings.spillRange)))
+            // Unlike the previous (1-alpha)-only suppression, this also
+            // reaches fully opaque green-tinted hair/edges near the key hue.
+            // Warm skin and neutral pixels have no key-channel dominance.
+            let affinity = 1 - smoothstep(threshold + feather, threshold + feather + 0.12 + clamp(settings.spillRange) * 0.48, distance)
+            let spillWeight = clamp(max(1 - alpha, affinity * 0.85) * clamp(settings.spill) * (0.7 + clamp(settings.spillRange)))
             let originalLuma = luminance
             rgb[dominantKeyChannel] = max(0, rgb[dominantKeyChannel] - dominance * spillWeight)
             let correctedLuma = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722
@@ -216,13 +320,7 @@ enum UltraKeyRuntime {
             let desaturation = clamp(settings.desaturate) * spillWeight
             rgb = rgb.map { clamp(($0 + (restoredLuma - correctedLuma)) * (1 - desaturation) + restoredLuma * desaturation) }
 
-            switch settings.output {
-            case .composite: return (rgb[0], rgb[1], rgb[2], alpha)
-            case .alpha: return (alpha, alpha, alpha, 1)
-            case .color:
-                let removed = 1 - alpha
-                return (keyRGB[0] * removed, keyRGB[1] * removed, keyRGB[2] * removed, 1)
-            }
+            return (rgb[0], rgb[1], rgb[2], alpha)
         }
     }
 
@@ -232,6 +330,10 @@ enum UltraKeyRuntime {
     }
 
     private static func clamp(_ value: Double, _ minimum: Double = 0, _ maximum: Double = 1) -> Double {
-        min(maximum, max(minimum, value))
+        value.isFinite ? min(maximum, max(minimum, value)) : minimum
     }
+}
+
+private extension CGRect {
+    var isFinite: Bool { origin.x.isFinite && origin.y.isFinite && width.isFinite && height.isFinite }
 }

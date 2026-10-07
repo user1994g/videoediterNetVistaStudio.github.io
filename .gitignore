@@ -6,3 +6,11 @@ __pycache__/
 cross_platform/.build-env/
 cross_platform/build/
 cross_platform/dist/
+dist/
+.release-private/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+mobile/ipad/build/
+mobile/ipad/dist/

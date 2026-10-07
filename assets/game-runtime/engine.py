@@ -12,9 +12,10 @@ class GameRuntime:
         self.destroyed, self.contacts = set(), set()
 
     def overlaps(self, a, b):
-        radius = (a['size'] + b['size']) / 2
-        return (abs(a['x']-b['x']) < radius and abs(a['y']-b['y']) < radius
-                and (self.dimension == '2D' or abs(a['z']-b['z']) < radius))
+        def radius(axis):
+            return (a['size'] * a.get(axis, 1) + b['size'] * b.get(axis, 1)) / 2
+        return (abs(a['x']-b['x']) < radius('scaleX') and abs(a['y']-b['y']) < radius('scaleY')
+                and (self.dimension == '2D' or abs(a['z']-b['z']) < radius('scaleZ')))
 
     def move(self, obj, dx, dy, dz):
         for axis, delta in [('x', dx), ('y', dy), ('z', dz)]:

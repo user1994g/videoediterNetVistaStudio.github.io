@@ -4,6 +4,22 @@ NetVista Studio 1.3 introduces portable, data-only `.netvistamod` packages. One 
 
 Mods v1 may provide themes, declarative pages, 3D prop/map descriptions, and effect presets. They cannot contain or execute JavaScript, Python, Swift, shell scripts, executables, native libraries, web pages, shader source, or another archive. This keeps installing a visual mod from silently becoming permission to run a stranger's program.
 
+## Make a mod without writing code (macOS)
+
+Open **Mods → Create Mod…**. The native Mod Creator includes three templates:
+
+- **Theme**: start from Studio, Midnight, Ocean, or Forest; choose colours with colour wells or hex values; adjust corner radius. The preview is local and does not change your app theme.
+- **Tool Page**: write a title and text, then optionally add an Import Media, Open 3D Scene, or Open Mods Folder shortcut. Pages use native controls, not a website.
+- **Preset Catalog**: describe a look with exposure, contrast, and saturation values. This is honestly a catalog reference: Mods v1 does not automatically apply these presets to clips.
+
+Name your package and creator, check its stable Mod ID, and keep a version such as `1.0.0`. **Export .netvistamod…** saves to Downloads by default. NetVista builds the root manifest, calculates SHA-256 for every payload, and round-trip validates the ZIP with the installation checker. There are no manual hash or ZIP steps.
+
+**Test Install** runs the normal installer. New mods start disabled; return to Mods and enable the package yourself. Themes also have an **Apply** button. To change a package already installed with the same ID and version, increase its version (for example `1.0.1`); NetVista will not silently replace different contents under an existing version.
+
+The suggested `local.creator.…` ID is convenient for private experiments. When distributing mods, choose a unique namespace you control. Generated packages target the current app version and remain portable to compatible NetVista versions on macOS, Windows, and Linux. Packages are creator content, not signed proof of a trusted publisher.
+
+For more complex packages, the JSON format below remains available. The creator deliberately does not accept arbitrary code, URL actions, imported shaders, or executable plug-ins. The creator window is currently part of the macOS app; exported packages use the same cross-platform Mods v1 format.
+
 ## Install a mod
 
 Open the **Mods** page and drop a `.netvistamod` file onto it, or use **Install Mod…**. A newly installed mod is disabled until the user explicitly enables it. The page also has **Open Mods Folder** for packages copied by hand.
