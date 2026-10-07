@@ -29,14 +29,16 @@ public final class ProjectCodec {
     public static StudioProject decode(String text) throws JSONException {
         if (text.length() > MAX_BYTES) throw new JSONException("Project file is too large.");
         JSONObject value = new JSONObject(text);
-        if (!"netvista-mobile".equals(value.getString("format")) || value.getInt("version") != 1
+        if (!"netvista-mobile".equals(value.getString("format")) || integer(value, "version") != 1
                 || !"android".equals(value.getString("platform"))) {
             throw new JSONException("This is not a supported Android mobile project. Desktop and iPad projects are different formats.");
         }
         StudioProject result = new StudioProject();
         result.title = value.getString("title");
         if (result.title.length() > 200) throw new JSONException("Project title is too long.");
-        result.width = value.getInt("width"); result.height = value.getInt("height");
+        long width = integer(value, "width"), height = integer(value, "height");
+        if (width < 0 || width > Integer.MAX_VALUE || height < 0 || height > Integer.MAX_VALUE) throw new JSONException("Invalid canvas size.");
+        result.width = (int) width; result.height = (int) height;
         if (!((result.width == 1920 && result.height == 1080)
                 || (result.width == 1280 && result.height == 720)
                 || (result.width == 1080 && result.height == 1920))) {
@@ -49,11 +51,17 @@ public final class ProjectCodec {
             JSONObject clip = clips.getJSONObject(i);
             try {
                 StudioProject.Clip item = new StudioProject.Clip(clip.getString("id"), clip.getString("uri"),
-                        clip.getString("name"), clip.getLong("durationMs"), clip.getLong("inMs"), clip.getLong("outMs"));
+                        clip.getString("name"), integer(clip, "durationMs"), integer(clip, "inMs"), integer(clip, "outMs"));
                 if (!ids.add(item.id)) throw new IllegalArgumentException("Duplicate clip ID.");
                 result.clips.add(item);
             } catch (IllegalArgumentException e) { throw new JSONException(e.getMessage()); }
         }
         return result;
+    }
+
+    private static long integer(JSONObject object, String key) throws JSONException {
+        Object value = object.get(key);
+        if (!(value instanceof Integer) && !(value instanceof Long)) throw new JSONException(key + " must be an integer.");
+        return ((Number) value).longValue();
     }
 }

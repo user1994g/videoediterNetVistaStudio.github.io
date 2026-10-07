@@ -23,7 +23,6 @@ import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
-import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -345,9 +344,11 @@ public final class MainActivity extends Activity {
     private void loadProject(Uri source) {
         setBusy(true, "Loading self-contained project…");
         io.execute(() -> {
+            StudioProject imported = null;
             try (InputStream input = getContentResolver().openInputStream(source)) {
                 if (input == null) throw new IOException("Project cannot be read.");
                 StudioProject loaded = files.loadArchive(input);
+                imported = loaded;
                 // Validate the real video and duration instead of trusting archive metadata.
                 for (int i = 0; i < loaded.clips.size(); i++) {
                     StudioProject.Clip clip = loaded.clips.get(i); long actual = videoDuration(files.mediaFile(clip));
@@ -355,7 +356,14 @@ public final class MainActivity extends Activity {
                 }
                 files.saveDraft(loaded);
                 main.post(() -> { project = loaded; selected = loaded.clips.isEmpty() ? -1 : 0; setBusy(false, "Project loaded with its own video copies."); refreshTimeline(true); });
-            } catch (Exception e) { main.post(() -> setBusy(false, "Open failed: " + e.getMessage() + " Your current edit is unchanged.")); }
+            } catch (Exception e) {
+                // These are new private copies created by this failed import, not
+                // originals, current-project media, or files from the provider.
+                if (imported != null) for (StudioProject.Clip clip : imported.clips) {
+                    try { files.mediaFile(clip).delete(); } catch (IOException ignored) { /* invalid IDs never resolve paths */ }
+                }
+                main.post(() -> setBusy(false, "Open failed: " + e.getMessage() + " Your current edit is unchanged."));
+            }
         });
     }
     private long videoDuration(File file) throws Exception {

@@ -2,7 +2,6 @@ package com.netvistastudio.editor.android;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
 
 /** Mobile-only cut list. Media identifiers resolve only inside app-private storage. */
 public final class StudioProject {

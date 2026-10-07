@@ -15,7 +15,7 @@ swiftc -swift-version 5 "$SOURCE_DIR/Sources/MobileProject.swift" "$SOURCE_DIR/S
 "$CHECK_DIR/sequence-checks" "$CHECK_DIR"
 # Check encoded audio energy, not merely presence of an empty audio track.
 ffmpeg -hide_banner -i "$CHECK_DIR/out.mp4" -ss 1.3 -t 1.0 -vn -af volumedetect -f null - 2>&1 | tee "$CHECK_DIR/audio-check.txt"
-if rg -q 'mean_volume: -inf' "$CHECK_DIR/audio-check.txt"; then
+if grep -q 'mean_volume: -inf' "$CHECK_DIR/audio-check.txt"; then
   printf 'Exported second-clip audio is silent\n' >&2; exit 1
 fi
 printf 'Verification fixtures retained at %s\n' "$CHECK_DIR"

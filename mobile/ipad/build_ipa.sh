@@ -44,9 +44,9 @@ if [[ "$PLATFORM" == iphonesimulator ]]; then
   printf 'Simulator app (not an installable IPA): %s\n' "$OUTPUT_DIR/NetVistaStudio-Simulator.app"
   exit 0
 fi
-xcrun vtool -show-build "$APP_DIR/NetVistaStudio" | rg -q 'platform IOS$'
+grep -Eq 'platform IOS$' "$OUTPUT_DIR/ipad-build-platform.txt"
 IPA="$OUTPUT_DIR/NetVista-Studio-iPadOS-1.4-Beta-7.ipa"
-ditto -c -k --keepParent "$STAGE_DIR/Payload" "$IPA"
+ditto -c -k --norsrc --keepParent "$STAGE_DIR/Payload" "$IPA"
 unzip -t "$IPA" >/dev/null
 shasum -a 256 "$IPA"
 printf 'Built native iPadOS IPA for AltStore re-signing: %s\n' "$IPA"
