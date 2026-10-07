@@ -16,6 +16,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="netvista-ui-check-") as storage:
         os.environ["XDG_DATA_HOME"] = storage
         app = QApplication([])
+        app.setStyle("Fusion")
         window = MainWindow()
         for name, duration in [("Coast.mov", 12), ("Flower.mov", 8)]:
             source = window.project.add_asset(Path(storage) / name, "video", duration, True)

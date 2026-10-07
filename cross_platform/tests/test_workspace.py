@@ -26,6 +26,7 @@ class NativeWorkspaceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+        cls.app.setStyle("Fusion")
 
     def setUp(self):
         self.mod_folder = tempfile.TemporaryDirectory(prefix="netvista-widget-test-")

@@ -34,8 +34,10 @@ import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import androidx.annotation.OptIn;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.common.util.ExperimentalApi;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.ui.AspectRatioFrameLayout;
 import androidx.media3.ui.PlayerView;
@@ -62,6 +64,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /** A native local editor, not a website wrapper or a remote desktop companion. */
 @UnstableApi
+@OptIn(markerClass = ExperimentalApi.class)
 public final class MainActivity extends Activity {
     private static final int IMPORT_VIDEO = 100, OPEN_PROJECT = 101, SAVE_PROJECT = 102, SAVE_MOVIE = 103;
     private static final int BACKGROUND = Color.rgb(23, 25, 30), PANEL = Color.rgb(32, 35, 42);
@@ -411,8 +414,8 @@ public final class MainActivity extends Activity {
             inspector.addView(button("Reset motion", () -> resetSettings(false), false));
         } else {
             inspector.addView(label("PRIMARY COLOUR", 10, MUTED, true));
-            effectControl(clip, "Brightness %", 5, -100, 100, 100); effectControl(clip, "Contrast %", 6, -100, 100, 100); effectControl(clip, "Saturation %", 7, 0, 200, 100);
-            inspector.addView(label("Adjustments are saved per timeline instance and use the same Media3 composition for monitor and export.", 11, MUTED, false));
+            effectControl(clip, "Brightness %", 5, -100, 100, 100); effectControl(clip, "Contrast %", 6, 0, 400, 100); effectControl(clip, "Saturation %", 7, 0, 200, 100);
+            inspector.addView(label("Adjustments belong to the selected clip and match the monitor and exported movie. Contrast 100% is neutral.", 11, MUTED, false));
             inspector.addView(button("Reset colour", () -> resetSettings(true), false));
         }
         setEnabledChildren(inspector, !operationBusy && draftReady);
@@ -428,15 +431,15 @@ public final class MainActivity extends Activity {
         if (fontScale > 1.3f) inspector.addView(title);
         else row.addView(title, new LinearLayout.LayoutParams(dp(78), dp(44)));
         EditText value = field(name, InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED);
-        value.setText(number(setting(clip.settings, parameter) * multiplier)); value.setSelectAllOnFocus(true); value.setImeOptions(EditorInfo.IME_ACTION_DONE); value.setContentDescription(name);
+        value.setText(number(displayedSetting(clip.settings, parameter, multiplier))); value.setSelectAllOnFocus(true); value.setImeOptions(EditorInfo.IME_ACTION_DONE); value.setContentDescription(name);
         SeekBar slider = new SeekBar(this); slider.setMax(1000); slider.setMinimumHeight(dp(44)); slider.setContentDescription(name + " slider");
-        slider.setProgress(Math.round((setting(clip.settings, parameter) * multiplier - min) / (max - min) * 1000));
+        slider.setProgress(Math.round((displayedSetting(clip.settings, parameter, multiplier) - min) / (max - min) * 1000));
         row.addView(slider, new LinearLayout.LayoutParams(0, dp(44), 1)); row.addView(value, new LinearLayout.LayoutParams(dp(Math.round(58 * fontScale)), dp(44))); inspector.addView(row);
         slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onStartTrackingTouch(SeekBar bar) { if (!operationBusy) { if (player != null) player.pause(); recordEdit(); } }
             @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
                 if (!fromUser || operationBusy || !project.clips.contains(clip)) return;
-                float amount = min + (max - min) * progress / 1000f; value.setText(number(amount)); setSetting(clip, parameter, amount / multiplier); scheduleEffectsPreview();
+                float amount = min + (max - min) * progress / 1000f; value.setText(number(amount)); setSetting(clip, parameter, nativeSetting(parameter, amount, multiplier)); scheduleEffectsPreview();
             }
             @Override public void onStopTrackingTouch(SeekBar bar) { autosave(); preview(false); updateEnabled(); }
         });
@@ -446,11 +449,13 @@ public final class MainActivity extends Activity {
                 float amount = Float.parseFloat(value.getText().toString()); if (!Float.isFinite(amount) || amount < min || amount > max) throw new IllegalArgumentException();
                 // Controls display one decimal. A blur without an edit must not
                 // round a slider value or create an extra Undo snapshot.
-                if (!value.getText().toString().equals(number(setting(clip.settings, parameter) * multiplier))) {
-                    if (player != null) player.pause(); recordEdit(); setSetting(clip, parameter, amount / multiplier);
+                // A legacy saved contrast can exceed the visible factor range.
+                // Blurring its clamped display must preserve the exact saved value.
+                if (!value.getText().toString().equals(number(displayedSetting(clip.settings, parameter, multiplier)))) {
+                    if (player != null) player.pause(); recordEdit(); setSetting(clip, parameter, nativeSetting(parameter, amount, multiplier));
                     slider.setProgress(Math.round((amount - min) / (max - min) * 1000)); autosave(); preview(false); updateEnabled();
                 }
-            } catch (Exception e) { message(name + " must be between " + number(min) + " and " + number(max) + "."); value.setText(number(setting(clip.settings, parameter) * multiplier)); }
+            } catch (Exception e) { message(name + " must be between " + number(min) + " and " + number(max) + "."); value.setText(number(displayedSetting(clip.settings, parameter, multiplier))); }
         };
         value.setOnFocusChangeListener((field, focused) -> { if (!focused) commit.run(); });
         value.setOnEditorActionListener((field, action, event) -> {
@@ -460,6 +465,12 @@ public final class MainActivity extends Activity {
     }
     private static float setting(StudioProject.ClipSettings settings, int parameter) {
         switch (parameter) { case 0: return settings.scale; case 1: return settings.rotationDegrees; case 2: return settings.positionX; case 3: return settings.positionY; case 4: return settings.opacity; case 5: return settings.brightness; case 6: return settings.contrast; default: return settings.saturation; }
+    }
+    private static float displayedSetting(StudioProject.ClipSettings settings, int parameter, float multiplier) {
+        return parameter == 6 ? GradeControlValues.contrastPercent(settings.contrast) : setting(settings, parameter) * multiplier;
+    }
+    private static float nativeSetting(int parameter, float displayedValue, float multiplier) {
+        return parameter == 6 ? GradeControlValues.nativeContrast(displayedValue) : displayedValue / multiplier;
     }
     private void setSetting(StudioProject.Clip clip, int parameter, float value) {
         StudioProject.ClipSettings s = clip.settings;

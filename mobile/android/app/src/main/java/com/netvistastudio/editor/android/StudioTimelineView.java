@@ -23,6 +23,7 @@ public final class StudioTimelineView extends View {
     private static final int BACKGROUND = Color.rgb(24, 27, 33), SEPARATOR = Color.rgb(54, 59, 70);
     private static final int VIDEO = Color.rgb(53, 111, 159), AUDIO = Color.rgb(24, 139, 116), RED = Color.rgb(240, 91, 94);
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Path playheadMarker = new Path();
     private final GestureDetector gestures;
     private final ScaleGestureDetector scales;
     private StudioProject project = new StudioProject();
@@ -133,7 +134,7 @@ public final class StudioTimelineView extends View {
         }
         float cursor = (float) (header + playhead * pixelsPerSecond / 1000.0 - scroll);
         paint.setColor(RED); paint.setStrokeWidth(dp(2)); canvas.drawLine(cursor, 0, cursor, ruler + lane * 2, paint);
-        Path marker = new Path(); marker.moveTo(cursor - dp(6), 0); marker.lineTo(cursor + dp(6), 0); marker.lineTo(cursor, dp(10)); marker.close(); canvas.drawPath(marker, paint);
+        playheadMarker.reset(); playheadMarker.moveTo(cursor - dp(6), 0); playheadMarker.lineTo(cursor + dp(6), 0); playheadMarker.lineTo(cursor, dp(10)); playheadMarker.close(); canvas.drawPath(playheadMarker, paint);
         if (dragged >= 0 && dropIndex >= 0) {
             long dropTime = startOf(dropIndex);
             float dropX = (float) (header + dropTime * pixelsPerSecond / 1000.0 - scroll);

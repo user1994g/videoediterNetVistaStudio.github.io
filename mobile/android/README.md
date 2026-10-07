@@ -30,6 +30,9 @@ the Mac LAN companion, or the full desktop editor. Package identifier:
   (+Y up) and opacity. Primary Colour: brightness, contrast and saturation. Sliders
   and numeric entry update actual monitor/export effects; values survive portable
   save/load, split, duplicate and undo/redo. Numeric values commit on Done or blur.
+  Contrast is a true 0–400% factor control with 100% neutral, matching the other
+  editions. Older Android projects keep their existing rendered appearance;
+  out-of-display-range legacy values are retained until contrast is edited.
 - Private atomic draft autosave. Save/Open `.netvistamobile` files through Files.
   These are ZIP archives containing `project.json` and each original source once,
   including unused Media Pool sources. Schema 2 preserves per-instance effects;

@@ -312,13 +312,25 @@ class MainWindow(QMainWindow):
         self.title_edit.setMinimumWidth(100)
         self.title_edit.editingFinished.connect(self.title_changed)
         row.addWidget(self.title_edit)
-        for title, callback in [("Undo", self.undo), ("Redo", self.redo), ("Open", self.open_project), ("Update", self.check_for_updates),
-                                ("Save your work", self.save_project)]:
+        for title, callback in [("↶", self.undo), ("↷", self.redo)]:
+            action = QToolButton()
+            action.setText(title)
+            action.setToolTip("Undo" if title == "↶" else "Redo")
+            action.setFixedWidth(32)
+            action.clicked.connect(callback)
+            row.addWidget(action)
+        for title, callback in [("Open", self.open_project), ("Save your work", self.save_project)]:
             button = QPushButton(title)
             button.clicked.connect(callback)
             row.addWidget(button)
-            if title == "Update":
-                self.update_button = button
+        options = QMenu(self)
+        self.update_button = options.addAction("Check for update…", self.check_for_updates)
+        more = QToolButton()
+        more.setText("•••")
+        more.setToolTip("Studio actions")
+        more.setMenu(options)
+        more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        row.addWidget(more)
         return frame
 
     def _media_panel(self) -> QWidget:

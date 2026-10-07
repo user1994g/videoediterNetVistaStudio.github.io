@@ -26,7 +26,9 @@ import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import androidx.annotation.OptIn;
 import androidx.media3.common.Player;
+import androidx.media3.common.util.ExperimentalApi;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.transformer.CompositionPlayer;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -55,6 +57,7 @@ import static org.junit.Assume.assumeTrue;
  * are added to production. Existing draft bytes are restored after all Activity IO finishes.
  */
 @UnstableApi
+@OptIn(markerClass = ExperimentalApi.class)
 @RunWith(AndroidJUnit4.class)
 public final class NativeWorkspaceUiTest {
     @Test(timeout = 180000)
@@ -101,6 +104,21 @@ public final class NativeWorkspaceUiTest {
             ui.assertGraphicalTimeline();
             ui.capture("editor-initial");
 
+            // A pre-existing maximum native contrast is outside the visible 400% factor cap.
+            // Inspecting it and editing a different grade must never silently normalize it.
+            ui.tapTimeline(3000, false);
+            ui.openWorkspace("Colour", "Colour");
+            ui.assertGradeDisplay("Contrast %", 400f);
+            ui.edit("Brightness %", "10.0", true);
+            ui.clickWithin(ui.panel("inspectorPanel"), "Motion");
+            ui.closeCompactDialog();
+            assertEquals("Clamped legacy contrast remains exactly native 1 after edit/blur/workspace change", 1f,
+                    ui.project().clips.get(1).settings.contrast, 0f);
+            assertEquals(0.1f, ui.project().clips.get(1).settings.brightness, 0.000001f);
+            ui.drainActivityIo();
+            assertEquals("Actual autosave preserves legacy native contrast, not its clamped display", 1f,
+                    files.loadDraft().clips.get(1).settings.contrast, 0f);
+
             // Scrub the real Canvas timeline, then exercise the native edit toolbar.
             long originalDuration = ui.project().durationMs();
             ui.tapTimeline(900, true);
@@ -140,8 +158,9 @@ public final class NativeWorkspaceUiTest {
             ui.scrollInspectorToTop(); ui.capture("motion-effects");
             // Native in-panel tab navigation must not create a stack of empty modal dialogs.
             ui.clickWithin(ui.panel("inspectorPanel"), "Colour");
+            ui.assertGradeDisplay("Contrast %", 100f);
             ui.edit("Brightness %", "25.0", true);
-            ui.edit("Contrast %", "-20.0", true);
+            ui.edit("Contrast %", "80.0", true);
             ui.edit("Saturation %", "60.0", true);
             ui.scrollInspectorToTop(); ui.capture("colour");
             ui.closeCompactDialog();
@@ -153,7 +172,8 @@ public final class NativeWorkspaceUiTest {
             assertEquals(1.25f, settings.scale, 0.0001f); assertEquals(15f, settings.rotationDegrees, 0.0001f);
             assertEquals(0.2f, settings.positionX, 0.0001f); assertEquals(0.15f, settings.positionY, 0.0001f);
             assertEquals(0.8f, settings.opacity, 0.0001f); assertEquals(0.25f, settings.brightness, 0.0001f);
-            assertEquals(-0.2f, settings.contrast, 0.0001f); assertEquals(0.6f, settings.saturation, 0.0001f);
+            assertEquals("80 percent is the actual contrast factor, not a normalized adjustment", -0.1110667f,
+                    settings.contrast, 0.000001f); assertEquals(0.6f, settings.saturation, 0.0001f);
             assertEquals("Other source instance keeps default inspector values", 1f, saved.clips.get(1).settings.scale, 0f);
             assertEquals(2, saved.assets.size());
 
@@ -207,7 +227,8 @@ public final class NativeWorkspaceUiTest {
             String uri = "media/" + sourceId + ".video";
             project.assets.add(new StudioProject.Clip(sourceId, uri, clipNames[index], duration, 0, duration));
             project.clips.add(new StudioProject.Clip(UUID.randomUUID().toString(), uri, clipNames[index], duration,
-                    index == 0 ? 0 : 300, index == 0 ? 2400 : 2500));
+                    index == 0 ? 0 : 300, index == 0 ? 2400 : 2500,
+                    index == 0 ? new StudioProject.ClipSettings() : new StudioProject.ClipSettings(1, 0, 0, 0, 1, 0, 1, 1)));
         }
         return project;
     }
@@ -399,6 +420,12 @@ public final class NativeWorkspaceUiTest {
             main(() -> { assertTrue(value.isEnabled()); value.requestFocus(); value.setText(text);
                 if (done) value.onEditorAction(EditorInfo.IME_ACTION_DONE); return null; });
             instrumentation.waitForIdleSync();
+        }
+        void assertGradeDisplay(String description, float expected) throws Exception {
+            EditText value = main(() -> (EditText) findDescription((View) field(activity, "inspectorPanel"), description));
+            assertNotNull("Native grade field exists: " + description, value);
+            assertEquals("Native displayed grade: " + description, expected,
+                    main(() -> Float.parseFloat(value.getText().toString())), 0f);
         }
         void scrollInspectorToTop() throws Exception {
             main(() -> {
