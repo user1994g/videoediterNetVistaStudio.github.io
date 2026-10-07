@@ -34,11 +34,18 @@ public final class ProjectFilesTest {
         files.mediaFile(clip).delete(); files.mediaFile(loaded.clips.get(0)).delete();
     }
     @Test public void archiveRejectsTraversalAndDoesNotCreateOutsideFile() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String outsideName = "unsafe-" + java.util.UUID.randomUUID() + ".mp4";
+        java.io.File outside = new java.io.File(context.getCacheDir(), outsideName);
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        try (ZipOutputStream zip = new ZipOutputStream(bytes)) { zip.putNextEntry(new ZipEntry("../unsafe.mp4")); zip.write(new byte[]{1, 2, 3}); zip.closeEntry(); }
-        ProjectFiles files = new ProjectFiles(InstrumentationRegistry.getInstrumentation().getTargetContext());
+        try (ZipOutputStream zip = new ZipOutputStream(bytes)) { zip.putNextEntry(new ZipEntry("../" + outsideName)); zip.write(new byte[]{1, 2, 3}); zip.closeEntry(); }
+        ProjectFiles files = new ProjectFiles(context);
         try { files.loadArchive(new ByteArrayInputStream(bytes.toByteArray())); fail("Accepted traversal"); }
-        catch (java.io.IOException expected) { assertTrue(expected.getMessage().contains("Unsafe")); }
+        catch (java.io.IOException expected) {
+            // Android 14+ can reject the ZIP path before our own validator runs.
+            // Assert the safety contract, not an OS-specific exception message.
+            assertFalse("Traversal must never write outside staging", outside.exists());
+        }
     }
     @Test public void malformedProjectTrimIsRejected() throws Exception {
         StudioProject value = new StudioProject(); value.clips.add(new StudioProject.Clip(ID, "media/" + ID + ".video", "test", 1000, 0, 1000));
