@@ -357,13 +357,18 @@ public final class NativeWorkspaceUiTest {
             for (String property : new String[]{"Opacity %", "Saturation %"}) {
                 ui.openWorkspace(property.startsWith("Opacity") ? "Effects" : "Colour", property.startsWith("Opacity") ? "Motion/Effects" : "Colour");
                 float expected = property.startsWith("Opacity") ? 80 : 100;
+                String capMessage = property.startsWith("Opacity") ? "Too many animation keyframes" : "10,000 animation keyframes";
                 ui.tapEffectSlider(property + " slider", .25f);
+                waitUntil("Actual slider gesture reports the specific keyframe cap", 3000,
+                        () -> current.main(() -> ((TextView) field(activity, "status")).getText().toString().contains(capMessage)));
                 ui.assertGradeDisplay(property, expected);
+                ui.assertSliderProgress(property + " slider", property.startsWith("Opacity") ? 800 : 500);
                 assertEquals("Rejected actual slider gesture leaves exact project bytes unchanged: " + property, before, ProjectCodec.encode(ui.project()));
                 assertEquals(undoSize, ui.main(() -> ((java.util.ArrayDeque<?>) field(activity, "undo")).size()).intValue());
                 assertEquals(redoSize, ui.main(() -> ((java.util.ArrayDeque<?>) field(activity, "redo")).size()).intValue());
                 ui.edit(property, property.startsWith("Opacity") ? "90.0" : "150.0", true);
                 ui.assertGradeDisplay(property, expected);
+                ui.assertSliderProgress(property + " slider", property.startsWith("Opacity") ? 800 : 500);
                 assertEquals("Rejected numeric commit leaves exact project bytes unchanged: " + property, before, ProjectCodec.encode(ui.project()));
                 assertEquals(undoSize, ui.main(() -> ((java.util.ArrayDeque<?>) field(activity, "undo")).size()).intValue());
                 assertEquals(redoSize, ui.main(() -> ((java.util.ArrayDeque<?>) field(activity, "redo")).size()).intValue());
@@ -935,6 +940,10 @@ public final class NativeWorkspaceUiTest {
             up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
             try { assertTrue(instrumentation.getUiAutomation().injectInputEvent(up, false)); } finally { up.recycle(); }
             instrumentation.waitForIdleSync();
+        }
+        void assertSliderProgress(String description, int expected) throws Exception {
+            android.widget.SeekBar slider = main(() -> (android.widget.SeekBar) findDescription((View) field(activity, "inspectorPanel"), description));
+            assertNotNull(slider); assertEquals("Rejected input restores the native thumb", expected, main(slider::getProgress).intValue());
         }
         void assertGradeDisplay(String description, float expected) throws Exception {
             EditText value = main(() -> (EditText) findDescription((View) field(activity, "inspectorPanel"), description));

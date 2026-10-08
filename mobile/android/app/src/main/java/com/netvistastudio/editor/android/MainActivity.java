@@ -574,8 +574,11 @@ public final class MainActivity extends Activity {
                     // model or history. A loaded curve may already be at its cap.
                     Runnable apply = prepareSetting(clip, parameter, nativeSetting(parameter, amount, multiplier));
                     if (apply != null) {
-                        if (!binding.gestureEdited) { recordEdit(); binding.gestureEdited = true; }
+                        if (!binding.tracking || !binding.gestureEdited) { recordEdit(); binding.gestureEdited = true; }
                         apply.run(); scheduleEffectsPreview(); updateAnimationRuler();
+                        // Hardware-keyboard slider changes have no touch-stop
+                        // callback, but still need a saved, independently undoable edit.
+                        if (!binding.tracking) { autosave(); updateEnabled(); }
                     }
                     binding.displayed = number(amount); value.setText(binding.displayed);
                 } catch (IllegalArgumentException error) {
