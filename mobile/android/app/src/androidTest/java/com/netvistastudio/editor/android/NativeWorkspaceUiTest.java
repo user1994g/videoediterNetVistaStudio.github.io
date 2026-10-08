@@ -15,6 +15,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.util.AtomicFile;
 import android.util.Log;
+import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -226,6 +227,7 @@ public final class NativeWorkspaceUiTest {
             ui.assertColourPreview();
             assertSame("Colour Undo/Redo preserves native player identity when timeline topology is unchanged",
                     effectEditingPlayer, ui.main(() -> (CompositionPlayer) field(activity, "player")));
+            ui.assertPreviewAfterSdkStop();
             ui.drainActivityIo();
             StudioProject saved = files.loadDraft();
             StudioProject.ClipSettings settings = saved.clips.get(0).settings;
@@ -504,6 +506,101 @@ public final class NativeWorkspaceUiTest {
             }
             return detail.toString();
         }
+        // Arm before native Play; observe on its main looper and pause through
+        // the real transport as soon as playback begins, not after UI idle.
+        final class PreviewPlaybackObserver implements Runnable, Player.Listener {
+            final Handler handler = new Handler(Looper.getMainLooper());
+            final long deadline = SystemClock.elapsedRealtime() + 15000;
+            final CompositionPlayer excluded;
+            final Button pauseButton;
+            CompositionPlayer recovered;
+            long firstReadyPosition = -1, firstPlayingPosition = -1;
+            boolean observedPlaying, pressedPause;
+            Throwable failure;
+            PreviewPlaybackObserver(CompositionPlayer excluded, Button pauseButton) {
+                this.excluded = excluded; this.pauseButton = pauseButton;
+            }
+            @Override public void run() {
+                try {
+                    if (pressedPause) return;
+                    if (SystemClock.elapsedRealtime() >= deadline) throw new AssertionError("Native Play did not produce a running engine");
+                    CompositionPlayer current = (CompositionPlayer) field(activity, "player");
+                    if (current != null && current != excluded && current != recovered) {
+                        if (recovered != null) recovered.removeListener(this);
+                        recovered = current; firstReadyPosition = -1; firstPlayingPosition = -1;
+                        current.addListener(this); observeReady();
+                        // A callback may already be queued when this observer
+                        // attaches; catch up after native notifications finish.
+                        if (current.isPlaying()) handler.post(this::observePlaying);
+                    }
+                    handler.postDelayed(this, 10);
+                } catch (Throwable error) { failure = error; }
+            }
+            @Override public void onPlaybackStateChanged(int state) { if (state == Player.STATE_READY) observeReady(); }
+            @Override public void onIsPlayingChanged(boolean playing) { if (playing) observePlaying(); }
+            void observeReady() {
+                try {
+                    if (recovered == null || recovered.getPlayerError() != null
+                            || recovered.getPlaybackState() != Player.STATE_READY) return;
+                    if (firstReadyPosition < 0) firstReadyPosition = recovered.getCurrentPosition();
+                } catch (Throwable error) { failure = error; }
+            }
+            void observePlaying() {
+                try {
+                    if (recovered == null || recovered.getPlayerError() != null
+                            || recovered.getPlaybackState() != Player.STATE_READY) return;
+                    observeReady();
+                    if (recovered.isPlaying() && !observedPlaying) {
+                        firstPlayingPosition = recovered.getCurrentPosition(); observedPlaying = true;
+                        assertEquals("Running engine updates its real native transport", "Ⅱ", pauseButton.getText().toString());
+                        assertTrue("Real native Pause is enabled", pauseButton.isEnabled());
+                        // Run after the current SDK notification rather than
+                        // modifying playback state in its listener dispatch.
+                        handler.post(() -> {
+                            try { pressedPause = pauseButton.performClick(); }
+                            catch (Throwable error) { failure = error; }
+                        });
+                    }
+                } catch (Throwable error) { failure = error; }
+            }
+            void close() { handler.removeCallbacksAndMessages(null); if (recovered != null) recovered.removeListener(this); }
+        }
+        void playAndPausePreview(PreviewPlaybackObserver observer) throws Exception {
+            main(() -> { observer.handler.post(observer); return null; });
+            try {
+                click("▶");
+                waitPreview();
+                waitUntil("Native Play reaches actual running decode and real native Pause", 3000,
+                        () -> main(() -> {
+                            if (observer.failure != null) throw new AssertionError("Native playback observer failed", observer.failure);
+                            CompositionPlayer current = (CompositionPlayer) field(activity, "player");
+                            return observer.recovered == current && current != observer.excluded && observer.observedPlaying
+                                    && observer.pressedPause && current.getPlayerError() == null && !current.isPlaying();
+                        }));
+            } finally { main(() -> { observer.close(); return null; }); }
+        }
+        void assertPreviewAfterSdkStop() throws Exception {
+            String preserved = ProjectCodec.encode(project());
+            long requested = main(() -> (Long) field(activity, "playheadMs"));
+            CompositionPlayer stopped = main(() -> (CompositionPlayer) field(activity, "player"));
+            main(() -> {
+                // This is the SDK stop/IDLE transition used by export, NOT an
+                // assertion that the full Files/export dialog was exercised.
+                stopped.stop(); assertEquals(Player.STATE_IDLE, stopped.getPlaybackState());
+                assertNull(stopped.getPlayerError()); return null;
+            });
+            PreviewPlaybackObserver observer = new PreviewPlaybackObserver(null,
+                    main(() -> (Button) field(activity, "playButton")));
+            playAndPausePreview(observer);
+            assertEquals("SDK-stop resume does not mutate saved effects, clips, IDs or source pool", preserved, ProjectCodec.encode(project()));
+            main(() -> {
+                assertTrue("SDK-stop resume prepares the requested graded source position; requested=" + requested
+                                + ", firstReady=" + observer.firstReadyPosition,
+                        Math.abs(observer.firstReadyPosition - requested) <= 100);
+                return null;
+            });
+            assertColourPreview(); capture("graded-preview-after-sdk-stop");
+        }
         void assertErroredPreviewRecovery() throws Exception {
             // Recovery needs an explicit native seek, not a track tap's
             // short-tap vs long-press classification under loaded emulators.
@@ -529,82 +626,21 @@ public final class NativeWorkspaceUiTest {
                 assertEquals(Player.STATE_IDLE, failed.getPlaybackState());
                 return null;
             });
-            // Arm the main-looper observer BEFORE native Play. Waiting for UI
-            // idle before pressing Pause can legitimately allow seconds of
-            // playback on a slow device; it cannot prove the initial seek.
-            // Record the fresh engine's first READY/playing position instead,
-            // and immediately run the same real native Pause button handler.
-            final class RecoveryObserver implements Runnable, Player.Listener {
-                final Handler handler = new Handler(Looper.getMainLooper());
-                final long deadline = SystemClock.elapsedRealtime() + 15000;
-                CompositionPlayer recovered;
-                long firstReadyPosition = -1, firstPlayingPosition = -1;
-                boolean observedPlaying, pressedPause;
-                Throwable failure;
-                @Override public void run() {
-                    try {
-                        CompositionPlayer current = (CompositionPlayer) field(activity, "player");
-                        if (current == null || current == failed) {
-                            if (SystemClock.elapsedRealtime() >= deadline) throw new AssertionError("Recovery never created a fresh engine");
-                            handler.postDelayed(this, 10); return;
-                        }
-                        recovered = current; current.addListener(this); observeReady();
-                        // If attachment caught an already-playing graph, run
-                        // after its queued native listener notifications, not
-                        // inside an earlier READY notification.
-                        if (current.isPlaying()) handler.post(this::observePlaying);
-                    } catch (Throwable error) { failure = error; }
-                }
-                @Override public void onPlaybackStateChanged(int state) { if (state == Player.STATE_READY) observeReady(); }
-                @Override public void onIsPlayingChanged(boolean playing) { if (playing) observePlaying(); }
-                void observeReady() {
-                    try {
-                        if (recovered == null || recovered.getPlayerError() != null
-                                || recovered.getPlaybackState() != Player.STATE_READY) return;
-                        if (firstReadyPosition < 0) firstReadyPosition = recovered.getCurrentPosition();
-                    } catch (Throwable error) { failure = error; }
-                }
-                void observePlaying() {
-                    try {
-                        if (recovered == null || recovered.getPlayerError() != null
-                                || recovered.getPlaybackState() != Player.STATE_READY) return;
-                        observeReady();
-                        if (recovered.isPlaying() && !observedPlaying) {
-                            firstPlayingPosition = recovered.getCurrentPosition(); observedPlaying = true;
-                            assertEquals("Fresh engine updates its real native transport", "Ⅱ", pauseButton.getText().toString());
-                            assertTrue("Real native Pause is enabled", pauseButton.isEnabled());
-                            pressedPause = pauseButton.performClick();
-                        }
-                    } catch (Throwable error) { failure = error; }
-                }
-                void close() { handler.removeCallbacksAndMessages(null); if (recovered != null) recovered.removeListener(this); }
-            }
-            RecoveryObserver observer = new RecoveryObserver();
-            main(() -> { observer.handler.post(observer); return null; });
-            try {
-                click("▶");
-                waitPreview();
-                waitUntil("Explicit Play recovers with a fresh actually-playing native decoder and native Pause", 3000,
-                        () -> main(() -> {
-                            if (observer.failure != null) throw new AssertionError("Native recovery observer failed", observer.failure);
-                            CompositionPlayer current = (CompositionPlayer) field(activity, "player");
-                            return observer.recovered == current && current != failed && observer.observedPlaying
-                                    && observer.pressedPause && current.getPlayerError() == null && !current.isPlaying();
-                        }));
-                main(() -> {
-                    assertTrue("Fresh engine's first READY preserves the requested seek, not zero; requested=" + requested
-                                    + ", firstReady=" + observer.firstReadyPosition,
-                            Math.abs(observer.firstReadyPosition - requested) <= 100);
-                    assertTrue("Fresh engine actually starts playback at that seek; requested=" + requested
-                                    + ", firstPlaying=" + observer.firstPlayingPosition,
-                            Math.abs(observer.firstPlayingPosition - requested) <= 100);
-                    long restored = (Long) field(activity, "playheadMs");
-                    assertTrue("Native Pause retains the observed actual playback position; firstPlaying="
-                                    + observer.firstPlayingPosition + ", paused=" + restored,
-                            Math.abs(restored - observer.firstPlayingPosition) <= 100);
-                    return null;
-                });
-            } finally { main(() -> { observer.close(); return null; }); }
+            PreviewPlaybackObserver observer = new PreviewPlaybackObserver(failed, pauseButton);
+            playAndPausePreview(observer);
+            main(() -> {
+                assertTrue("Fresh engine's first READY preserves the requested seek, not zero; requested=" + requested
+                                + ", firstReady=" + observer.firstReadyPosition,
+                        Math.abs(observer.firstReadyPosition - requested) <= 100);
+                assertTrue("Fresh engine actually starts playback at that seek; requested=" + requested
+                                + ", firstPlaying=" + observer.firstPlayingPosition,
+                        Math.abs(observer.firstPlayingPosition - requested) <= 100);
+                long restored = (Long) field(activity, "playheadMs");
+                assertTrue("Native Pause retains the observed actual playback position; firstPlaying="
+                                + observer.firstPlayingPosition + ", paused=" + restored,
+                        Math.abs(restored - observer.firstPlayingPosition) <= 100);
+                return null;
+            });
             CompositionPlayer current = main(() -> (CompositionPlayer) field(activity, "player"));
             assertNotSame("An errored CompositionPlayer is replaced, not prepared repeatedly", failed, current);
             assertNull(main(current::getPlayerError));
@@ -680,11 +716,21 @@ public final class NativeWorkspaceUiTest {
             });
             long down = SystemClock.uptimeMillis();
             MotionEvent press = MotionEvent.obtain(down, down, MotionEvent.ACTION_DOWN, point[0], point[1], 0);
+            press.setSource(InputDevice.SOURCE_TOUCHSCREEN);
             long[] dispatched = new long[2];
             try {
-                instrumentation.sendPointerSync(press); dispatched[0] = SystemClock.uptimeMillis(); SystemClock.sleep(60);
+                // Real system routing, but do not wait for native surfaces to
+                // finish processing DOWN before releasing a short tap. A prior
+                // synchronous injection took 1537ms on the loaded emulator and
+                // correctly became a long-press/reorder instead of selection.
+                assertTrue("System accepts the native touchscreen DOWN", instrumentation.getUiAutomation().injectInputEvent(press, false));
+                dispatched[0] = SystemClock.uptimeMillis(); SystemClock.sleep(60);
                 MotionEvent release = MotionEvent.obtain(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, point[0], point[1], 0);
-                try { instrumentation.sendPointerSync(release); dispatched[1] = SystemClock.uptimeMillis(); }
+                release.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+                try {
+                    assertTrue("System accepts the native touchscreen UP", instrumentation.getUiAutomation().injectInputEvent(release, false));
+                    dispatched[1] = SystemClock.uptimeMillis();
+                }
                 finally { release.recycle(); }
             } finally { press.recycle(); }
             instrumentation.waitForIdleSync();
