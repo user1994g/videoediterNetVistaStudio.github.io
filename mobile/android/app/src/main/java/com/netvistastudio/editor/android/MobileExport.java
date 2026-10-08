@@ -54,17 +54,15 @@ public final class MobileExport {
             effects.add((RgbMatrix) (presentationTimeUs, useHdr) -> useHdr ? hdrMatrix : sdrMatrix);
         }
         if (settings.opacity != 1f) {
-            float alpha = settings.opacity;
             // Merely adding AlphaScale would leave RGB unchanged when H.264 discards alpha.
             // RGB * opacity is exactly a one-layer fade over our opaque black background.
-            float[] matrix = new float[]{alpha, 0f, 0f, 0f, 0f, alpha, 0f, 0f,
-                    0f, 0f, alpha, 0f, 0f, 0f, 0f, 1f};
+            float[] matrix = opacityMatrix(settings.opacity);
             effects.add((RgbMatrix) (presentationTimeUs, useHdr) -> matrix);
         }
         return Collections.unmodifiableList(effects);
     }
 
-    private static float[] saturationMatrix(float saturation, boolean useHdr) {
+    static float[] saturationMatrix(float saturation, boolean useHdr) {
         // Luminance coefficients match the colour primaries supplied by RgbMatrix's contract.
         float red = useHdr ? 0.2627f : 0.2126f;
         float green = useHdr ? 0.6780f : 0.7152f;
@@ -76,6 +74,11 @@ public final class MobileExport {
                 blue * inverse, blue * inverse, blue * inverse + saturation, 0f,
                 0f, 0f, 0f, 1f
         };
+    }
+
+    static float[] opacityMatrix(float opacity) {
+        return new float[]{opacity, 0f, 0f, 0f, 0f, opacity, 0f, 0f,
+                0f, 0f, opacity, 0f, 0f, 0f, 0f, 1f};
     }
 
     /** Exactly the same clip order and time boundaries are used by preview and export. */
@@ -92,6 +95,15 @@ public final class MobileExport {
     }
 
     public static Composition composition(StudioProject project, ProjectFiles files) throws IOException {
+        return composition(project, files, MobileExport::videoEffects);
+    }
+
+    /** Preview may bind live matrices without changing source, trim or audio composition. */
+    interface EffectsFactory {
+        List<Effect> create(StudioProject.Clip clip, int width, int height);
+    }
+
+    static Composition composition(StudioProject project, ProjectFiles files, EffectsFactory effectsFactory) throws IOException {
         if (project.clips.isEmpty()) throw new IOException("Import a video before exporting.");
         List<EditedMediaItem> edited = new ArrayList<>();
         List<MediaItem> items = previewItems(project, files);
@@ -101,7 +113,7 @@ public final class MobileExport {
             edited.add(new EditedMediaItem.Builder(item).setFrameRate(30)
                     // CompositionPlayer needs source duration BEFORE clipping, not edit length.
                     .setDurationUs(Math.multiplyExact(clip.durationMs, 1000))
-                    .setEffects(new Effects(Collections.emptyList(), videoEffects(clip, project.width, project.height)))
+                    .setEffects(new Effects(Collections.emptyList(), effectsFactory.create(clip, project.width, project.height)))
                     .build());
         }
         // Explicit audio/video track types synthesize silence for silent clips and

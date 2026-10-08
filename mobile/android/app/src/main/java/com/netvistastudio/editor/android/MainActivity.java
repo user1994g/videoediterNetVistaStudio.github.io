@@ -14,6 +14,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.text.InputType;
@@ -80,6 +81,7 @@ public final class MainActivity extends Activity {
     private ProjectFiles files;
     private StudioProject project = new StudioProject();
     private CompositionPlayer player;
+    private NativePreviewGraph previewGraph;
     private Transformer transformer;
     private File renderingFile, completedMovie;
     private LinearLayout root, mediaList, inspector, inspectorPanel, mediaPanel, monitorPanel, compactDrawer;
@@ -101,6 +103,7 @@ public final class MainActivity extends Activity {
     private String selectedSource;
     private long playheadMs;
     private boolean previewPending, previewPlayWhenReady;
+    private long effectsRedrawDueMs;
     private final ArrayDeque<EditState> undo = new ArrayDeque<>(), redo = new ArrayDeque<>();
     private static final class EditState {
         final StudioProject project; final int selected; final long playhead;
@@ -217,6 +220,7 @@ public final class MainActivity extends Activity {
         flushFocusedEditor();
         editorVisible = false; homeVisible = false; main.removeCallbacks(playheadTimer); main.removeCallbacks(effectsPreview);
         if (player != null) { player.release(); player = null; }
+        previewGraph = null;
         status = null; progress = null; accountStatus = null; timeline = null;
         LinearLayout container = screen(); header(container);
         ScrollView scroll = new ScrollView(this); LinearLayout form = column(); form.setPadding(dp(12), dp(24), dp(12), dp(16)); scroll.addView(form);
@@ -241,6 +245,7 @@ public final class MainActivity extends Activity {
         flushFocusedEditor();
         main.removeCallbacks(playheadTimer); main.removeCallbacks(effectsPreview);
         if (player != null) { player.release(); player = null; }
+        previewGraph = null;
         editorVisible = false; homeVisible = true; loginStatus = null; signInButton = null;
         LinearLayout container = screen(); header(container);
         accountStatus = label(account.state().email, 11, MUTED, false); container.addView(accountStatus);
@@ -488,10 +493,14 @@ public final class MainActivity extends Activity {
         clip.settings = colour ? new StudioProject.ClipSettings(s.scale, s.rotationDegrees, s.positionX, s.positionY, s.opacity, 0, 0, 1)
                 : new StudioProject.ClipSettings(1, 0, 0, 0, 1, s.brightness, s.contrast, s.saturation); changedEdit();
     }
-    private void scheduleEffectsPreview() { preview(false); }
+    private void scheduleEffectsPreview() { preview(false, true); }
 
     private CompositionPlayer createPreviewPlayer() {
-        CompositionPlayer created = new CompositionPlayer.Builder(this).build();
+        previewGraph = null;
+        // Cache source frames BEFORE effects. A parameter-only change can replay
+        // the paused frame with fresh matrices without destroying its decoder.
+        CompositionPlayer created = new CompositionPlayer.Builder(this)
+                .experimentalSetEnableReplayableCache(true).build();
         created.addListener(new Player.Listener() {
             @Override public void onIsPlayingChanged(boolean playing) {
                 if (liveUi() && player == created && playButton != null) playButton.setText(playing ? "Ⅱ" : "▶");
@@ -533,11 +542,15 @@ public final class MainActivity extends Activity {
     }
 
     private void preview(boolean play) {
+        preview(play, false);
+    }
+    private void preview(boolean play, boolean liveSettings) {
         if (!liveUi() || !editorVisible || operationBusy || player == null) return;
         // One latest project snapshot per burst of edits. Rebuilding compositions
         // for each rapid Delete/Add/Undo/Redo can flood native codec reconfiguration
         // and time out, especially on slower tablets. Paused edit intent stays
         // authoritative until the coalesced composition has actually prepared.
+        boolean alreadyPending = previewPending;
         player.pause(); previewPending = true; previewPlayWhenReady = play;
         if (project.clips.isEmpty()) {
             // Retaining a frame is useful during edits, but an empty timeline
@@ -546,7 +559,17 @@ public final class MainActivity extends Activity {
             playerView.setPlayer(null);
         }
         main.removeCallbacks(effectsPreview);
-        main.postDelayed(effectsPreview, 120);
+        if (liveSettings && previewGraph != null && player.getPlayerError() == null) {
+            // Throttle hot sliders instead of debouncing until the finger stops:
+            // later values keep the first deadline, so a continuous gesture also
+            // redraws. There is still just one queued latest snapshot.
+            long now = SystemClock.uptimeMillis();
+            if (!alreadyPending) effectsRedrawDueMs = now + 50;
+            main.postDelayed(effectsPreview, Math.max(0, effectsRedrawDueMs - now));
+        } else {
+            effectsRedrawDueMs = SystemClock.uptimeMillis() + 120;
+            main.postDelayed(effectsPreview, 120);
+        }
     }
     private void applyPreview(boolean play) {
         if (!liveUi() || !editorVisible || !foreground || operationBusy || player == null) { previewPending = false; return; }
@@ -555,6 +578,7 @@ public final class MainActivity extends Activity {
             // wait for that obsolete graph to render its first frame/READY:
             // it no longer has a surface, and no decoder is needed at all.
             previewPending = false;
+            previewGraph = null;
             try {
                 playerView.setKeepContentOnPlayerReset(false); player.stop(); playerView.setPlayer(null); updatePlayhead(false);
             } catch (RuntimeException error) {
@@ -573,9 +597,39 @@ public final class MainActivity extends Activity {
         }
         previewPending = false;
         try {
+            StudioProject snapshot = project.copy();
+            long requested = Math.min(playheadMs, Math.max(0, snapshot.durationMs() - 1));
+            if (player.getPlayerError() == null && player.getPlaybackState() == Player.STATE_READY && previewGraph != null
+                    && previewGraph.updateSettings(snapshot)) {
+                // Only matrices changed in a PREPARED graph: retain it, its source
+                // cache and exact clip boundaries. Undo/redo uses the same path.
+                // If the user also sought, the next decoded frame uses those
+                // matrices; replaying an old cached frame would show the wrong
+                // sequence instant until that seek finished.
+                if (Math.abs(player.getCurrentPosition() - requested) > 30) player.seekTo(requested);
+                else player.experimentalRedrawLastFrame();
+                player.setPlayWhenReady(play);
+                updatePlayhead(false);
+                previewReady(player);
+                return;
+            }
+            NativePreviewGraph nextGraph = new NativePreviewGraph(snapshot, files);
             recreateErroredPreviewPlayer();
             playerView.setKeepContentOnPlayerReset(true);
-            playerView.setPlayer(player); player.setComposition(MobileExport.composition(project.copy(), files), Math.min(playheadMs, Math.max(0, project.durationMs() - 1)));
+            playerView.setPlayer(player);
+            player.setComposition(nextGraph.composition(), requested);
+            // Replacing clip structure releases the SDK's old source holders.
+            // A release timeout can synchronously poison this otherwise healthy
+            // CompositionPlayer during setComposition. Re-apply this explicit
+            // request once to a fresh engine, never loop from onPlayerError.
+            if (player.getPlayerError() != null) {
+                Log.w("NetVistaPreview", "Native graph replacement failed; retrying the current snapshot once", player.getPlayerError());
+                recreateErroredPreviewPlayer();
+                playerView.setKeepContentOnPlayerReset(true);
+                playerView.setPlayer(player);
+                player.setComposition(nextGraph.composition(), requested);
+            }
+            previewGraph = nextGraph;
             player.prepare(); player.setPlayWhenReady(play); updatePlayhead(false);
         } catch (Exception e) { Log.w("NetVistaPreview", "Native composition update failed", e); message("Preview unavailable: " + e.getMessage()); }
     }
@@ -991,6 +1045,7 @@ public final class MainActivity extends Activity {
         if (renderingFile != null) { renderingFile.delete(); renderingFile = null; }
         if (player != null) { player.release(); player = null; }
         playerView = null;
+        previewGraph = null;
         // shutdown(), not shutdownNow(): pending document writes and private draft
         // commits may finish, but all of their screen callbacks are lifecycle guarded.
         io.shutdown(); super.onDestroy();

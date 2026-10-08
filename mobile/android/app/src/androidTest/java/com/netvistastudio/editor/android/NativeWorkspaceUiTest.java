@@ -150,7 +150,7 @@ public final class NativeWorkspaceUiTest {
             ui.closeCompactDialog();
             ui.click("Undo"); assertTrue(ui.project().clips.isEmpty());
             ui.click("Redo"); assertEquals(2, ui.project().clips.size());
-            ui.click("Fit"); ui.tapTimeline(600, false);
+            ui.click("Fit"); ui.tapTimeline(600, true);
 
             ui.openWorkspace("Effects", "Motion/Effects");
             // A native numeric edit has not sent Done/blur yet. Mutating the
@@ -173,6 +173,8 @@ public final class NativeWorkspaceUiTest {
             ui.click("Undo"); ui.click("Undo");
             assertEquals(2, ui.project().clips.size());
             assertEquals(1f, ui.project().clips.get(0).settings.scale, 0.0001f);
+            ui.waitPreview();
+            CompositionPlayer effectEditingPlayer = ui.main(() -> (CompositionPlayer) field(activity, "player"));
             ui.edit("Scale %", "125.0", true);
             ui.edit("Rotation °", "15.0", true);
             ui.edit("Position X %", "20.0", true);
@@ -184,9 +186,25 @@ public final class NativeWorkspaceUiTest {
             ui.closeCompactDialog();
             ui.waitPreview();
             ui.assertMotionPreview();
+            assertSame("Motion-only editing redraws the existing real native player, not a replacement graph",
+                    effectEditingPlayer, ui.main(() -> (CompositionPlayer) field(activity, "player")));
             ui.capture("motion-preview");
             ui.openWorkspace("Effects", "Motion/Effects");
             ui.scrollInspectorToTop(); ui.capture("motion-effects");
+            // Runtime matrix stages must still exist when initially neutral.
+            // Change the paused frame to fully transparent and back via
+            // native history without rebuilding or seeking the media decoder.
+            ui.edit("Opacity %", "0.0", true);
+            ui.closeCompactDialog(); ui.waitPreview(); ui.assertOpacityZeroPreview();
+            assertSame("Paused opacity zero redraws the same native player",
+                    effectEditingPlayer, ui.main(() -> (CompositionPlayer) field(activity, "player")));
+            ui.capture("motion-opacity-zero");
+            ui.click("Undo");
+            assertEquals("Native Undo restores the preceding opacity", 0.8f, ui.project().clips.get(0).settings.opacity, 0.0001f);
+            ui.waitPreview(); ui.assertMotionPreview();
+            assertSame("Opacity Undo redraws the same native player",
+                    effectEditingPlayer, ui.main(() -> (CompositionPlayer) field(activity, "player")));
+            ui.openWorkspace("Effects", "Motion/Effects");
             // Native in-panel tab navigation must not create a stack of empty modal dialogs.
             ui.clickWithin(ui.panel("inspectorPanel"), "Colour");
             ui.assertGradeDisplay("Contrast %", 100f);
@@ -196,6 +214,8 @@ public final class NativeWorkspaceUiTest {
             ui.closeCompactDialog();
             ui.waitPreview();
             ui.assertColourPreview();
+            assertSame("Colour-only editing redraws the same real native player",
+                    effectEditingPlayer, ui.main(() -> (CompositionPlayer) field(activity, "player")));
             ui.capture("colour-preview");
             ui.openWorkspace("Colour", "Colour");
             ui.scrollInspectorToTop(); ui.capture("colour");
@@ -204,6 +224,8 @@ public final class NativeWorkspaceUiTest {
             ui.click("Redo"); assertEquals(0.6f, ui.project().clips.get(0).settings.saturation, 0.0001f);
             ui.waitPreview();
             ui.assertColourPreview();
+            assertSame("Colour Undo/Redo preserves native player identity when timeline topology is unchanged",
+                    effectEditingPlayer, ui.main(() -> (CompositionPlayer) field(activity, "player")));
             ui.drainActivityIo();
             StudioProject saved = files.loadDraft();
             StudioProject.ClipSettings settings = saved.clips.get(0).settings;
@@ -483,7 +505,11 @@ public final class NativeWorkspaceUiTest {
             return detail.toString();
         }
         void assertErroredPreviewRecovery() throws Exception {
-            tapTimeline(600, false);
+            // Recovery needs an explicit native seek, not a track tap's
+            // short-tap vs long-press classification under loaded emulators.
+            // The real ruler updates on DOWN; clip selection is tested at
+            // 3000ms separately through an actual linked track-block tap.
+            tapTimeline(600, true);
             String savedBefore = ProjectCodec.encode(project());
             long requested = main(() -> (Long) field(activity, "playheadMs"));
             CompositionPlayer failed = main(() -> (CompositionPlayer) field(activity, "player"));
@@ -610,6 +636,12 @@ public final class NativeWorkspaceUiTest {
                 return Color.red(pixel) >= 190 && Color.red(pixel) <= 215 && Color.green(pixel) < 15 && Color.blue(pixel) < 15;
             });
         }
+        void assertOpacityZeroPreview() throws Exception {
+            waitUntil("Paused native redraw applies zero opacity to actual source pixels", 3000, () -> {
+                int pixel = monitorCenterPixel();
+                return Color.red(pixel) < 15 && Color.green(pixel) < 15 && Color.blue(pixel) < 15;
+            });
+        }
         void assertColourPreview() throws Exception {
             // Native default SDR RGB matrix composition: source (1,0,0),
             // brightness +.25 -> (1.25,.25,.25), contrast factor .8 ->
@@ -648,17 +680,41 @@ public final class NativeWorkspaceUiTest {
             });
             long down = SystemClock.uptimeMillis();
             MotionEvent press = MotionEvent.obtain(down, down, MotionEvent.ACTION_DOWN, point[0], point[1], 0);
-            MotionEvent release = MotionEvent.obtain(down, down + 60, MotionEvent.ACTION_UP, point[0], point[1], 0);
-            try { instrumentation.sendPointerSync(press); SystemClock.sleep(60); instrumentation.sendPointerSync(release); }
-            finally { press.recycle(); release.recycle(); }
+            long[] dispatched = new long[2];
+            try {
+                instrumentation.sendPointerSync(press); dispatched[0] = SystemClock.uptimeMillis(); SystemClock.sleep(60);
+                MotionEvent release = MotionEvent.obtain(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, point[0], point[1], 0);
+                try { instrumentation.sendPointerSync(release); dispatched[1] = SystemClock.uptimeMillis(); }
+                finally { release.recycle(); }
+            } finally { press.recycle(); }
             instrumentation.waitForIdleSync();
-            waitUntil("Graphical timeline changes both the stored and actual native-player sequence playhead", 3000,
-                    () -> main(() -> {
-                        CompositionPlayer player = (CompositionPlayer) field(activity, "player");
-                        return Math.abs((Long) field(activity, "playheadMs") - positionMs) < 150
-                                && player.getPlaybackState() == Player.STATE_READY
-                                && Math.abs(player.getCurrentPosition() - positionMs) < 150;
-                    }));
+            try {
+                waitUntil("Graphical timeline changes both the stored and actual native-player sequence playhead", 3000,
+                        () -> main(() -> {
+                            CompositionPlayer player = (CompositionPlayer) field(activity, "player");
+                            return Math.abs((Long) field(activity, "playheadMs") - positionMs) < 150
+                                    && player.getPlaybackState() == Player.STATE_READY
+                                    && Math.abs(player.getCurrentPosition() - positionMs) < 150;
+                        }));
+            } catch (AssertionError failure) {
+                String diagnostic = main(() -> {
+                    CompositionPlayer player = (CompositionPlayer) field(activity, "player");
+                    StudioTimelineView timeline = (StudioTimelineView) field(activity, "timeline");
+                    Rect bounds = new Rect(); timeline.getGlobalVisibleRect(bounds); int[] location = new int[2]; timeline.getLocationOnScreen(location);
+                    return "request=" + positionMs + "; ruler=" + ruler + "; pointer=(" + point[0] + "," + point[1] + ")"
+                            + "; downDispatchMs=" + (dispatched[0] - down) + "; heldMs=" + (dispatched[1] - down)
+                            + "; bounds=" + bounds + "; screenOrigin=(" + location[0] + "," + location[1] + ")"
+                            + "; windowFocus=" + root().hasWindowFocus() + "; interactive=" + field(timeline, "interactive")
+                            + "; dragged=" + field(timeline, "dragged") + "; scrub=" + field(timeline, "scrubbing")
+                            + "; scale=" + field(timeline, "pixelsPerSecond") + "; scroll=" + field(timeline, "scroll")
+                            + "; selected=" + field(activity, "selected") + "; stored=" + field(activity, "playheadMs")
+                            + "; drawn=" + field(timeline, "playhead") + "; pending=" + field(activity, "previewPending")
+                            + "; playerState=" + player.getPlaybackState() + "; playerPosition=" + player.getCurrentPosition()
+                            + "; error=" + describePlaybackError(player.getPlayerError());
+                });
+                Log.e("NetVistaNativeUiChecks", "Native timeline input failure: " + diagnostic);
+                throw new AssertionError(failure.getMessage() + "; " + diagnostic, failure);
+            }
         }
         void edit(String description, String text, boolean done) throws Exception {
             View inspector = panel("inspectorPanel");
