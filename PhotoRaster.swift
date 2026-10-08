@@ -1,5 +1,12 @@
-import Cocoa
+#if canImport(AppKit)
+import AppKit
+typealias PhotoRasterColor = NSColor
+#else
+import UIKit
+typealias PhotoRasterColor = UIColor
+#endif
 import CoreImage
+import ImageIO
 
 // Pixel tools are deliberately independent of window/controller state. CIImage snapshots
 // are immutable, so a brush stroke is a single reversible edit, not a chain of filters.
@@ -32,13 +39,13 @@ struct PhotoBrush: Codable {
         }
         return ["round","texture","calligraphy"].contains(kind)
     }
-    func tip(color: NSColor, hardness: Double, maxDimension: Int = 1024) -> CGImage? {
+    func tip(color: PhotoRasterColor, hardness: Double, maxDimension: Int = 1024) -> CGImage? {
         guard isValid, hardness.isFinite else { return nil }
         let originalW = samples == nil ? 128 : width, originalH = samples == nil ? 128 : height
         let factor = min(1, Double(max(1,min(2048,maxDimension))) / Double(max(originalW,originalH)))
         let w = max(1,Int(Double(originalW)*factor)), h = max(1,Int(Double(originalH)*factor))
         let hardness = min(1,max(0,hardness))
-        let c = color.usingColorSpace(.deviceRGB) ?? .black
+        let c = PhotoPixels.components(color)
         var rgba = [UInt8](repeating: 0, count: w * h * 4)
         for y in 0..<h { for x in 0..<w {
             var coverage: Double
@@ -56,9 +63,9 @@ struct PhotoBrush: Codable {
                 coverage = r <= hardness ? 1 : max(0, (1 - r) / max(0.001, 1 - hardness))
                 if kind == "texture" { coverage *= Double((x * 73 + y * 151 + x * y * 17) % 101) / 100 }
             }
-            let a = min(1, max(0, coverage * c.alphaComponent)), i = (y * w + x) * 4
-            rgba[i] = UInt8(min(1,max(0,c.redComponent)) * a * 255); rgba[i+1] = UInt8(min(1,max(0,c.greenComponent)) * a * 255)
-            rgba[i+2] = UInt8(min(1,max(0,c.blueComponent)) * a * 255); rgba[i+3] = UInt8(a * 255)
+            let a = min(1, max(0, coverage * c.alpha)), i = (y * w + x) * 4
+            rgba[i] = UInt8(min(1,max(0,c.red)) * a * 255); rgba[i+1] = UInt8(min(1,max(0,c.green)) * a * 255)
+            rgba[i+2] = UInt8(min(1,max(0,c.blue)) * a * 255); rgba[i+3] = UInt8(a * 255)
         }}
         guard let provider = CGDataProvider(data: Data(rgba) as CFData) else { return nil }
         return CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue), provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
@@ -66,6 +73,18 @@ struct PhotoBrush: Codable {
 }
 
 enum PhotoPixels {
+    /// The raster engine is shared by the AppKit and UIKit workspaces. Only the
+    /// native colour adapter differs; brush/ABR/selection algorithms stay single-source.
+    static func components(_ color: PhotoRasterColor) -> (red: Double, green: Double, blue: Double, alpha: Double) {
+        #if canImport(AppKit)
+        let c = color.usingColorSpace(.deviceRGB) ?? .black
+        return (Double(c.redComponent), Double(c.greenComponent), Double(c.blueComponent), Double(c.alphaComponent))
+        #else
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 1
+        guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return (0, 0, 0, 1) }
+        return (Double(red), Double(green), Double(blue), Double(alpha))
+        #endif
+    }
     static let maxPixels = 64_000_000
     static func validSize(_ size: CGSize) -> Bool {
         size.width.isFinite && size.height.isFinite && size.width >= 1 && size.height >= 1 && size.width <= 16000 && size.height <= 16000 && size.width * size.height <= Double(maxPixels)
@@ -75,8 +94,17 @@ enum PhotoPixels {
         return CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8, bytesPerRow: Int(size.width) * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
     }
     static func png(_ image: CIImage, context: CIContext) throws -> Data {
-        guard validSize(image.extent.size), let cg = context.createCGImage(image, from: image.extent), let data = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { throw PhotoBrushError.invalid("Unable to encode layer pixels.") }
+        guard validSize(image.extent.size), let cg = context.createCGImage(image, from: image.extent) else { throw PhotoBrushError.invalid("Unable to encode layer pixels.") }
+        #if canImport(AppKit)
+        guard let data = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { throw PhotoBrushError.invalid("Unable to encode layer pixels.") }
         return data
+        #else
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else { throw PhotoBrushError.invalid("Unable to encode layer pixels.") }
+        CGImageDestinationAddImage(destination, cg, nil)
+        guard CGImageDestinationFinalize(destination) else { throw PhotoBrushError.invalid("Unable to encode layer pixels.") }
+        return data as Data
+        #endif
     }
     static func frozen(_ image: CIImage, context: CIContext) -> CIImage {
         guard let cg = context.createCGImage(image, from: image.extent) else { return image }
@@ -92,11 +120,16 @@ enum PhotoPixels {
         guard right >= left else { return nil }
         return CGRect(x:Double(left)+image.extent.minX,y:Double(h-1-bottom)+image.extent.minY,width:Double(right-left+1),height:Double(bottom-top+1))
     }
-    static func color(at point: CGPoint, image: CIImage, context: CIContext) -> NSColor {
+    static func color(at point: CGPoint, image: CIImage, context: CIContext) -> PhotoRasterColor {
         var pixel = [UInt8](repeating: 0, count: 4)
         context.render(image, toBitmap: &pixel, rowBytes: 4, bounds: CGRect(x: floor(point.x), y: floor(point.y), width: 1, height: 1), format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
         let alpha = max(1, Double(pixel[3]))
-        return NSColor(deviceRed: min(1,Double(pixel[0])/alpha), green: min(1,Double(pixel[1])/alpha), blue: min(1,Double(pixel[2])/alpha), alpha: 1)
+        let red = min(1,Double(pixel[0])/alpha), green = min(1,Double(pixel[1])/alpha), blue = min(1,Double(pixel[2])/alpha)
+        #if canImport(AppKit)
+        return NSColor(deviceRed: red, green: green, blue: blue, alpha: 1)
+        #else
+        return UIColor(red: CGFloat(red), green: CGFloat(green), blue: CGFloat(blue), alpha: 1)
+        #endif
     }
     // Contiguous four-neighbour colour selection. Work is bounded by the document size.
     static func region(at point: CGPoint, image: CIImage, tolerance: Int, context: CIContext) -> CIImage? {
@@ -141,7 +174,7 @@ final class PhotoRasterStroke {
     private var last: CGPoint?
     private var remainder = 0.0
 
-    init?(base: CIImage, brush: PhotoBrush, size: Double, hardness: Double, opacity: Double, flow: Double, color: NSColor, erase: Bool, selection: CIImage?, clone: CGImage? = nil, cloneOffset: CGPoint = .zero) {
+    init?(base: CIImage, brush: PhotoBrush, size: Double, hardness: Double, opacity: Double, flow: Double, color: PhotoRasterColor, erase: Bool, selection: CIImage?, clone: CGImage? = nil, cloneOffset: CGPoint = .zero) {
         guard size.isFinite, size > 0, size <= 160000, opacity.isFinite, flow.isFinite,
               let ink = PhotoPixels.context(base.extent.size), let tip = brush.tip(color: color, hardness: hardness, maxDimension: Int(min(2048,max(128,size*2)))) else { return nil }
         self.base = base; self.ink = ink; self.tip = tip; self.size = size; self.flow = flow; self.opacity = opacity; self.erase = erase; self.selection = selection; self.clone = clone; self.cloneOffset = cloneOffset

@@ -5,6 +5,9 @@ CHECK_DIR="$(mktemp -d /private/tmp/netvista-ipad-checks.XXXXXX)"
 swiftc "$SOURCE_DIR/Sources/MobileProject.swift" "$SOURCE_DIR/Tests/ProjectChecks.swift" \
   -module-cache-path "$CHECK_DIR/ModuleCache" -o "$CHECK_DIR/project-checks"
 "$CHECK_DIR/project-checks"
+swiftc "$SOURCE_DIR/Sources/MobileProject.swift" "$SOURCE_DIR/Tests/AnimationChecks.swift" \
+  -module-cache-path "$CHECK_DIR/ModuleCache" -o "$CHECK_DIR/animation-checks"
+"$CHECK_DIR/animation-checks"
 ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=red:s=320x180:r=30:d=3 \
   -an -c:v libx264 -pix_fmt yuv420p "$CHECK_DIR/red.mov"
 ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=blue:s=128x240:r=30:d=3 \

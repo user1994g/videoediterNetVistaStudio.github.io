@@ -98,7 +98,7 @@ import CoreGraphics
         let legacy = try JSONSerialization.data(withJSONObject: ["format": "netvista-mobile-video", "version": 1,
             "name": "Legacy", "clips": oldClips])
         var project = try JSONDecoder().decode(MobileProject.self, from: legacy)
-        expect(project.version == 2 && project.library.count == 1, "Schema 1 migration must deduplicate media library")
+        expect(project.version == 3 && project.library.count == 1, "Schema 1 migration must deduplicate media library")
         expect(project.library[0].inPoint == 0 && project.library[0].outPoint == 1 &&
                project.library[0].effects == MobileClipEffects(), "Migrated media-pool source must retain full original duration")
         project.clips[0].effects = MobileClipEffects(scale: 0.5, positionX: 0.25, positionY: 0.4,
@@ -120,6 +120,53 @@ import CoreGraphics
             do { try bad.validate(); fatalError("Invalid non-finite effect was accepted") } catch {}
         }
         progress("PASS: schema 1 migration, neutral defaults, deduplicated full source pool, effects-preserving split, undo/redo and native project round-trip")
+    }
+    static func checkAnimation(_ directory: URL) async throws {
+        var animated = MobileClipEffects()
+        try animated.upsertKeyframe(for: .opacity, at: 0, value: 0, interpolation: .hold)
+        try animated.upsertKeyframe(for: .opacity, at: 0.25, value: 0)
+        try animated.upsertKeyframe(for: .opacity, at: 0.75, value: 1, interpolation: .hold)
+        var project = MobileProject()
+        project.clips = [MobileClip(name: "Lead in", file: "quadrants.mov", duration: 1, outPoint: 1),
+                         MobileClip(name: "Animated fade", file: "quadrants.mov", duration: 1, outPoint: 1, effects: animated)]
+        try project.trim(1, start: 0.1, end: 1)
+        try project.split(1, at: 0.3)
+        let sequence = try await MobileVideoEngine.sequence(project, media: directory, height: 720)
+        expect(sequence.instructions[2].containsTweening, "Animated instruction must advertise temporal changes")
+        expect(sequence.instructions[1].sourceInPoint == 0.1 && sequence.instructions[2].sourceInPoint == 0.4,
+               "Fixture must be a non-first trimmed and split source, not a zero-origin curve")
+        expect(abs(sequence.instructions[2].effects(at: CMTime(seconds: 1.4, preferredTimescale: 600)).opacity - 0.5) < 0.0001,
+               "Composition time must remap through nonzero instruction start and split source in-point")
+        func generator(_ asset: AVAsset, composition: AVVideoComposition? = nil) -> AVAssetImageGenerator {
+            let generator = AVAssetImageGenerator(asset: asset); generator.videoComposition = composition
+            generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero; return generator
+        }
+        func check(_ generator: AVAssetImageGenerator, label: String) throws {
+            expect(try frame(generator, at: 0.5).pixel(160, 90).red, "\(label): animation leaked into preceding source instance")
+            expect(try frame(generator, at: 1.033333).pixel(160, 90).black, "\(label): hold opacity 0 did not produce black")
+            let half = try frame(generator, at: 1.4).pixel(160, 90)
+            expect((165...202).contains(half.r) && half.g < 45 && half.b < 24,
+                   "\(label): fade midpoint after split must be actual linear-light opacity 50: \(half.description)")
+            expect(try frame(generator, at: 1.8).pixel(160, 90).red, "\(label): fade did not return to opacity 100")
+        }
+        try check(generator(sequence.composition, composition: sequence.videoComposition), label: "animated composed preview")
+        // Prove that a prepared instruction evaluates new keyframe snapshots,
+        // rather than freezing the initially loaded scalar/curve values.
+        var reversed = animated
+        try reversed.upsertKeyframe(for: .opacity, at: 0, value: 1, interpolation: .hold)
+        try reversed.upsertKeyframe(for: .opacity, at: 0.25, value: 1)
+        try reversed.upsertKeyframe(for: .opacity, at: 0.75, value: 0, interpolation: .hold)
+        for clip in project.clips.dropFirst() { sequence.updateEffects(id: clip.id, effects: reversed) }
+        let updated = generator(sequence.composition, composition: sequence.videoComposition)
+        expect(try frame(updated, at: 1.033333).pixel(160, 90).red, "Live updated opacity curve remained frozen at old zero")
+        expect(try frame(updated, at: 1.8).pixel(160, 90).black, "Live updated opacity curve remained frozen at old one")
+        let exportSequence = try await MobileVideoEngine.sequence(project, media: directory, height: 720)
+        let output = directory.appendingPathComponent("animated-effects-out.mp4")
+        let session = try MobileVideoEngine.exporter(exportSequence, output: output)
+        await withCheckedContinuation { continuation in session.exportAsynchronously { continuation.resume() } }
+        guard session.status == .completed else { throw session.error ?? MobileProjectError.noVideo }
+        try check(generator(AVURLAsset(url: output)), label: "animated encoded MP4")
+        progress("PASS: real preview and encoded MP4 animation pixels, opacity 0 → 50 → 100, nonzero sequence offset, split source-time continuity and live curve snapshot updates")
     }
     static func main() async throws {
         let directory = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
@@ -154,6 +201,7 @@ import CoreGraphics
         expect(abs(duration.seconds - 10) < 0.1, "Effect export sequence length changed")
         let audioTracks = try await asset.loadTracks(withMediaType: .audio)
         expect(audioTracks.isEmpty, "Silent-only export must not retain an empty audio track")
+        try await checkAnimation(directory)
         print("Verification media retained at \(directory.path)")
     }
 }

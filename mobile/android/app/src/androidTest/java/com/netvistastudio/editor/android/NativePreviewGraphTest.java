@@ -95,6 +95,33 @@ public final class NativePreviewGraphTest {
         }
     }
 
+    @Test public void animatedNonFirstTrimmedClipUsesCompositionTimeAndLiveUpdatesKeepDecoderGraph() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            StudioProject edited = fixture.project.copy(); StudioProject.Clip second = edited.clips.get(1);
+            second.animation = new ClipAnimation().withKeyframe(ClipAnimation.Property.OPACITY, 300, 0, ClipAnimation.Curve.LINEAR)
+                    .withKeyframe(ClipAnimation.Property.OPACITY, 1300, 1, ClipAnimation.Curve.LINEAR)
+                    .withKeyframe(ClipAnimation.Property.SCALE, 300, 1, ClipAnimation.Curve.LINEAR)
+                    .withKeyframe(ClipAnimation.Property.SCALE, 1300, 2, ClipAnimation.Curve.LINEAR);
+            NativePreviewGraph graph = new NativePreviewGraph(fixture.project.copy(), fixture.files);
+            Composition original = graph.composition(); assertTrue(graph.updateSettings(edited)); assertSame(original, graph.composition());
+            Composition encoded = MobileExport.composition(edited, fixture.files);
+            long startUs = edited.clips.get(0).lengthMs() * 1000;
+            RgbMatrix liveColour = (RgbMatrix) effects(original, 1).get(2);
+            GlMatrixTransformation liveMotion = (GlMatrixTransformation) effects(original, 1).get(1);
+            assertEquals(0, liveColour.getMatrix(startUs, false)[0], 0);
+            assertEquals(.5f, liveColour.getMatrix(startUs + 500000, false)[0], .000001f);
+            assertEquals(1, liveColour.getMatrix(startUs + 1000000, false)[0], 0);
+            assertEquals(1.5f, liveMotion.getGlMatrixArray(startUs + 500000)[0], .000001f);
+            for (long time : new long[]{startUs, startUs + 250500, startUs + 500000, startUs + 1000000}) {
+                assertArrayEquals(((RgbMatrix) effects(encoded, 1).get(2)).getMatrix(time, false), liveColour.getMatrix(time, false), 0);
+                assertArrayEquals(((GlMatrixTransformation) effects(encoded, 1).get(1)).getGlMatrixArray(time), liveMotion.getGlMatrixArray(time), 0);
+            }
+            assertArrayEquals("Shared source's first instance is unaffected", identity(), colour(original, 0), 0);
+            assertTrue(graph.updateSettings(fixture.project.copy())); assertSame(original, graph.composition());
+            assertArrayEquals("Undo removes keyframes without decoder teardown", identity(), liveColour.getMatrix(startUs + 500000, false), 0);
+        }
+    }
+
     private static StudioProject.ClipSettings styledSettings() {
         return new StudioProject.ClipSettings(1.25f, 15f, 0.2f, 0.15f, 0.8f,
                 0.25f, GradeControlValues.nativeContrast(80f), 0.6f);

@@ -365,7 +365,7 @@ class MobileEditorCore: UIViewController, UIDocumentPickerDelegate {
             let picker = UIDocumentPickerViewController(forExporting: [package], asCopy: true)
             pendingTemporary = package
             picker.delegate = self; present(picker, animated: true)
-            message("Choose a Files location. The project keeps source media, trims, order, motion and colour settings.")
+            message("Choose a Files location. The project keeps source media, trims, order, motion, colour and animation keyframes.")
         } catch { importing = false; cleanupTemporary(); self.error(error) } }
     }
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
@@ -565,6 +565,10 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
     private var importButton: UIButton!, addButton: UIButton!, addAllButton: UIButton!
     private var playButton: UIButton!, stopButton: UIButton!, backButton: UIButton!, nextButton: UIButton!
     private var rows: [String: MobilePropertyRow] = [:]
+    private let animationPanel = MobileAnimationPanel()
+    private var animationProperty: MobileEffectProperty = .opacity
+    private var animationInterpolation: MobileKeyframeInterpolation = .linear
+    private var autoKeyframe = false
     private var inspectorItems: [(UIView, CGFloat)] = []
     private var trimViews: [UIView] = [], motionViews: [UIView] = [], colourViews: [UIView] = []
     private var clipActions: [UIButton] = []
@@ -573,6 +577,7 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
     private var drawer: String?
     private var selectedSource: Int?
     private var propertyBefore: MobileProject?
+    private var propertySourceTime: Double?
     private var propertySeekTask: Task<Void, Never>?
     private var propertySeekGeneration = 0
     private var previewUnavailableMessage: String?
@@ -696,6 +701,16 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
         property("brightness", "Brightness", range: -1...1, group: &colourViews)
         property("contrast", "Contrast", range: 0...4, multiplier: 100, group: &colourViews)
         property("saturation", "Saturation", range: 0...4, multiplier: 100, group: &colourViews)
+        animationPanel.onProperty = { [weak self] property in self?.animationProperty = property; self?.refreshAnimationControls() }
+        animationPanel.onInterpolation = { [weak self] interpolation in self?.setKeyframeInterpolation(interpolation) }
+        animationPanel.onAuto = { [weak self] in guard let self else { return }; self.autoKeyframe.toggle(); self.refreshAnimationControls() }
+        animationPanel.onAdd = { [weak self] in self?.addKeyframe() }
+        animationPanel.onRemove = { [weak self] in self?.removeKeyframe() }
+        animationPanel.onClear = { [weak self] in self?.clearKeyframeTrack() }
+        animationPanel.onPrevious = { [weak self] in self?.navigateKeyframe(-1) }
+        animationPanel.onNext = { [weak self] in self?.navigateKeyframe(1) }
+        animationPanel.track.onSeek = { [weak self] seconds in self?.seekSelectedSource(seconds) }
+        addInspector(animationPanel, height: 430)
         let actions: [(String, String, String, () -> Void)] = [
             ("Duplicate", "plus.square.on.square", "clip.duplicate", { [weak self] in self?.duplicateClip() }),
             ("Delete clip", "trash", "clip.delete", { [weak self] in self?.removeClip() }),
@@ -703,17 +718,23 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
         for (title, symbol, id, handler) in actions {
             let button = action(title, symbol: symbol, id: id, handler); addInspector(button, height: 44); clipActions.append(button)
         }
-        let instructions = MobileTheme.label("Tap a clip to select. Pinch to zoom, scrub the ruler, or hold and drag a clip to reorder. Drag its edges to trim. V1 and A1 remain linked in this mobile workspace.", size: 11)
-        instructions.textColor = MobileTheme.secondary; instructions.numberOfLines = 0; addInspector(instructions, height: 100)
+        let instructions = MobileTheme.label("◆ adds a keyframe at the playhead. Adjusting an animated property adds or updates its key there. Tap diamonds to seek; pinch the animation lane to zoom. Curves stay attached to source time when clips are split, moved or trimmed. V1 and A1 remain linked.", size: 11)
+        instructions.textColor = MobileTheme.secondary; instructions.numberOfLines = 0; addInspector(instructions, height: 120)
     }
     private func addInspector(_ item: UIView, height: CGFloat) { inspectorContent.addSubview(item); inspectorItems.append((item, height)) }
     private func section(_ title: String) -> UILabel { let label = MobileTheme.label(title, size: 10, weight: .bold); label.textColor = MobileTheme.secondary; addInspector(label, height: 32); return label }
     private func property(_ key: String, _ title: String, range: ClosedRange<Double>, multiplier: Double = 1, group: inout [UIView]) {
         let row = MobilePropertyRow(key: key, title: title, range: range, multiplier: multiplier); rows[key] = row
         row.accessibilityIdentifier = "property.\(key)"; row.slider.accessibilityIdentifier = "property.\(key).slider"
-        row.onBegin = { [weak self] in guard let self, self.canEdit else { return }; self.propertyBefore = self.project }
+        row.onBegin = { [weak self] in
+            guard let self, self.canEdit else { return }; self.propertyBefore = self.project; self.propertySourceTime = self.selectedSourceTime
+            if self.autoKeyframe || self.selected.flatMap({ self.project.clips.indices.contains($0) ? self.project.clips[$0].effects.keyframes[key] : nil }) != nil {
+                self.player.pause(); self.pendingPlay = false
+            }
+        }
         row.onChange = { [weak self] key, value, ended in self?.changeProperty(key, value: value, ended: ended) }
         row.onNumeric = { [weak self] key in self?.numericProperty(key) }
+        row.onKeyframe = { [weak self] key in guard let self, let property = MobileEffectProperty(rawValue: key) else { return }; self.animationProperty = property; self.addKeyframe() }
         addInspector(row, height: 44); group.append(row)
     }
     private func buildNavigation() {
@@ -900,7 +921,7 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
         emptyMonitor.isHidden = !project.clips.isEmpty && previewUnavailableMessage == nil
         emptyMonitor.text = previewUnavailableMessage ?? "Import media to start editing"; poolTable.reloadData()
         let effects = selected.flatMap { project.clips.indices.contains($0) ? project.clips[$0].effects : nil }
-        for (key, row) in rows { row.set(propertyValue(key, effects ?? MobileClipEffects()), enabled: effects != nil && canEdit) }
+        refreshAnimationControls()
         for button in clipActions { button.isEnabled = selected != nil && canEdit }
         for slider in [start, end] { slider.isEnabled = effects != nil && canEdit }
         playButton.isEnabled = canEdit && !project.clips.isEmpty
@@ -916,6 +937,7 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
     override func refreshAccount() { super.refreshAccount(); refresh(); view.setNeedsLayout() }
     override func playbackTimeChanged(_ seconds: Double) {
         timeline.time = seconds; if player.rate > 0 { timeline.revealPlayhead() }
+        refreshAnimationControls()
         if transport.bounds.width < 560 { timeLabel.text = clock(seconds) }
         let playing = player.rate > 0 || pendingPlay
         playButton?.setTitle(playing ? "Pause" : "Play", for: .normal)
@@ -971,21 +993,104 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
     }
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) { selectedSource = indexPath.row; refresh() }
     private func propertyValue(_ key: String, _ value: MobileClipEffects) -> Double {
-        switch key { case "positionX": return value.positionX; case "positionY": return value.positionY; case "scale": return value.scale
-        case "rotation": return value.rotation; case "opacity": return value.opacity; case "brightness": return value.brightness
-        case "contrast": return value.contrast; case "saturation": return value.saturation; default: return 0 }
+        guard let property = MobileEffectProperty(rawValue: key) else { return 0 }; return value.value(for: property)
     }
     private func assignProperty(_ key: String, value: Double, effects: inout MobileClipEffects) {
-        switch key { case "positionX": effects.positionX = value; case "positionY": effects.positionY = value; case "scale": effects.scale = value
-        case "rotation": effects.rotation = value; case "opacity": effects.opacity = value; case "brightness": effects.brightness = value
-        case "contrast": effects.contrast = value; case "saturation": effects.saturation = value; default: break }
+        guard let property = MobileEffectProperty(rawValue: key) else { return }; effects.setValue(value, for: property)
+    }
+    private var selectedSourceTime: Double {
+        guard let selected, project.clips.indices.contains(selected) else { return 0 }
+        let clip = project.clips[selected], begin = project.clips.prefix(selected).reduce(0) { $0 + $1.length }
+        return min(clip.outPoint, max(clip.inPoint, clip.inPoint + previewTargetTime - begin))
+    }
+    private func refreshAnimationControls() {
+        let clip = selected.flatMap { project.clips.indices.contains($0) ? project.clips[$0] : nil }
+        let sourceTime = selectedSourceTime
+        let evaluated = clip?.effects.evaluated(at: sourceTime) ?? MobileClipEffects()
+        for (key, row) in rows {
+            row.set(propertyValue(key, evaluated), enabled: clip != nil && canEdit)
+            if let property = MobileEffectProperty(rawValue: key) {
+                row.setAnimation(active: !(clip?.effects.frames(for: property).isEmpty ?? true),
+                                 atKeyframe: clip?.effects.keyframeIndex(for: property, at: sourceTime) != nil)
+            }
+        }
+        let interpolation = clip.flatMap { value in value.effects.keyframeIndex(for: animationProperty, at: sourceTime).map { value.effects.frames(for: animationProperty)[$0].interpolation } } ?? animationInterpolation
+        animationPanel.configure(clip: clip, property: animationProperty, sourceTime: sourceTime,
+            interpolation: interpolation, autoKey: autoKeyframe, enabled: clip != nil && canEdit)
+    }
+    private func seekSelectedSource(_ seconds: Double) {
+        guard let selected, project.clips.indices.contains(selected) else { return }
+        let clip = project.clips[selected], begin = project.clips.prefix(selected).reduce(0) { $0 + $1.length }
+        seekTo(begin + min(clip.length - 1.0 / 600, max(0, seconds - clip.inPoint)))
+    }
+    private func navigateKeyframe(_ direction: Int) {
+        guard let selected, project.clips.indices.contains(selected) else { return }; let clip = project.clips[selected]
+        let time = selectedSourceTime
+        let frames = clip.effects.frames(for: animationProperty).filter { $0.sourceSeconds >= clip.inPoint && $0.sourceSeconds <= clip.outPoint }
+        let next = direction < 0 ? frames.last(where: { $0.sourceSeconds < time - 1.0 / 600 }) : frames.first(where: { $0.sourceSeconds > time + 1.0 / 600 })
+        if let next { seekSelectedSource(next.sourceSeconds) }
+    }
+    private func applyAnimatedEffects(_ effects: MobileClipEffects) {
+        guard canEdit, let selected, project.clips.indices.contains(selected), effects != project.clips[selected].effects else { return }
+        guard (try? effects.validate(duration: project.clips[selected].duration)) != nil else { return }
+        history.record(project); project.clips[selected].effects = effects
+        updateEffectPreview(ended: true); saveWorking(); refresh()
+    }
+    private func addKeyframe() {
+        guard canEdit, let selected, project.clips.indices.contains(selected) else { return }
+        var effects = project.clips[selected].effects
+        let value = Double(rows[animationProperty.rawValue]?.slider.value ?? Float(effects.value(for: animationProperty, at: selectedSourceTime)))
+        let interpolation = effects.keyframeIndex(for: animationProperty, at: selectedSourceTime).map { effects.frames(for: animationProperty)[$0].interpolation } ?? animationInterpolation
+        do { try effects.upsertKeyframe(for: animationProperty, at: selectedSourceTime, value: value, interpolation: interpolation); applyAnimatedEffects(effects) }
+        catch { self.error(error) }
+    }
+    private func removeKeyframe() {
+        guard canEdit, let selected, project.clips.indices.contains(selected) else { return }
+        var effects = project.clips[selected].effects
+        // Keep the visible value if removing the final key disables animation.
+        effects.setValue(effects.value(for: animationProperty, at: selectedSourceTime), for: animationProperty)
+        effects.removeKeyframe(for: animationProperty, at: selectedSourceTime); applyAnimatedEffects(effects)
+    }
+    private func clearKeyframeTrack() {
+        guard canEdit, let selected, project.clips.indices.contains(selected) else { return }
+        let dialog = UIAlertController(title: "Clear \(animationProperty.title) animation?", message: "All keys for this property will be removed. The current visible value will remain. Undo can restore the curve.", preferredStyle: .alert)
+        dialog.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        let id = project.clips[selected].id, property = animationProperty
+        dialog.addAction(UIAlertAction(title: "Clear track", style: .destructive) { [weak self] _ in
+            guard let self, let current = self.selected, self.project.clips.indices.contains(current), self.project.clips[current].id == id else { return }
+            var effects = self.project.clips[current].effects
+            effects.setValue(effects.value(for: property, at: self.selectedSourceTime), for: property)
+            effects.keyframes.removeValue(forKey: property.rawValue); self.applyAnimatedEffects(effects)
+        }); present(dialog, animated: true)
+    }
+    private func setKeyframeInterpolation(_ interpolation: MobileKeyframeInterpolation) {
+        animationInterpolation = interpolation
+        guard canEdit, let selected, project.clips.indices.contains(selected) else { refreshAnimationControls(); return }
+        var effects = project.clips[selected].effects
+        guard let index = effects.keyframeIndex(for: animationProperty, at: selectedSourceTime) else { refreshAnimationControls(); return }
+        var track = effects.frames(for: animationProperty); track[index].interpolation = interpolation
+        effects.keyframes[animationProperty.rawValue] = track; applyAnimatedEffects(effects)
     }
     private func changeProperty(_ key: String, value: Double, ended: Bool) {
-        guard canEdit, let selected, project.clips.indices.contains(selected) else { propertyBefore = nil; refresh(); return }
-        if propertyBefore == nil { propertyBefore = project }
+        guard canEdit, let selected, project.clips.indices.contains(selected) else { propertyBefore = nil; propertySourceTime = nil; refresh(); return }
+        if propertyBefore == nil { propertyBefore = project; propertySourceTime = selectedSourceTime }
         var effects = project.clips[selected].effects; assignProperty(key, value: value, effects: &effects)
-        guard (try? effects.validate()) != nil else { return }
+        if let property = MobileEffectProperty(rawValue: key), autoKeyframe || !effects.frames(for: property).isEmpty {
+            let sourceTime = propertySourceTime ?? selectedSourceTime
+            let interpolation = effects.keyframeIndex(for: property, at: sourceTime).map { effects.frames(for: property)[$0].interpolation } ?? animationInterpolation
+            do { try effects.upsertKeyframe(for: property, at: sourceTime, value: value, interpolation: interpolation) }
+            catch { self.error(error); return }
+            animationProperty = property
+        }
+        guard (try? effects.validate(duration: project.clips[selected].duration)) != nil else { return }
         project.clips[selected].effects = effects
+        updateEffectPreview(ended: ended)
+        if ended { if let before = propertyBefore, before != project { history.record(before) }; propertyBefore = nil; propertySourceTime = nil; saveWorking(); refresh() }
+        else { refreshAnimationControls() }
+    }
+    private func updateEffectPreview(ended: Bool) {
+        guard let selected, project.clips.indices.contains(selected) else { return }
+        let effects = project.clips[selected].effects
         currentSequence?.updateEffects(id: project.clips[selected].id, effects: effects)
         propertySeekGeneration += 1; let ticket = propertySeekGeneration
         propertySeekTask?.cancel()
@@ -1006,12 +1111,11 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
                 }
             }
         }
-        if ended { if let before = propertyBefore, before != project { history.record(before) }; propertyBefore = nil; saveWorking(); refresh() }
     }
     private func numericProperty(_ key: String) {
         guard canEdit, let selected, let row = rows[key] else { return }
         let dialog = UIAlertController(title: row.slider.accessibilityLabel, message: "\(String(format: "%.1f", Double(row.slider.minimumValue) * row.multiplier)) – \(String(format: "%.1f", Double(row.slider.maximumValue) * row.multiplier))", preferredStyle: .alert)
-        dialog.addTextField { field in field.text = String(format: "%.2f", self.propertyValue(key, self.project.clips[selected].effects) * row.multiplier); field.keyboardType = .numbersAndPunctuation }
+        dialog.addTextField { field in field.text = String(format: "%.2f", self.propertyValue(key, self.project.clips[selected].effects.evaluated(at: self.selectedSourceTime)) * row.multiplier); field.keyboardType = .numbersAndPunctuation }
         dialog.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         dialog.addAction(UIAlertAction(title: "Apply", style: .default) { [weak self] _ in
             guard let self, let value = Double(dialog.textFields?.first?.text ?? ""), value.isFinite,

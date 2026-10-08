@@ -244,6 +244,49 @@ public final class NativeWorkspaceUiTest {
             assertEquals("Other source instance keeps default inspector values", 1f, saved.clips.get(1).settings.scale, 0f);
             assertEquals(2, saved.assets.size());
 
+            // Exercise actual native animation controls and decoded paused
+            // surface pixels, not direct model writes or a mock effect graph.
+            ui.tapTimeline(600, true);
+            ui.openWorkspace("Effects", "Motion/Effects"); ui.click("◆ Animation / keyframes");
+            ui.click("◆ Add / update keyframe");
+            ClipAnimation.Keyframe firstKey = ui.project().clips.get(0).animation.points(ClipAnimation.Property.OPACITY).get(0);
+            assertEquals(.8f, firstKey.value, .0001f);
+            ui.closeCompactDialog(); ui.tapTimeline(1200, true);
+            ui.openWorkspace("Effects", "Motion/Effects"); ui.click("◆ Animation / keyframes");
+            ui.edit("Opacity %", "0.0", true); ui.closeCompactDialog(); ui.waitPreview(); ui.assertOpacityZeroPreview();
+            List<ClipAnimation.Keyframe> nativeKeys = ui.project().clips.get(0).animation.points(ClipAnimation.Property.OPACITY);
+            assertEquals(2, nativeKeys.size()); assertEquals(0, nativeKeys.get(1).value, 0);
+            assertEquals("Animated edits retain the fallback setting", .8f, ui.project().clips.get(0).settings.opacity, .0001f);
+            assertSame("Keyframe creation redraws the existing decoder", effectEditingPlayer,
+                    ui.main(() -> (CompositionPlayer) field(activity, "player")));
+            long midpoint = (nativeKeys.get(0).sourceMs + nativeKeys.get(1).sourceMs) / 2;
+            ui.tapTimeline(midpoint, true); ui.waitPreview();
+            final Harness animationUi = ui;
+            long actualTime = ui.main(() -> (Long) field(activity, "playheadMs"));
+            float expectedRatio = (nativeKeys.get(1).sourceMs - actualTime) / (float) (nativeKeys.get(1).sourceMs - nativeKeys.get(0).sourceMs);
+            waitUntil("Native seek evaluates animated opacity at the actual frame time", 3000, () -> {
+                int pixel = animationUi.monitorCenterPixel();
+                return Math.abs(Color.red(pixel) - 173 * expectedRatio) < 18
+                        && Math.abs(Color.green(pixel) - 75 * expectedRatio) < 18
+                        && Math.abs(Color.blue(pixel) - 75 * expectedRatio) < 18;
+            });
+            ui.openWorkspace("Effects", "Motion/Effects"); ui.click("◆ Animation / keyframes");
+            ui.click("Next ◆ ▶"); assertEquals(nativeKeys.get(1).sourceMs, (long) ui.main(() -> (Long) field(activity, "playheadMs")));
+            ui.click("◀ Previous ◆"); assertEquals(nativeKeys.get(0).sourceMs, (long) ui.main(() -> (Long) field(activity, "playheadMs")));
+            ui.click("Curve: Linear ▾"); ui.clickAccessibleText("Hold");
+            assertEquals(ClipAnimation.Curve.HOLD, ui.project().clips.get(0).animation.points(ClipAnimation.Property.OPACITY).get(0).curve);
+            ui.closeCompactDialog(); ui.tapTimeline(midpoint, true); ui.waitPreview(); ui.assertColourPreview();
+            ui.openWorkspace("Effects", "Motion/Effects"); ui.click("◆ Animation / keyframes");
+            ui.tapAnimationDiamond(nativeKeys.get(1).sourceMs);
+            assertEquals("Real drawn diamond seeks exactly", nativeKeys.get(1).sourceMs,
+                    (long) ui.main(() -> (Long) field(activity, "playheadMs")));
+            ui.click("Remove keyframe here"); assertEquals(1, ui.project().clips.get(0).animation.points(ClipAnimation.Property.OPACITY).size());
+            ui.click("Clear this property's keys"); assertTrue(ui.project().clips.get(0).animation.isEmpty());
+            ui.closeCompactDialog(); ui.waitPreview(); ui.assertColourPreview();
+            ui.click("Undo"); assertEquals(1, ui.project().clips.get(0).animation.points(ClipAnimation.Property.OPACITY).size());
+            ui.click("Redo"); assertTrue(ui.project().clips.get(0).animation.isEmpty());
+            ui.drainActivityIo(); assertTrue(files.loadDraft().clips.get(0).animation.isEmpty());
+
             // Verify focus/blur commits through native navigation, not a direct model write.
             ui.openWorkspace("Effects", "Motion/Effects");
             ui.edit("Scale %", "135.0", false);
@@ -273,6 +316,67 @@ public final class NativeWorkspaceUiTest {
                 if (temporary != null) for (File file : temporary) file.delete();
                 scratch.delete();
             }
+        }
+    }
+
+    @Test(timeout = 180000)
+    public void nativeSliderAndNumericKeyCapFailuresPreserveProjectHistoryAndRestoreControls() throws Exception {
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation(); Context context = instrumentation.getTargetContext();
+        assumeTrue("Run cap regression on a clean install without saved account credentials",
+                !context.getSharedPreferences("encrypted_account", Context.MODE_PRIVATE).contains("ciphertext"));
+        ProjectFiles files = new ProjectFiles(context); AtomicFile draft = new AtomicFile(new File(context.getFilesDir(), "mobile-draft.json"));
+        byte[] originalDraft = readExistingDraft(draft); File scratch = new File(context.getCacheDir(), "native-key-cap-" + UUID.randomUUID());
+        assertTrue(scratch.mkdir()); List<File> ownedMedia = new ArrayList<>(); Harness ui = null;
+        try {
+            StudioProject capped = fixtureProject(instrumentation, files, scratch, ownedMedia);
+            StudioProject.Clip first = capped.clips.get(0); first.settings = new StudioProject.ClipSettings(1, 0, 0, 0, .8f, 0, 0, 1);
+            java.util.EnumMap<ClipAnimation.Property, List<ClipAnimation.Keyframe>> tracks = new java.util.EnumMap<>(ClipAnimation.Property.class);
+            for (int propertyIndex = 0; propertyIndex < 5; propertyIndex++) {
+                ClipAnimation.Property property = ClipAnimation.Property.values()[propertyIndex]; List<ClipAnimation.Keyframe> points = new ArrayList<>();
+                int count = property == ClipAnimation.Property.POSITION_Y ? 1999 : 2000;
+                for (int time = 0; time < count; time++) points.add(new ClipAnimation.Keyframe(time, property.value(first.settings), ClipAnimation.Curve.LINEAR));
+                tracks.put(property, points);
+            }
+            tracks.put(ClipAnimation.Property.SATURATION, java.util.Collections.singletonList(new ClipAnimation.Keyframe(0, 1, ClipAnimation.Curve.LINEAR)));
+            first.animation = new ClipAnimation(tracks); files.saveDraft(capped);
+            MainActivity activity = (MainActivity) instrumentation.startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            ui = new Harness(instrumentation, context, activity); Harness current = ui;
+            waitUntil("Capped private fixture restores before account injection", 15000, () -> current.main(() -> (Boolean) field(activity, "draftReady")));
+            StudioAccount account = current.main(() -> (StudioAccount) field(activity, "account"));
+            ((ExecutorService) field(account, "worker")).submit(() -> {}).get(15, TimeUnit.SECONDS); instrumentation.waitForIdleSync();
+            ui.installInMemoryTestSnapshot(account); ui.click("Continue edit"); ui.waitPreview(); ui.click("Fit");
+            // Updating an EXISTING key at the cap is valid. Undo creates a redo
+            // entry which failed edits must neither erase nor replace with noise.
+            ui.openWorkspace("Colour", "Colour"); ui.edit("Saturation %", "150.0", true); ui.closeCompactDialog(); ui.waitPreview(); ui.click("Undo");
+            assertEquals(1, ui.main(() -> ((java.util.ArrayDeque<?>) field(activity, "redo")).size()).intValue());
+            ui.tapTimeline(2200, true); ui.waitPreview();
+            String before = ProjectCodec.encode(ui.project());
+            int undoSize = ui.main(() -> ((java.util.ArrayDeque<?>) field(activity, "undo")).size());
+            int redoSize = ui.main(() -> ((java.util.ArrayDeque<?>) field(activity, "redo")).size());
+            assertEquals(2000, ui.project().clips.get(0).animation.points(ClipAnimation.Property.OPACITY).size());
+            for (String property : new String[]{"Opacity %", "Saturation %"}) {
+                ui.openWorkspace(property.startsWith("Opacity") ? "Effects" : "Colour", property.startsWith("Opacity") ? "Motion/Effects" : "Colour");
+                float expected = property.startsWith("Opacity") ? 80 : 100;
+                ui.tapEffectSlider(property + " slider", .25f);
+                ui.assertGradeDisplay(property, expected);
+                assertEquals("Rejected actual slider gesture leaves exact project bytes unchanged: " + property, before, ProjectCodec.encode(ui.project()));
+                assertEquals(undoSize, ui.main(() -> ((java.util.ArrayDeque<?>) field(activity, "undo")).size()).intValue());
+                assertEquals(redoSize, ui.main(() -> ((java.util.ArrayDeque<?>) field(activity, "redo")).size()).intValue());
+                ui.edit(property, property.startsWith("Opacity") ? "90.0" : "150.0", true);
+                ui.assertGradeDisplay(property, expected);
+                assertEquals("Rejected numeric commit leaves exact project bytes unchanged: " + property, before, ProjectCodec.encode(ui.project()));
+                assertEquals(undoSize, ui.main(() -> ((java.util.ArrayDeque<?>) field(activity, "undo")).size()).intValue());
+                assertEquals(redoSize, ui.main(() -> ((java.util.ArrayDeque<?>) field(activity, "redo")).size()).intValue());
+                ui.main(() -> { assertFalse(activity.isFinishing()); assertFalse(activity.isDestroyed());
+                    assertNull(((CompositionPlayer) field(activity, "player")).getPlayerError()); return null; });
+                String problem = ui.main(() -> ((TextView) field(activity, "status")).getText().toString());
+                assertTrue("Cap failure is explicit and recoverable", problem.contains("keyframes"));
+            }
+            ui.closeCompactDialog(); ui.drainActivityIo(); assertEquals(before, ProjectCodec.encode(files.loadDraft()));
+        } finally {
+            try { if (ui != null) ui.close(); }
+            finally { restoreDraft(draft, originalDraft); for (File file : ownedMedia) file.delete();
+                File[] temporary = scratch.listFiles(); if (temporary != null) for (File file : temporary) file.delete(); scratch.delete(); }
         }
     }
 
@@ -789,6 +893,47 @@ public final class NativeWorkspaceUiTest {
             assertNotNull("Native inspector field: " + description, value); reveal(value);
             main(() -> { assertTrue(value.isEnabled()); value.requestFocus(); value.setText(text);
                 if (done) value.onEditorAction(EditorInfo.IME_ACTION_DONE); return null; });
+            instrumentation.waitForIdleSync();
+        }
+        void tapAnimationDiamond(long sourceMs) throws Exception {
+            View keys = panel("keyframeTimeline"); assertNotNull(keys); reveal(keys);
+            float[] point = main(() -> {
+                Rect bounds = new Rect(); assertTrue(keys.getGlobalVisibleRect(bounds));
+                StudioProject.Clip clip = ((StudioProject) field(activity, "project")).clips.get((Integer) field(activity, "selected"));
+                float density = activity.getResources().getDisplayMetrics().density;
+                float x = bounds.left + 14 * density + (keys.getWidth() - 28 * density) * (sourceMs - clip.inMs) / clip.lengthMs();
+                return new float[]{x, bounds.top + 48 * density};
+            });
+            long downTime = SystemClock.uptimeMillis();
+            MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, point[0], point[1], 0);
+            down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+            try { assertTrue(instrumentation.getUiAutomation().injectInputEvent(down, false)); } finally { down.recycle(); }
+            SystemClock.sleep(60);
+            MotionEvent up = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, point[0], point[1], 0);
+            up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+            try { assertTrue(instrumentation.getUiAutomation().injectInputEvent(up, false)); } finally { up.recycle(); }
+            waitUntil("Actual animation diamond input seeks the sequence", 12000, () -> main(() -> {
+                StudioProject project = (StudioProject) field(activity, "project"); int selected = (Integer) field(activity, "selected");
+                long start = 0; for (int index = 0; index < selected; index++) start += project.clips.get(index).lengthMs();
+                long expected = start + sourceMs - project.clips.get(selected).inMs;
+                CompositionPlayer player = (CompositionPlayer) field(activity, "player");
+                return (Long) field(activity, "playheadMs") == expected && player.getPlayerError() == null
+                        && Math.abs(player.getCurrentPosition() - expected) < 150;
+            }));
+        }
+        void tapEffectSlider(String description, float fraction) throws Exception {
+            View slider = main(() -> findDescription((View) field(activity, "inspectorPanel"), description));
+            assertNotNull("Actual native effect slider exists", slider); reveal(slider);
+            float[] point = main(() -> { Rect bounds = new Rect(); assertTrue(slider.getGlobalVisibleRect(bounds));
+                assertTrue(slider.isEnabled()); return new float[]{bounds.left + bounds.width() * fraction, bounds.exactCenterY()}; });
+            long downTime = SystemClock.uptimeMillis();
+            MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, point[0], point[1], 0);
+            down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+            try { assertTrue(instrumentation.getUiAutomation().injectInputEvent(down, false)); } finally { down.recycle(); }
+            SystemClock.sleep(80);
+            MotionEvent up = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, point[0], point[1], 0);
+            up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+            try { assertTrue(instrumentation.getUiAutomation().injectInputEvent(up, false)); } finally { up.recycle(); }
             instrumentation.waitForIdleSync();
         }
         void assertGradeDisplay(String description, float expected) throws Exception {

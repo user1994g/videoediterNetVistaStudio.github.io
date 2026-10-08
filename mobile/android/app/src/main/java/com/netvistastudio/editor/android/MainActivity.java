@@ -86,6 +86,22 @@ public final class MainActivity extends Activity {
     private File renderingFile, completedMovie;
     private LinearLayout root, mediaList, inspector, inspectorPanel, mediaPanel, monitorPanel, compactDrawer;
     private StudioTimelineView timeline;
+    private StudioKeyframeView keyframeTimeline;
+    private TextView animationTime;
+    private Button animationCurveButton;
+    private ClipAnimation.Property animationProperty = ClipAnimation.Property.OPACITY;
+    private ClipAnimation.Curve animationCurve = ClipAnimation.Curve.LINEAR;
+    private final List<EffectControlBinding> effectBindings = new ArrayList<>();
+    private static final class EffectControlBinding {
+        final String clipId; final EditText value; final SeekBar slider;
+        final int parameter; final float minimum, maximum, multiplier;
+        boolean tracking, gestureEdited; String displayed;
+        EffectControlBinding(StudioProject.Clip clip, EditText value, SeekBar slider, int parameter,
+                             float minimum, float maximum, float multiplier) {
+            clipId = clip.id; this.value = value; this.slider = slider; this.parameter = parameter;
+            this.minimum = minimum; this.maximum = maximum; this.multiplier = multiplier;
+        }
+    }
     private TextView projectTitle, timecode, mediaSummary;
     private Button playButton, undoButton, redoButton;
     private TextView status, summary, accountStatus, loginStatus;
@@ -406,10 +422,11 @@ public final class MainActivity extends Activity {
     }
     private void refreshInspector() {
         if (!editorVisible || inspector == null) return;
-        inspector.removeAllViews();
+        effectBindings.clear(); keyframeTimeline = null; animationTime = null; animationCurveButton = null; inspector.removeAllViews();
         if (selected < 0 || selected >= project.clips.size()) { inspector.addView(label("Select a timeline clip to edit its trim, motion or colour.", 12, MUTED, false)); return; }
         StudioProject.Clip clip = project.clips.get(selected); inspector.addView(label(clip.name, 12, TEXT, true));
         inspector.addView(label("Clip " + (selected + 1) + " · " + seconds(clip.lengthMs()) + "s", 11, MUTED, false));
+        if (inspectorTab == 1 || inspectorTab == 2) inspector.addView(button("◆ Animation / keyframes", () -> selectWorkspace(3), false));
         if (inspectorTab == 0) {
             inspector.addView(label("SOURCE TRIM · SECONDS", 10, MUTED, true));
             inField = field("In", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL); outField = field("Out", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
@@ -422,17 +439,114 @@ public final class MainActivity extends Activity {
             effectControl(clip, "Position X %", 2, -100, 100, 100); effectControl(clip, "Position Y %", 3, -100, 100, 100); effectControl(clip, "Opacity %", 4, 0, 100, 100);
             inspector.addView(label("100% scale fits the full source first. X/Y use half-canvas offsets; +Y moves up. Opacity fades to the black single-track canvas.", 11, MUTED, false));
             inspector.addView(button("Reset motion", () -> resetSettings(false), false));
-        } else {
+        } else if (inspectorTab == 2) {
             inspector.addView(label("PRIMARY COLOUR", 10, MUTED, true));
             effectControl(clip, "Brightness %", 5, -100, 100, 100); effectControl(clip, "Contrast %", 6, 0, 400, 100); effectControl(clip, "Saturation %", 7, 0, 200, 100);
             inspector.addView(label("Adjustments belong to the selected clip and match the monitor and exported movie. Contrast 100% is neutral.", 11, MUTED, false));
             inspector.addView(button("Reset colour", () -> resetSettings(true), false));
+        } else {
+            animationInspector(clip);
         }
         setEnabledChildren(inspector, !operationBusy && draftReady);
     }
     private LinearLayout propertyRow(String name, View control) {
         LinearLayout row = row(); row.setGravity(Gravity.CENTER_VERTICAL); TextView title = label(name, 12, MUTED, false); title.setSingleLine();
         row.addView(title, new LinearLayout.LayoutParams(dp(64), dp(44))); row.addView(control, new LinearLayout.LayoutParams(0, dp(44), 1)); return row;
+    }
+    private long selectedSourceTime() {
+        if (selected < 0 || selected >= project.clips.size()) return 0;
+        StudioProject.Clip clip = project.clips.get(selected);
+        return Math.max(clip.inMs, Math.min(clip.outMs, clip.inMs + playheadMs - startOf(selected)));
+    }
+    private void animationInspector(StudioProject.Clip clip) {
+        inspector.addView(label("ANIMATION · CLIP LOCAL", 10, MUTED, true));
+        inspector.addView(button(animationProperty.label + " ▾", () -> {
+            flushFocusedEditor(); String[] choices = new String[ClipAnimation.Property.values().length];
+            for (ClipAnimation.Property property : ClipAnimation.Property.values()) choices[property.ordinal()] = property.label;
+            new AlertDialog.Builder(this).setTitle("Animate property").setSingleChoiceItems(choices, animationProperty.ordinal(), (dialog, index) -> {
+                animationProperty = ClipAnimation.Property.values()[index]; dialog.dismiss(); refreshInspector();
+            }).setNegativeButton("Cancel", null).show();
+        }, false));
+        int parameter = animationProperty.ordinal();
+        float multiplier = parameter == 1 ? 1 : 100;
+        float minimum = parameter == 0 ? 5 : parameter == 1 ? -360 : (parameter == 2 || parameter == 3 || parameter == 5) ? -100 : 0;
+        float maximum = parameter == 0 ? 800 : parameter == 1 ? 360 : parameter == 6 ? 400 : parameter == 7 ? 200 : 100;
+        effectControl(clip, animationProperty.label + (parameter == 1 ? " °" : " %"), parameter, minimum, maximum, multiplier);
+        animationTime = label("", 11, MUTED, false); inspector.addView(animationTime);
+        keyframeTimeline = new StudioKeyframeView(this);
+        keyframeTimeline.setListener(source -> {
+            if (operationBusy || !project.clips.contains(clip)) return;
+            // Out is exclusive on the sequence. Keep end diamonds in this clip's
+            // final presentation frame rather than selecting the next clip.
+            seekTimeline(startOf(selected) + Math.min(clip.lengthMs() - 1, source - clip.inMs), false);
+        });
+        inspector.addView(keyframeTimeline, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(94)));
+        LinearLayout navigate = row(); navigate.addView(weighted(button("◀ Previous ◆", () -> navigateKeyframe(false), false)));
+        navigate.addView(weighted(button("Next ◆ ▶", () -> navigateKeyframe(true), false))); inspector.addView(navigate);
+        inspector.addView(button("◆ Add / update keyframe", () -> {
+            if (operationBusy || selected < 0) return; flushFocusedEditor(); if (player != null) player.pause();
+            StudioProject.Clip current = project.clips.get(selected); long source = selectedSourceTime();
+            float value = animationProperty.value(current.settingsAtSourceMs(source));
+            try { ClipAnimation next = current.animation.withKeyframe(animationProperty, source, value, animationCurve);
+                recordEdit(); current.animation = next; changedEdit(); message("Keyframe saved at " + seconds(source - current.inMs) + "s in this clip.");
+            } catch (IllegalArgumentException error) { message(error.getMessage()); }
+        }, false));
+        inspector.addView(button("Remove keyframe here", () -> {
+            if (operationBusy || selected < 0) return; flushFocusedEditor(); StudioProject.Clip current = project.clips.get(selected);
+            long source = selectedSourceTime(); long key = nearestKeyTime(current, source);
+            if (key < 0) { message("Seek to a diamond to remove its keyframe."); return; }
+            recordEdit(); current.animation = current.animation.withoutKeyframe(animationProperty, key); changedEdit();
+        }, false));
+        animationCurveButton = button("Curve: " + curveName(animationCurve) + " ▾", () -> {
+            flushFocusedEditor(); String[] curves = new String[ClipAnimation.Curve.values().length];
+            for (ClipAnimation.Curve curve : ClipAnimation.Curve.values()) curves[curve.ordinal()] = curveName(curve);
+            new AlertDialog.Builder(this).setTitle("Interpolation to the next diamond").setSingleChoiceItems(curves, animationCurve.ordinal(), (dialog, index) -> {
+                animationCurve = ClipAnimation.Curve.values()[index]; dialog.dismiss(); StudioProject.Clip current = project.clips.get(selected);
+                long key = nearestKeyTime(current, selectedSourceTime());
+                if (key >= 0) for (ClipAnimation.Keyframe point : current.animation.points(animationProperty)) if (point.sourceMs == key) {
+                    recordEdit(); current.animation = current.animation.withKeyframe(animationProperty, key, point.value, animationCurve); changedEdit(); return;
+                }
+                refreshInspector();
+            }).setNegativeButton("Cancel", null).show();
+        }, false); inspector.addView(animationCurveButton);
+        inspector.addView(button("Clear this property's keys", () -> {
+            if (operationBusy || selected < 0) return; flushFocusedEditor(); StudioProject.Clip current = project.clips.get(selected);
+            if (current.animation.points(animationProperty).isEmpty()) return; recordEdit(); current.animation = current.animation.withoutProperty(animationProperty); changedEdit();
+        }, false));
+        inspector.addView(label("Add diamonds at different times to animate. With keys enabled, changing a value updates/adds a key at the playhead. Curves belong to the left diamond. Trimming, splitting and moving retain source-time animation.", 11, MUTED, false));
+        inspector.addView(button("Back to Motion / Effects", () -> selectWorkspace(1), false));
+        updateAnimationRuler();
+    }
+    private static String curveName(ClipAnimation.Curve curve) {
+        switch (curve) { case HOLD: return "Hold"; case EASE_IN: return "Ease In"; case EASE_OUT: return "Ease Out"; case EASE_IN_OUT: return "Ease In / Out"; default: return "Linear"; }
+    }
+    private long nearestKeyTime(StudioProject.Clip clip, long source) {
+        long result = -1, distance = 18; // Half of a 30fps frame, including exclusive-Out diamonds.
+        for (ClipAnimation.Keyframe point : clip.animation.points(animationProperty)) {
+            long candidate = Math.abs(point.sourceMs - source);
+            if (candidate < distance) { result = point.sourceMs; distance = candidate; }
+        }
+        return result;
+    }
+    private void navigateKeyframe(boolean next) {
+        if (operationBusy || selected < 0) return; flushFocusedEditor(); StudioProject.Clip clip = project.clips.get(selected);
+        long source = selectedSourceTime(), target = -1;
+        for (ClipAnimation.Keyframe point : clip.animation.points(animationProperty)) {
+            if (point.sourceMs < clip.inMs || point.sourceMs > clip.outMs) continue;
+            if (next && point.sourceMs > source) { target = point.sourceMs; break; }
+            if (!next && point.sourceMs < source) target = point.sourceMs;
+        }
+        if (target < 0) { message(next ? "No next keyframe in this clip." : "No previous keyframe in this clip."); return; }
+        seekTimeline(startOf(selected) + Math.min(clip.lengthMs() - 1, target - clip.inMs), false);
+    }
+    private void updateAnimationRuler() {
+        if (keyframeTimeline == null || selected < 0 || selected >= project.clips.size()) return;
+        StudioProject.Clip clip = project.clips.get(selected); long source = selectedSourceTime();
+        keyframeTimeline.setClip(clip, animationProperty, source);
+        long key = nearestKeyTime(clip, source);
+        if (key >= 0) for (ClipAnimation.Keyframe point : clip.animation.points(animationProperty)) if (point.sourceMs == key) animationCurve = point.curve;
+        if (animationCurveButton != null) animationCurveButton.setText("Curve: " + curveName(animationCurve) + " ▾");
+        if (animationTime != null) animationTime.setText("Clip " + seconds(source - clip.inMs) + "s · Source " + seconds(source) + "s · " + clip.animation.points(animationProperty).size() + " keys");
     }
     private void effectControl(StudioProject.Clip clip, String name, int parameter, float min, float max, float multiplier) {
         LinearLayout row = row(); row.setGravity(Gravity.CENTER_VERTICAL);
@@ -441,17 +555,37 @@ public final class MainActivity extends Activity {
         if (fontScale > 1.3f) inspector.addView(title);
         else row.addView(title, new LinearLayout.LayoutParams(dp(78), dp(44)));
         EditText value = field(name, InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED);
-        value.setText(number(displayedSetting(clip.settings, parameter, multiplier))); value.setSelectAllOnFocus(true); value.setImeOptions(EditorInfo.IME_ACTION_DONE); value.setContentDescription(name);
+        value.setText(number(displayedSetting(clip.settingsAtSourceMs(selectedSourceTime()), parameter, multiplier))); value.setSelectAllOnFocus(true); value.setImeOptions(EditorInfo.IME_ACTION_DONE); value.setContentDescription(name);
         SeekBar slider = new SeekBar(this); slider.setMax(1000); slider.setMinimumHeight(dp(44)); slider.setContentDescription(name + " slider");
-        slider.setProgress(Math.round((displayedSetting(clip.settings, parameter, multiplier) - min) / (max - min) * 1000));
+        slider.setProgress(Math.round((displayedSetting(clip.settingsAtSourceMs(selectedSourceTime()), parameter, multiplier) - min) / (max - min) * 1000));
+        EffectControlBinding binding = new EffectControlBinding(clip, value, slider, parameter, min, max, multiplier);
+        binding.displayed = value.getText().toString(); effectBindings.add(binding);
         row.addView(slider, new LinearLayout.LayoutParams(0, dp(44), 1)); row.addView(value, new LinearLayout.LayoutParams(dp(Math.round(58 * fontScale)), dp(44))); inspector.addView(row);
         slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onStartTrackingTouch(SeekBar bar) { if (!operationBusy) { if (player != null) player.pause(); recordEdit(); } }
+            @Override public void onStartTrackingTouch(SeekBar bar) {
+                binding.tracking = true; binding.gestureEdited = false;
+                if (!operationBusy && player != null) player.pause();
+            }
             @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
                 if (!fromUser || operationBusy || !project.clips.contains(clip)) return;
-                float amount = min + (max - min) * progress / 1000f; value.setText(number(amount)); setSetting(clip, parameter, nativeSetting(parameter, amount, multiplier)); scheduleEffectsPreview();
+                float amount = min + (max - min) * progress / 1000f;
+                try {
+                    // Validate the immutable proposal before changing controls,
+                    // model or history. A loaded curve may already be at its cap.
+                    Runnable apply = prepareSetting(clip, parameter, nativeSetting(parameter, amount, multiplier));
+                    if (apply != null) {
+                        if (!binding.gestureEdited) { recordEdit(); binding.gestureEdited = true; }
+                        apply.run(); scheduleEffectsPreview(); updateAnimationRuler();
+                    }
+                    binding.displayed = number(amount); value.setText(binding.displayed);
+                } catch (IllegalArgumentException error) {
+                    restoreEffectControl(binding, clip); message(error.getMessage());
+                }
             }
-            @Override public void onStopTrackingTouch(SeekBar bar) { autosave(); preview(false); updateEnabled(); }
+            @Override public void onStopTrackingTouch(SeekBar bar) {
+                binding.tracking = false;
+                if (binding.gestureEdited) { autosave(); preview(false); updateEnabled(); }
+            }
         });
         Runnable commit = () -> {
             if (operationBusy || !project.clips.contains(clip)) return;
@@ -461,17 +595,29 @@ public final class MainActivity extends Activity {
                 // round a slider value or create an extra Undo snapshot.
                 // A legacy saved contrast can exceed the visible factor range.
                 // Blurring its clamped display must preserve the exact saved value.
-                if (!value.getText().toString().equals(number(displayedSetting(clip.settings, parameter, multiplier)))) {
-                    if (player != null) player.pause(); recordEdit(); setSetting(clip, parameter, nativeSetting(parameter, amount, multiplier));
-                    slider.setProgress(Math.round((amount - min) / (max - min) * 1000)); autosave(); preview(false); updateEnabled();
+                if (!value.getText().toString().equals(binding.displayed)) {
+                    Runnable apply = prepareSetting(clip, parameter, nativeSetting(parameter, amount, multiplier));
+                    if (apply != null) { if (player != null) player.pause(); recordEdit(); apply.run(); }
+                    binding.displayed = number(amount); value.setText(binding.displayed);
+                    slider.setProgress(Math.round((amount - min) / (max - min) * 1000));
+                    if (apply != null) { autosave(); preview(false); updateEnabled(); updateAnimationRuler(); }
                 }
-            } catch (Exception e) { message(name + " must be between " + number(min) + " and " + number(max) + "."); value.setText(number(displayedSetting(clip.settings, parameter, multiplier))); }
+            } catch (Exception e) {
+                restoreEffectControl(binding, clip);
+                String problem = e.getMessage();
+                message(problem != null && problem.contains("keyframes") ? problem : name + " must be between " + number(min) + " and " + number(max) + ".");
+            }
         };
         value.setOnFocusChangeListener((field, focused) -> { if (!focused) commit.run(); });
         value.setOnEditorActionListener((field, action, event) -> {
             if (action != EditorInfo.IME_ACTION_DONE) return false;
             commit.run(); value.clearFocus(); return true;
         });
+    }
+    private void restoreEffectControl(EffectControlBinding binding, StudioProject.Clip clip) {
+        float restored = displayedSetting(clip.settingsAtSourceMs(selectedSourceTime()), binding.parameter, binding.multiplier);
+        binding.displayed = number(restored); binding.value.setText(binding.displayed);
+        binding.slider.setProgress(Math.round((restored - binding.minimum) / (binding.maximum - binding.minimum) * 1000));
     }
     private static float setting(StudioProject.ClipSettings settings, int parameter) {
         switch (parameter) { case 0: return settings.scale; case 1: return settings.rotationDegrees; case 2: return settings.positionX; case 3: return settings.positionY; case 4: return settings.opacity; case 5: return settings.brightness; case 6: return settings.contrast; default: return settings.saturation; }
@@ -482,16 +628,28 @@ public final class MainActivity extends Activity {
     private static float nativeSetting(int parameter, float displayedValue, float multiplier) {
         return parameter == 6 ? GradeControlValues.nativeContrast(displayedValue) : displayedValue / multiplier;
     }
-    private void setSetting(StudioProject.Clip clip, int parameter, float value) {
+    /** Validate first; applying the returned operation cannot fail due to a keyframe cap. */
+    private Runnable prepareSetting(StudioProject.Clip clip, int parameter, float value) {
+        if (Float.compare(setting(clip.settingsAtSourceMs(selectedSourceTime()), parameter), value) == 0) return null;
+        ClipAnimation.Property property = ClipAnimation.Property.values()[parameter];
+        if (!clip.animation.points(property).isEmpty()) {
+            long time = selectedSourceTime(); ClipAnimation.Curve curve = animationCurve;
+            for (ClipAnimation.Keyframe point : clip.animation.points(property)) if (point.sourceMs == time) curve = point.curve;
+            ClipAnimation next = clip.animation.withKeyframe(property, time, value, curve);
+            next.validateDuration(clip.durationMs); return () -> clip.animation = next;
+        }
         StudioProject.ClipSettings s = clip.settings;
-        clip.settings = new StudioProject.ClipSettings(parameter == 0 ? value : s.scale, parameter == 1 ? value : s.rotationDegrees,
+        StudioProject.ClipSettings next = new StudioProject.ClipSettings(parameter == 0 ? value : s.scale, parameter == 1 ? value : s.rotationDegrees,
                 parameter == 2 ? value : s.positionX, parameter == 3 ? value : s.positionY, parameter == 4 ? value : s.opacity,
                 parameter == 5 ? value : s.brightness, parameter == 6 ? value : s.contrast, parameter == 7 ? value : s.saturation);
+        return () -> clip.settings = next;
     }
     private void resetSettings(boolean colour) {
         if (operationBusy || selected < 0) return; flushFocusedEditor(); recordEdit(); StudioProject.Clip clip = project.clips.get(selected); StudioProject.ClipSettings s = clip.settings;
         clip.settings = colour ? new StudioProject.ClipSettings(s.scale, s.rotationDegrees, s.positionX, s.positionY, s.opacity, 0, 0, 1)
-                : new StudioProject.ClipSettings(1, 0, 0, 0, 1, s.brightness, s.contrast, s.saturation); changedEdit();
+                : new StudioProject.ClipSettings(1, 0, 0, 0, 1, s.brightness, s.contrast, s.saturation);
+        for (ClipAnimation.Property property : ClipAnimation.Property.values()) if ((property.ordinal() >= 5) == colour) clip.animation = clip.animation.withoutProperty(property);
+        changedEdit();
     }
     private void scheduleEffectsPreview() { preview(false, true); }
 
@@ -658,6 +816,17 @@ public final class MainActivity extends Activity {
     private void updatePlayhead(boolean follow) {
         if (timecode != null) timecode.setText(frameTime(playheadMs));
         if (timeline != null) timeline.setPlayhead(playheadMs, follow);
+        updateAnimationRuler();
+        if (selected >= 0 && selected < project.clips.size()) {
+            StudioProject.Clip clip = project.clips.get(selected); StudioProject.ClipSettings current = clip.settingsAtSourceMs(selectedSourceTime());
+            for (EffectControlBinding binding : effectBindings) {
+                if (!binding.clipId.equals(clip.id) || binding.tracking || binding.value.hasFocus()) continue;
+                binding.displayed = number(displayedSetting(current, binding.parameter, binding.multiplier));
+                if (!binding.value.getText().toString().equals(binding.displayed)) binding.value.setText(binding.displayed);
+                int progress = Math.round((displayedSetting(current, binding.parameter, binding.multiplier) - binding.minimum) / (binding.maximum - binding.minimum) * 1000);
+                if (binding.slider.getProgress() != progress) binding.slider.setProgress(progress);
+            }
+        }
     }
     private long startOf(int index) { long value = 0; for (int i = 0; i < Math.max(0, index) && i < project.clips.size(); i++) value += project.clips.get(i).lengthMs(); return value; }
     private int clipAt(long position) { long end = 0; for (int i = 0; i < project.clips.size(); i++) { end += project.clips.get(i).lengthMs(); if (position < end) return i; } return project.clips.size() - 1; }
@@ -865,7 +1034,7 @@ public final class MainActivity extends Activity {
                 }
                 for (int i = 0; i < loaded.clips.size(); i++) {
                     StudioProject.Clip clip = loaded.clips.get(i); long actual = durations.get(clip.uri);
-                    loaded.clips.set(i, new StudioProject.Clip(clip.id, clip.uri, clip.name, actual, clip.inMs, clip.outMs, clip.settings.copy()));
+                    loaded.clips.set(i, new StudioProject.Clip(clip.id, clip.uri, clip.name, actual, clip.inMs, clip.outMs, clip.settings.copy(), clip.animation));
                 }
                 if (!saveDraftIfCurrent(loaded)) { removePrivateCopies(loaded.sources()); return; }
                 postResult(ticket, () -> {
@@ -999,7 +1168,7 @@ public final class MainActivity extends Activity {
                 }).show();
     }
     private void about() {
-        String text = "NetVista Studio 1.4.0 · Beta 7 · Android mobile edition\n\nNative Video, Motion/Effects and Colour workspaces: source pool, program monitor, graphical timeline, trims/split/duplicate/order, undo/redo, portable projects and H.264/AAC MP4 export. Motion and primary colour use the same composition in monitor and export.\n\nThis is not full desktop feature parity. No independent multitrack placement/mixing, transitions, keyframes, LUTs/advanced grading, photo/3D/Game Maker, mods or desktop project compatibility. The A1 lane represents linked source audio, not a separate editable track. Opacity fades to the black canvas. Projects embed original videos; keep backups before uninstalling. Android may defer background account checks. Exports require the app to remain foreground.\n\nOpen-source notices:\n";
+        String text = "NetVista Studio 1.4.0 · Development workspace preview\n\nNative Video, Motion/Effects and Colour workspaces: source pool, program monitor, graphical timeline, trims/split/duplicate/order, undo/redo, portable projects and H.264/AAC MP4 export. Eight clip properties support saved Linear, Hold, Ease In, Ease Out and Ease In/Out keyframes, evaluated at each video frame in both monitor and export.\n\nThis is not full desktop feature parity. No independent multitrack placement/mixing, transitions, LUTs/advanced grading, photo/3D/Game Maker, mods or desktop project compatibility. The A1 lane represents linked source audio, not a separate editable track. Opacity fades to the black canvas. Projects embed original videos; keep backups before uninstalling. Android may defer background account checks. Exports require the app to remain foreground.\n\nOpen-source notices:\n";
         try (InputStream input = getAssets().open("THIRD_PARTY_NOTICES.txt")) {
             java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream(); ProjectFiles.copy(input, output, 128 * 1024);
             text += output.toString(StandardCharsets.UTF_8.name());

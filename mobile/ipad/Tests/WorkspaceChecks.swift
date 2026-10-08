@@ -202,6 +202,37 @@ final class WorkspaceCheckDelegate: UIResponder, UIApplicationDelegate {
         editor.redoAction(); require(editor.project.clips[0].effects.opacity == 0.5, "Redo property")
         editor.selectPage("Colour"); await settle(); slider("saturation", value: 0.6)
         require(abs(editor.project.clips[0].effects.saturation - 0.6) < 0.00001, "Real colour control")
+        let beforeAnimation = editor.project
+        editor.selectPage("Effects"); await settle()
+        editor.seek.value = 0.25; editor.scrub()
+        control("property.opacity.keyframe").sendActions(for: .touchUpInside)
+        require(editor.project.clips[0].effects.frames(for: .opacity).count == 1, "Property diamond creates a real saved key")
+        require(control("property.opacity.keyframe").bounds.width >= 44 && control("property.opacity.keyframe").bounds.height >= 44,
+                "Property animation diamond needs a 44-point touch target")
+        editor.seek.value = 1.25; editor.scrub(); slider("opacity", value: 0)
+        let keys = editor.project.clips[0].effects.frames(for: .opacity)
+        require(keys.count == 2 && abs(keys[0].sourceSeconds - 0.25) < 0.001 && keys[0].value == 0.5 &&
+                abs(keys[1].sourceSeconds - 1.25) < 0.001 && keys[1].value == 0,
+                "Animated slider adds a source-time key at the actual logical playhead, preserving the previous key")
+        let animatedHidden = await previewRGB(at: 1.3)
+        require(max(animatedHidden.0, animatedHidden.1, animatedHidden.2) < 8, "Native keyframe controls must hide real AVPlayer frames: \(animatedHidden)")
+        editor.seek.value = 1.25; editor.scrub()
+        control("animation.previous").sendActions(for: .touchUpInside)
+        require(abs(editor.previewTargetTime - 0.25) < 0.002, "Previous seeks real key, not just highlighting a diamond")
+        control("animation.next").sendActions(for: .touchUpInside)
+        require(abs(editor.previewTargetTime - 1.25) < 0.002, "Next seeks the actual next source key")
+        control("animation.remove").sendActions(for: .touchUpInside)
+        require(editor.project.clips[0].effects.frames(for: .opacity).count == 1, "Remove here deletes a real saved key")
+        editor.undoAction(); require(editor.project.clips[0].effects.frames(for: .opacity).count == 2, "Undo restores removed keyframe")
+        control("animation.auto").sendActions(for: .touchUpInside); slider("brightness", value: -0.2)
+        require(editor.project.clips[0].effects.frames(for: .brightness).count == 1, "Auto key animates an initially static colour property")
+        control("animation.auto").sendActions(for: .touchUpInside)
+        guard let lane = views(editor.view).compactMap({ $0 as? MobileKeyframeTrack }).first else { fail("Missing native diamond lane") }
+        require(lane.frames.count == 1 && lane.sourceRange == 0...3 && lane.bounds.height >= 44, "Animation lane is backed by selected property's saved keys")
+        lane.onSeek?(0.7); require(abs(editor.previewTargetTime - 0.7) < 0.002, "Diamond lane seeks real sequence")
+        editor.saveWorking(); require((try! MobileProject.read(editor.autosave)).clips[0].effects.keyframes == editor.project.clips[0].effects.keyframes,
+            "Animation keys persist in native draft")
+        editor.change { $0 = beforeAnimation }
         editor.selectPage("Edit"); await settle()
         let timeline = views(editor.view).compactMap { $0 as? MobileTimelineView }.first!
         timeline.onSplit?(0, 1)
@@ -220,7 +251,7 @@ final class WorkspaceCheckDelegate: UIResponder, UIApplicationDelegate {
         require(saved == editor.project && saved.library.count == 2, "Native persistence and media pool retained")
         editor.showHome(); await settle(); control("studio.continue").sendActions(for: .touchUpInside)
         await settle(); snapshot("editor-final")
-        try? "PASS: actual AVPlayer frames, second-clip playback, opacity 0/50 and undo preview; native Home artwork; phone/tablet portrait/landscape and split-window layout; real property controls, undo/redo, split/duplicate/delete/reorder callback, draft/effects/media-pool persistence; no account traffic. Simulator QA is not physical-device signing or codec coverage.\n".write(to: documents.appendingPathComponent("workspace-result.txt"), atomically: true, encoding: .utf8)
+        try? "PASS: actual AVPlayer frames, second-clip playback, opacity 0/50 and undo preview; native Home artwork; phone/tablet portrait/landscape and split-window layout; real animation diamonds, animated playback, Add/Remove/Previous/Next/Auto key, seekable lane, undo and saved tracks; real property controls, split/duplicate/delete/reorder callback, draft/effects/media-pool persistence; no account traffic. Simulator QA is not physical-device signing or codec coverage.\n".write(to: documents.appendingPathComponent("workspace-result.txt"), atomically: true, encoding: .utf8)
     }
 }
 

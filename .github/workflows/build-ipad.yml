@@ -7,6 +7,16 @@ on:
       - 'StudioAccount.swift'
       - 'assets/NetVistaStudio.png'
       - 'assets/home-video-coast.png'
+      - 'PhotoRaster.swift'
+      - 'Tests/PhotoRasterChecks.swift'
+      - 'Game*.swift'
+      - 'ModelingDocument.swift'
+      - 'ModelingSculpt.swift'
+      - 'ModelingGenerators.swift'
+      - 'ModelingPhysics.swift'
+      - 'AdvancedGrade.swift'
+      - 'CubeLUT.swift'
+      - 'UltraKey.swift'
       - '.github/workflows/build-ipad.yml'
   workflow_dispatch:
 
@@ -30,6 +40,8 @@ jobs:
           set -euo pipefail
           swiftc mobile/ipad/Sources/MobileProject.swift mobile/ipad/Tests/ProjectChecks.swift -o "$RUNNER_TEMP/ipad-project-checks"
           "$RUNNER_TEMP/ipad-project-checks"
+          swiftc mobile/ipad/Sources/MobileProject.swift mobile/ipad/Tests/AnimationChecks.swift -o "$RUNNER_TEMP/ipad-animation-checks"
+          "$RUNNER_TEMP/ipad-animation-checks"
           swiftc -swift-version 5 StudioAccount.swift mobile/ipad/Sources/MobileAccount.swift mobile/ipad/Tests/AccountChecks.swift -o "$RUNNER_TEMP/ipad-account-checks"
           "$RUNNER_TEMP/ipad-account-checks"
       - name: Test actual composed and encoded effect pixels

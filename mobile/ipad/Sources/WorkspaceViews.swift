@@ -192,13 +192,15 @@ final class MobilePropertyRow: UIView {
     let slider = UISlider()
     private let name: UILabel
     private let value = UIButton(type: .system)
+    private let diamond = UIButton(type: .system)
     var onBegin: (() -> Void)?
     var onChange: ((String, Double, Bool) -> Void)?
     var onNumeric: ((String) -> Void)?
+    var onKeyframe: ((String) -> Void)?
     let multiplier: Double
     init(key: String, title: String, range: ClosedRange<Double>, multiplier: Double = 1) {
         self.key = key; self.multiplier = multiplier; name = MobileTheme.label(title, size: 11)
-        super.init(frame: .zero); addSubview(name); addSubview(slider); addSubview(value)
+        super.init(frame: .zero); addSubview(name); addSubview(slider); addSubview(value); addSubview(diamond)
         slider.minimumValue = Float(range.lowerBound); slider.maximumValue = Float(range.upperBound); slider.tintColor = MobileTheme.accent
         slider.accessibilityLabel = title; value.titleLabel?.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
         value.tintColor = .white; value.backgroundColor = MobileTheme.top; value.layer.cornerRadius = 4
@@ -206,12 +208,177 @@ final class MobilePropertyRow: UIView {
         slider.addTarget(self, action: #selector(changed), for: .valueChanged)
         slider.addTarget(self, action: #selector(ended), for: [.touchUpInside, .touchUpOutside, .touchCancel])
         value.addAction(UIAction { [weak self] _ in guard let self else { return }; self.onNumeric?(self.key) }, for: .touchUpInside)
+        diamond.setImage(UIImage(systemName: "diamond", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12)), for: .normal)
+        diamond.accessibilityLabel = "Add or update \(title) keyframe"
+        diamond.accessibilityIdentifier = "property.\(key).keyframe"
+        diamond.addAction(UIAction { [weak self] _ in guard let self else { return }; self.onKeyframe?(self.key) }, for: .touchUpInside)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:)") }
-    func set(_ number: Double, enabled: Bool) { slider.value = Float(number); slider.isEnabled = enabled; value.isEnabled = enabled; updateValue(); alpha = enabled ? 1 : 0.4 }
+    func set(_ number: Double, enabled: Bool) { if !slider.isTracking { slider.value = Float(number) }; slider.isEnabled = enabled; value.isEnabled = enabled; diamond.isEnabled = enabled; updateValue(); alpha = enabled ? 1 : 0.4 }
+    func setAnimation(active: Bool, atKeyframe: Bool) {
+        diamond.tintColor = active ? MobileTheme.accent : MobileTheme.secondary
+        diamond.setImage(UIImage(systemName: atKeyframe ? "diamond.fill" : "diamond", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12)), for: .normal)
+        diamond.accessibilityValue = atKeyframe ? "Keyframe at playhead" : active ? "Animated property" : "Static property"
+    }
     private func updateValue() { value.setTitle(String(format: "%.1f", Double(slider.value) * multiplier), for: .normal) }
     @objc private func begin() { onBegin?() }
     @objc private func changed() { updateValue(); onChange?(key, Double(slider.value), false) }
     @objc private func ended() { updateValue(); onChange?(key, Double(slider.value), true) }
-    override func layoutSubviews() { super.layoutSubviews(); name.frame = CGRect(x: 0, y: 0, width: 72, height: 44); value.frame = CGRect(x: bounds.width - 53, y: 5, width: 53, height: 34); slider.frame = CGRect(x: 75, y: 0, width: max(40, bounds.width - 133), height: 44) }
+    override func layoutSubviews() { super.layoutSubviews(); diamond.frame = CGRect(x: 0, y: 0, width: 44, height: 44); name.frame = CGRect(x: 44, y: 0, width: 62, height: 44); value.frame = CGRect(x: bounds.width - 53, y: 0, width: 53, height: 44); slider.frame = CGRect(x: 109, y: 0, width: max(1, bounds.width - 166), height: 44) }
+}
+
+/// An actual clip-local animation lane. Diamonds are saved model keys; the
+/// red line is the real sequence playhead remapped to this clip's source time.
+/// Pinch zooms around the playhead and two-finger pan navigates a long clip.
+final class MobileKeyframeTrack: UIView, UIGestureRecognizerDelegate {
+    var frames: [MobileEffectKeyframe] = [] { didSet { setNeedsDisplay() } }
+    var sourceRange: ClosedRange<Double> = 0...1 { didSet { if sourceRange != oldValue { fit() }; setNeedsDisplay() } }
+    var sourceTime: Double = 0 { didSet { accessibilityValue = String(format: "%.2f seconds", sourceTime - sourceRange.lowerBound); setNeedsDisplay() } }
+    var onSeek: ((Double) -> Void)?
+    var canEdit = true
+    private var visibleStart: Double = 0, visibleLength: Double = 1
+    private let inset: CGFloat = 12
+    override init(frame: CGRect) {
+        super.init(frame: frame); backgroundColor = MobileTheme.top; layer.cornerRadius = 5
+        isAccessibilityElement = true; accessibilityTraits = .adjustable
+        accessibilityIdentifier = "animation.track"; accessibilityLabel = "Keyframe timeline, pinch to zoom, two-finger pan to navigate"
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tap(_:))))
+        let scrub = UIPanGestureRecognizer(target: self, action: #selector(scrub(_:))); scrub.maximumNumberOfTouches = 1; addGestureRecognizer(scrub)
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(pan(_:))); pan.minimumNumberOfTouches = 2; pan.maximumNumberOfTouches = 2; pan.delegate = self; addGestureRecognizer(pan)
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinch(_:))); pinch.delegate = self; addGestureRecognizer(pinch)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:)") }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        (gestureRecognizer is UIPinchGestureRecognizer && (other as? UIPanGestureRecognizer)?.minimumNumberOfTouches == 2) ||
+        ((gestureRecognizer as? UIPanGestureRecognizer)?.minimumNumberOfTouches == 2 && other is UIPinchGestureRecognizer)
+    }
+    override func accessibilityIncrement() { guard canEdit else { return }; onSeek?(min(sourceRange.upperBound, sourceTime + 1.0 / 30)) }
+    override func accessibilityDecrement() { guard canEdit else { return }; onSeek?(max(sourceRange.lowerBound, sourceTime - 1.0 / 30)) }
+    func fit() { visibleStart = sourceRange.lowerBound; visibleLength = max(0.04, sourceRange.upperBound - sourceRange.lowerBound); setNeedsDisplay() }
+    func zoom(_ multiplier: Double) {
+        let length = max(0.04, sourceRange.upperBound - sourceRange.lowerBound)
+        let anchor = min(sourceRange.upperBound, max(sourceRange.lowerBound, sourceTime))
+        let fraction = min(1, max(0, (anchor - visibleStart) / visibleLength))
+        visibleLength = min(length, max(0.1, visibleLength / multiplier))
+        visibleStart = min(sourceRange.upperBound - visibleLength, max(sourceRange.lowerBound, anchor - fraction * visibleLength)); setNeedsDisplay()
+    }
+    private func x(_ seconds: Double) -> CGFloat { inset + CGFloat((seconds - visibleStart) / visibleLength) * max(1, bounds.width - 2 * inset) }
+    private func seconds(_ point: CGPoint) -> Double {
+        min(sourceRange.upperBound, max(sourceRange.lowerBound,
+            visibleStart + Double((point.x - inset) / max(1, bounds.width - 2 * inset)) * visibleLength))
+    }
+    @objc private func tap(_ gesture: UITapGestureRecognizer) {
+        guard canEdit else { return }; let point = gesture.location(in: self)
+        let nearby = frames.filter { sourceRange.contains($0.sourceSeconds) && abs(x($0.sourceSeconds) - point.x) <= 18 }
+            .min { abs(x($0.sourceSeconds) - point.x) < abs(x($1.sourceSeconds) - point.x) }
+        onSeek?(nearby?.sourceSeconds ?? (seconds(point) * 30).rounded() / 30)
+    }
+    @objc private func scrub(_ gesture: UIPanGestureRecognizer) { guard canEdit else { return }; onSeek?(seconds(gesture.location(in: self))) }
+    @objc private func pinch(_ gesture: UIPinchGestureRecognizer) { zoom(Double(gesture.scale)); gesture.scale = 1 }
+    @objc private func pan(_ gesture: UIPanGestureRecognizer) {
+        let delta = Double(gesture.translation(in: self).x / max(1, bounds.width - 2 * inset)) * visibleLength
+        visibleStart = min(sourceRange.upperBound - visibleLength, max(sourceRange.lowerBound, visibleStart - delta))
+        gesture.setTranslation(.zero, in: self); setNeedsDisplay()
+    }
+    override func draw(_ rect: CGRect) {
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        let width = max(1, bounds.width - 2 * inset)
+        let step = max(1.0 / 30, pow(10, floor(log10(visibleLength / 3))))
+        var tick = ceil(visibleStart / step) * step
+        var count = 0
+        while tick <= visibleStart + visibleLength && count < 100 {
+            let p = x(tick); context.setStrokeColor(MobileTheme.line.cgColor); context.setLineWidth(0.5)
+            context.move(to: CGPoint(x: p, y: 22)); context.addLine(to: CGPoint(x: p, y: bounds.height - 8)); context.strokePath()
+            let text = String(format: "%.1fs", tick - sourceRange.lowerBound)
+            (text as NSString).draw(at: CGPoint(x: min(bounds.width - 34, p + 2), y: 6), withAttributes: [.font: UIFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular), .foregroundColor: MobileTheme.secondary])
+            tick += step; count += 1
+        }
+        context.setStrokeColor(MobileTheme.line.cgColor); context.move(to: CGPoint(x: inset, y: 52)); context.addLine(to: CGPoint(x: inset + width, y: 52)); context.strokePath()
+        for frame in frames where sourceRange.contains(frame.sourceSeconds) && frame.sourceSeconds >= visibleStart && frame.sourceSeconds <= visibleStart + visibleLength {
+            let p = x(frame.sourceSeconds), near = abs(frame.sourceSeconds - sourceTime) <= 1.0 / 600
+            let diamond = UIBezierPath(); diamond.move(to: CGPoint(x: p, y: 45)); diamond.addLine(to: CGPoint(x: p + 7, y: 52))
+            diamond.addLine(to: CGPoint(x: p, y: 59)); diamond.addLine(to: CGPoint(x: p - 7, y: 52)); diamond.close()
+            (near ? UIColor.white : MobileTheme.accent).setFill(); diamond.fill()
+        }
+        if sourceTime >= visibleStart && sourceTime <= visibleStart + visibleLength {
+            let p = x(sourceTime); context.setStrokeColor(MobileTheme.accent.cgColor); context.setLineWidth(1.5)
+            context.move(to: CGPoint(x: p, y: 0)); context.addLine(to: CGPoint(x: p, y: bounds.height)); context.strokePath()
+        }
+        if frames.isEmpty { ("No keys · Set a value, then add ◆" as NSString).draw(at: CGPoint(x: inset, y: 65), withAttributes: [.font: UIFont.systemFont(ofSize: 10), .foregroundColor: MobileTheme.secondary]) }
+    }
+}
+
+final class MobileAnimationPanel: UIView {
+    let track = MobileKeyframeTrack()
+    var onProperty: ((MobileEffectProperty) -> Void)?
+    var onInterpolation: ((MobileKeyframeInterpolation) -> Void)?
+    var onAuto: (() -> Void)?
+    var onAdd: (() -> Void)?, onRemove: (() -> Void)?, onClear: (() -> Void)?
+    var onPrevious: (() -> Void)?, onNext: (() -> Void)?
+    private let title = MobileTheme.label("KEYFRAME ANIMATION", size: 10, weight: .bold)
+    private let time = MobileTheme.label("", size: 10)
+    private let property = MobileTheme.button("Opacity", action: {})
+    private let interpolation = MobileTheme.button("Linear", action: {})
+    private let auto = MobileTheme.button("Auto key: Off", action: {})
+    private var controls: [UIButton] = []
+    private var configuredProperty: MobileEffectProperty?
+    private var configuredInterpolation: MobileKeyframeInterpolation?
+    private var configuredClip: UUID?
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        title.textColor = MobileTheme.secondary; time.textColor = MobileTheme.secondary
+        for view in [title, time, property, interpolation, auto, track] { addSubview(view) }
+        property.accessibilityIdentifier = "animation.property"; interpolation.accessibilityIdentifier = "animation.interpolation"
+        property.showsMenuAsPrimaryAction = true; interpolation.showsMenuAsPrimaryAction = true
+        auto.accessibilityIdentifier = "animation.auto"
+        auto.addAction(UIAction { [weak self] _ in self?.onAuto?() }, for: .touchUpInside)
+        let specs: [(String, String, () -> Void)] = [
+            ("Previous", "animation.previous", { [weak self] in self?.onPrevious?() }),
+            ("Next", "animation.next", { [weak self] in self?.onNext?() }),
+            ("◆ Add / Update", "animation.add", { [weak self] in self?.onAdd?() }),
+            ("Remove here", "animation.remove", { [weak self] in self?.onRemove?() }),
+            ("Clear track", "animation.clear", { [weak self] in self?.onClear?() }),
+            ("−", "animation.zoom.out", { [weak self] in self?.track.zoom(0.75) }),
+            ("Fit", "animation.zoom.fit", { [weak self] in self?.track.fit() }),
+            ("+", "animation.zoom.in", { [weak self] in self?.track.zoom(1.33) })]
+        for (text, id, handler) in specs { let button = MobileTheme.button(text, action: handler); button.accessibilityIdentifier = id; controls.append(button); addSubview(button) }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:)") }
+    func configure(clip: MobileClip?, property selected: MobileEffectProperty, sourceTime: Double,
+                   interpolation selectedInterpolation: MobileKeyframeInterpolation, autoKey: Bool, enabled: Bool) {
+        if configuredProperty != selected {
+            configuredProperty = selected; property.setTitle(selected.title, for: .normal)
+            property.menu = UIMenu(children: MobileEffectProperty.allCases.map { item in UIAction(title: item.title, state: item == selected ? .on : .off) { [weak self] _ in self?.onProperty?(item) } })
+        }
+        if configuredInterpolation != selectedInterpolation {
+            configuredInterpolation = selectedInterpolation; interpolation.setTitle(selectedInterpolation.title, for: .normal)
+            interpolation.menu = UIMenu(children: MobileKeyframeInterpolation.allCases.map { item in UIAction(title: item.title, state: item == selectedInterpolation ? .on : .off) { [weak self] _ in self?.onInterpolation?(item) } })
+        }
+        auto.setTitle(autoKey ? "Auto key: On" : "Auto key: Off", for: .normal); auto.backgroundColor = autoKey ? MobileTheme.video : MobileTheme.control
+        track.frames = clip?.effects.frames(for: selected) ?? []; track.sourceTime = sourceTime
+        track.sourceRange = (clip?.inPoint ?? 0)...(clip?.outPoint ?? 1); track.canEdit = enabled
+        if configuredClip != clip?.id { configuredClip = clip?.id; track.fit() }
+        let local = max(0, sourceTime - (clip?.inPoint ?? 0))
+        time.text = String(format: "%.2fs · %d saved keys", local, track.frames.count)
+        for button in [property, interpolation, auto] + controls { button.isEnabled = enabled }
+        controls[3].isEnabled = enabled && clip?.effects.keyframeIndex(for: selected, at: sourceTime) != nil
+        controls[4].isEnabled = enabled && !track.frames.isEmpty
+        for (index, direction) in [(0, -1), (1, 1)] {
+            controls[index].isEnabled = enabled && track.frames.contains { frame in
+                track.sourceRange.contains(frame.sourceSeconds) && (direction < 0 ? frame.sourceSeconds < sourceTime - 1.0 / 600 : frame.sourceSeconds > sourceTime + 1.0 / 600)
+            }
+        }
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews(); let w = bounds.width, half = (w - 4) / 2
+        title.frame = CGRect(x: 0, y: 0, width: w, height: 24)
+        property.frame = CGRect(x: 0, y: 24, width: w, height: 44)
+        interpolation.frame = CGRect(x: 0, y: 72, width: half, height: 44); auto.frame = CGRect(x: half + 4, y: 72, width: half, height: 44)
+        time.frame = CGRect(x: 0, y: 120, width: w, height: 24); track.frame = CGRect(x: 0, y: 148, width: w, height: 90)
+        controls[0].frame = CGRect(x: 0, y: 242, width: half, height: 44); controls[1].frame = CGRect(x: half + 4, y: 242, width: half, height: 44)
+        controls[2].frame = CGRect(x: 0, y: 290, width: half, height: 44); controls[3].frame = CGRect(x: half + 4, y: 290, width: half, height: 44)
+        controls[4].frame = CGRect(x: 0, y: 338, width: w, height: 44)
+        let third = (w - 8) / 3
+        for index in 5...7 { controls[index].frame = CGRect(x: CGFloat(index - 5) * (third + 4), y: 386, width: third, height: 44) }
+    }
 }

@@ -2,6 +2,19 @@ import Foundation
 import CoreImage
 import CoreGraphics
 
+/// Shared three-way wheel values. Kept with the grading engine, not an AppKit
+/// window, so iPhone/iPad can use the exact same saved grade and pixel math.
+struct ColorWheelAdjustment: Codable, Equatable {
+    var red: Double = 0
+    var green: Double = 0
+    var blue: Double = 0
+    var master: Double = 0
+
+    init(red: Double = 0, green: Double = 0, blue: Double = 0, master: Double = 0) {
+        self.red = red; self.green = green; self.blue = blue; self.master = master
+    }
+}
+
 /// A point in a normalised (0...1) grading curve.  Curves are deliberately
 /// data-only so they can be saved in a project, copied between clips, and
 /// exported to a LUT without depending on AppKit controls.

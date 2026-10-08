@@ -1,7 +1,14 @@
-import Cocoa
+#if canImport(AppKit)
+import AppKit
+#else
+import UIKit
+#endif
 import CoreImage
 
-@main struct PhotoRasterChecks {
+#if !NETVISTA_SHARED_CORE_QA
+@main
+#endif
+struct PhotoRasterChecks {
     static let context = CIContext(options: [.useSoftwareRenderer: false])
     static func rgba(_ image: CIImage, _ x: Int, _ y: Int) -> [UInt8] {
         var bytes = [UInt8](repeating: 0, count: 4)

@@ -91,6 +91,7 @@ public final class StudioProject {
         public long inMs;
         public long outMs;
         public ClipSettings settings;
+        public ClipAnimation animation;
 
         public Clip(String id, String uri, String name, long durationMs, long inMs, long outMs) {
             this(id, uri, name, durationMs, inMs, outMs, new ClipSettings());
@@ -98,13 +99,19 @@ public final class StudioProject {
 
         public Clip(String id, String uri, String name, long durationMs, long inMs, long outMs,
                     ClipSettings settings) {
+            this(id, uri, name, durationMs, inMs, outMs, settings, new ClipAnimation());
+        }
+
+        public Clip(String id, String uri, String name, long durationMs, long inMs, long outMs,
+                    ClipSettings settings, ClipAnimation animation) {
             if (!validMediaPath(id, uri)
-                    || name == null || name.length() > 512 || settings == null || durationMs < 1
+                    || name == null || name.length() > 512 || settings == null || animation == null || durationMs < 1
                     || durationMs > 7L * 24 * 60 * 60 * 1000) {
                 throw new IllegalArgumentException("Invalid local video clip.");
             }
             this.id = id; this.uri = uri; this.name = name; this.durationMs = durationMs;
             this.settings = settings.copy();
+            animation.validateDuration(durationMs); this.animation = animation.copy();
             trim(inMs, outMs);
         }
 
@@ -118,7 +125,8 @@ public final class StudioProject {
         }
 
         public long lengthMs() { return outMs - inMs; }
-        public Clip copy() { return new Clip(id, uri, name, durationMs, inMs, outMs, settings); }
+        public ClipSettings settingsAtSourceMs(double sourceMs) { return animation.evaluate(settings, sourceMs); }
+        public Clip copy() { return new Clip(id, uri, name, durationMs, inMs, outMs, settings, animation); }
         /** Returns a fresh full-source pool record with no timeline-only effects or trim. */
         public Clip fullSource() { return new Clip(id, uri, name, durationMs, 0, durationMs); }
     }
@@ -157,7 +165,7 @@ public final class StudioProject {
             throw new IllegalArgumentException("Split must be inside the clip's In and Out points.");
         }
         Clip right = new Clip(freshClipId(), left.uri, left.name, left.durationMs,
-                sourcePositionMs, left.outMs, left.settings);
+                sourcePositionMs, left.outMs, left.settings, left.animation);
         left.trim(left.inMs, sourcePositionMs);
         clips.add(index + 1, right);
         return right;
@@ -167,7 +175,7 @@ public final class StudioProject {
     public Clip duplicate(int index) {
         Clip original = editableClip(index);
         Clip duplicate = new Clip(freshClipId(), original.uri, original.name, original.durationMs,
-                original.inMs, original.outMs, original.settings);
+                original.inMs, original.outMs, original.settings, original.animation);
         clips.add(index + 1, duplicate);
         return duplicate;
     }

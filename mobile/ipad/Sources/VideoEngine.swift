@@ -16,7 +16,9 @@ struct MobileSequence {
 final class MobileCompositionInstruction: NSObject, AVVideoCompositionInstructionProtocol {
     let timeRange: CMTimeRange
     let enablePostProcessing = false
-    let containsTweening = false
+    // Even an initially static clip can acquire a live keyframe track. Never
+    // advertise a time-invariant instruction which AVFoundation may cache.
+    let containsTweening = true
     let passthroughTrackID: CMPersistentTrackID = kCMPersistentTrackID_Invalid
     var requiredSourceTrackIDs: [NSValue]? { [NSNumber(value: sourceTrackID)] }
     let sourceTrackID: CMPersistentTrackID
@@ -24,14 +26,20 @@ final class MobileCompositionInstruction: NSObject, AVVideoCompositionInstructio
     let fitTransform: CGAffineTransform
     let sourceHeight: CGFloat
     let usesLivePreview: Bool
+    let sourceInPoint: Double
     private let lock = NSLock()
     private var value: MobileClipEffects
     var effects: MobileClipEffects { lock.lock(); defer { lock.unlock() }; return value }
+    func effects(at compositionTime: CMTime) -> MobileClipEffects {
+        let offset = compositionTime.seconds - timeRange.start.seconds
+        let sourceTime = sourceInPoint + max(0, min(timeRange.duration.seconds, offset.isFinite ? offset : 0))
+        return effects.evaluated(at: sourceTime)
+    }
     func update(_ effects: MobileClipEffects) { lock.lock(); value = effects; lock.unlock() }
     init(range: CMTimeRange, track: CMPersistentTrackID, clip: MobileClip, transform: CGAffineTransform, sourceHeight: CGFloat,
          livePreview: Bool = false) {
         timeRange = range; sourceTrackID = track; clipID = clip.id; fitTransform = transform
-        self.sourceHeight = sourceHeight; usesLivePreview = livePreview; value = clip.effects; super.init()
+        self.sourceHeight = sourceHeight; usesLivePreview = livePreview; sourceInPoint = clip.inPoint; value = clip.effects; super.init()
     }
 }
 
@@ -79,7 +87,7 @@ final class MobileVideoCompositor: NSObject, AVVideoCompositing {
                 } else { request.finish(with: MobileProjectError.noVideo) }
                 return
             }
-            let effects = instruction.effects
+            let effects = instruction.effects(at: request.compositionTime)
             let centre = CGAffineTransform(translationX: -rect.width / 2, y: -rect.height / 2)
                 .concatenating(CGAffineTransform(scaleX: effects.scale, y: effects.scale))
                 // Match the desktop/Android contract: one position unit is half

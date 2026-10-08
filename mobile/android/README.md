@@ -37,10 +37,16 @@ the Mac LAN companion, or the full desktop editor. Package identifier:
   the native cached source frame using live matrices, including while a slider
   gesture continues, without rebuilding its decoder.
   Clip order, source, trim or canvas changes still prepare a new composition.
+- Saved source-time animation for all eight motion/colour properties. The native
+  Animation inspector provides editable values, seekable diamonds, Add/Update,
+  Remove/Clear, previous/next and the same five Mac interpolation choices (Hold,
+  Linear, Ease In, Ease Out, Ease In/Out). Preview/export evaluate frame timestamps
+  through one processing adapter, and trim/split/duplicate/history retain curves.
 - Private atomic draft autosave. Save/Open `.netvistamobile` files through Files.
   These are ZIP archives containing `project.json` and each original source once,
-  including unused Media Pool sources. Schema 2 preserves per-instance effects;
-  old Android schema 1 projects load with neutral effects. Saved projects are
+  including unused Media Pool sources. Schema 3 preserves animation as well as
+  per-instance effects; old schema 1/2 projects retain their static appearance
+  with no added animation. Saved projects are
   self-contained and may move between Android devices.
 - Real Media3 Transformer concatenation export: MP4, H.264 video/AAC audio,
   30 fps, 1920×1080 / 1280×720 / 1080×1920. Each clip is fitted with letterboxing
@@ -54,7 +60,8 @@ the Mac LAN companion, or the full desktop editor. Package identifier:
 
 This is a sequential/ripple native mobile video editor, not full Mac feature
 parity: no layered/independent multitrack placement, independent audio import/mixing,
-transitions, titles, keyframes, LUTs/advanced grading, photo editor, 3D/Game Maker,
+transitions, titles, full ordered effect stacks/all Mac animated properties,
+LUTs/advanced grading, photo editor, 3D/Game Maker,
 mods, AI tools, or desktop/iPad project compatibility. The A1 lane represents linked
 source audio; it is not a separate editable track or a decoded waveform. Opacity
 flattens the single picture over the black canvas rather than revealing another
@@ -62,6 +69,11 @@ video layer. There is no cloud upload of videos/projects. An account is required
 but previously verified work remains
 available during temporary network failures; an explicitly revoked account/session
 locks editing without deleting its project.
+
+The target is a full native port, not a permanently reduced mobile product. The
+missing capabilities are tracked in [the full-port plan](../../design/FULL_PORT_PLAN.md).
+The newly added keyframe source requires expanded Android compilation/device
+checks before replacing the earlier verified static-effects development APK.
 
 Android's periodic background jobs are **best effort**, not exact clocks. While
 foregrounded the app checks every 25 minutes (or shortly before token expiry),

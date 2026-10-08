@@ -4,8 +4,11 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 import java.util.HashSet;
+import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Set;
+import java.nio.charset.StandardCharsets;
 
 public final class ProjectCodec {
     public static final int MAX_BYTES = 2 * 1024 * 1024;
@@ -15,7 +18,7 @@ public final class ProjectCodec {
         if (project == null) throw new JSONException("Project is missing.");
         validateHeader(project);
         JSONObject value = new JSONObject();
-        value.put("format", "netvista-mobile"); value.put("version", 2);
+        value.put("format", "netvista-mobile"); value.put("version", 3);
         value.put("platform", "android"); value.put("title", project.title);
         value.put("width", project.width); value.put("height", project.height);
         try {
@@ -24,7 +27,7 @@ public final class ProjectCodec {
             value.put("clips", encodeClips(project.clips));
         } catch (IllegalArgumentException e) { throw new JSONException(e.getMessage()); }
         String text = value.toString(2);
-        if (text.length() > MAX_BYTES) throw new JSONException("Project file is too large.");
+        if (text.length() > MAX_BYTES || text.getBytes(StandardCharsets.UTF_8).length > MAX_BYTES) throw new JSONException("Project file is too large (maximum 2 MiB UTF-8).");
         return text;
     }
 
@@ -46,16 +49,27 @@ public final class ProjectCodec {
             effect.put("opacity", settings.opacity); effect.put("brightness", settings.brightness);
             effect.put("contrast", settings.contrast); effect.put("saturation", settings.saturation);
             item.put("settings", effect);
+            JSONObject animation = new JSONObject();
+            for (ClipAnimation.Property property : ClipAnimation.Property.values()) {
+                if (valid.animation.points(property).isEmpty()) continue;
+                JSONArray points = new JSONArray();
+                for (ClipAnimation.Keyframe point : valid.animation.points(property)) {
+                    JSONObject key = new JSONObject(); key.put("sourceMs", point.sourceMs);
+                    key.put("value", point.value); key.put("curve", point.curve.name()); points.put(key);
+                }
+                animation.put(property.name(), points);
+            }
+            if (animation.length() > 0) item.put("animation", animation);
             result.put(item);
         }
         return result;
     }
 
     public static StudioProject decode(String text) throws JSONException {
-        if (text == null || text.length() > MAX_BYTES) throw new JSONException("Project file is missing or too large.");
+        if (text == null || text.length() > MAX_BYTES || text.getBytes(StandardCharsets.UTF_8).length > MAX_BYTES) throw new JSONException("Project file is missing or exceeds 2 MiB UTF-8.");
         JSONObject value = new JSONObject(text);
         long version = integer(value, "version");
-        if (!"netvista-mobile".equals(value.getString("format")) || (version != 1 && version != 2)
+        if (!"netvista-mobile".equals(value.getString("format")) || (version < 1 || version > 3)
                 || !"android".equals(value.getString("platform"))) {
             throw new JSONException("This is not a supported Android mobile project. Desktop and iPad projects are different formats.");
         }
@@ -93,7 +107,8 @@ public final class ProjectCodec {
             try {
                 StudioProject.Clip item = new StudioProject.Clip(clip.getString("id"), clip.getString("uri"),
                         clip.getString("name"), integer(clip, "durationMs"), integer(clip, "inMs"), integer(clip, "outMs"),
-                        clip.has("settings") ? decodeSettings(clip.getJSONObject("settings")) : new StudioProject.ClipSettings());
+                        clip.has("settings") ? decodeSettings(clip.getJSONObject("settings")) : new StudioProject.ClipSettings(),
+                        clip.has("animation") ? decodeAnimation(clip.getJSONObject("animation")) : new ClipAnimation());
                 if (!ids.add(item.id)) throw new IllegalArgumentException("Duplicate clip ID.");
                 target.add(item);
             } catch (IllegalArgumentException e) { throw new JSONException(e.getMessage()); }
@@ -104,6 +119,30 @@ public final class ProjectCodec {
         return new StudioProject.ClipSettings(number(settings, "scale", 1f), number(settings, "rotationDegrees", 0f),
                 number(settings, "positionX", 0f), number(settings, "positionY", 0f), number(settings, "opacity", 1f),
                 number(settings, "brightness", 0f), number(settings, "contrast", 0f), number(settings, "saturation", 1f));
+    }
+
+    private static ClipAnimation decodeAnimation(JSONObject value) throws JSONException {
+        if (value.length() > ClipAnimation.Property.values().length) throw new JSONException("Too many animation properties.");
+        EnumMap<ClipAnimation.Property, List<ClipAnimation.Keyframe>> tracks = new EnumMap<>(ClipAnimation.Property.class);
+        java.util.Iterator<String> keys = value.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            try {
+                ClipAnimation.Property property = ClipAnimation.Property.valueOf(key);
+                JSONArray points = value.getJSONArray(key);
+                if (points.length() > ClipAnimation.MAX_POINTS_PER_PROPERTY) throw new IllegalArgumentException("Too many animation keyframes.");
+                ArrayList<ClipAnimation.Keyframe> decoded = new ArrayList<>(points.length());
+                for (int index = 0; index < points.length(); index++) {
+                    JSONObject point = points.getJSONObject(index);
+                    // Required fields: never substitute a neutral value for corrupt animation.
+                    if (!point.has("value")) throw new JSONException("Keyframe value is missing.");
+                    decoded.add(new ClipAnimation.Keyframe(integer(point, "sourceMs"), number(point, "value", 0),
+                            ClipAnimation.Curve.valueOf(point.getString("curve"))));
+                }
+                tracks.put(property, decoded);
+            } catch (IllegalArgumentException e) { throw new JSONException("Invalid animation: " + e.getMessage()); }
+        }
+        return new ClipAnimation(tracks);
     }
 
     private static float number(JSONObject object, String key, float defaultValue) throws JSONException {

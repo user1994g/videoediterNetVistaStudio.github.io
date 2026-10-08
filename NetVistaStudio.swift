@@ -149,21 +149,6 @@ struct ClipTransform: Codable, Equatable {
     var opacity: Double = 1
 }
 
-/// A single three-way color-wheel correction. Channel values are signed color
-/// offsets while `master` is the matching tonal (luma) adjustment. Keeping the
-/// RGB channels explicit makes saved grades deterministic and lets the native
-/// preview/export paths use the exact same values.
-struct ColorWheelAdjustment: Codable, Equatable {
-    var red: Double = 0
-    var green: Double = 0
-    var blue: Double = 0
-    var master: Double = 0
-
-    init(red: Double = 0, green: Double = 0, blue: Double = 0, master: Double = 0) {
-        self.red = red; self.green = green; self.blue = blue; self.master = master
-    }
-}
-
 struct ColorExtras: Codable, Equatable {
     var exposure: Double = 0
     var tint: Double = 0

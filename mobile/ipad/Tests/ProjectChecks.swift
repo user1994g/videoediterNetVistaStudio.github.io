@@ -39,7 +39,7 @@ import Foundation
         legacy["version"] = 1; legacy.removeValue(forKey: "library")
         legacy["clips"] = (legacy["clips"] as! [[String: Any]]).map { original in var clip = original; clip.removeValue(forKey: "effects"); return clip }
         let migrated = try JSONDecoder().decode(MobileProject.self, from: JSONSerialization.data(withJSONObject: legacy))
-        precondition(migrated.version == 2 && migrated.library.count == 1)
+        precondition(migrated.version == 3 && migrated.library.count == 1)
         precondition(migrated.clips.allSatisfy { $0.effects == MobileClipEffects() })
         precondition(migrated.library[0].inPoint == 0 && migrated.library[0].outPoint == 8)
         for bad in [Double.nan, Double.infinity, -1, 31_536_001] {

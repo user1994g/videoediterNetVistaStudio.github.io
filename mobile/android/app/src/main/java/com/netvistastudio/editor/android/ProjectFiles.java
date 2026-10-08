@@ -134,7 +134,7 @@ public final class ProjectFiles {
                 String path = remappedSources.get(clip.uri);
                 if (path == null) throw new IOException("Missing timeline source.");
                 result.clips.add(new StudioProject.Clip(UUID.randomUUID().toString(), path, clip.name, clip.durationMs,
-                        clip.inMs, clip.outMs, clip.settings.copy()));
+                        clip.inMs, clip.outMs, clip.settings.copy(), clip.animation));
             }
             return result;
         } catch (Exception failure) {

@@ -4,6 +4,28 @@ This work aligns the native Video Editor with the Mac design. It is not a claim
 that the whole Mac creative suite has already been ported. Published Beta 7
 downloads remain unchanged until a new, tested release is explicitly published.
 
+## Full-port work now in progress
+
+The target is the full suite, not a permanent mobile "light" edition. The gap
+audit, reuse architecture and acceptance gates are tracked in
+[`design/FULL_PORT_PLAN.md`](design/FULL_PORT_PLAN.md). The saved packages in the
+table below are the earlier static-effects previews; newer source adds real
+effect animation and must pass its expanded platform checks before replacing
+those local packages or being announced as a new public release.
+
+Current Apple/Android source adds source-time keyframes for all eight existing
+motion/colour controls, all five Mac interpolation modes, native seekable diamond
+lanes and reversible Add/Update/Remove/previous/next edits. Curves survive
+trim/split/move/duplicate and migrate old static projects to schema 3. Preview
+and export evaluate frame timestamps, not a single inspector value.
+
+Apple model/math, real composed/encoded animated pixels, and phone/tablet native
+keyframe controls pass locally. The same Mac brush/ABR, grade/LUT/keyer, modelling
+commands and game-logic implementations also execute in isolated UIKit checks.
+That proves shared engines, not completed Photo/Game/3D mobile workspaces.
+Full Mac product typechecking and its existing brush-pixel regressions pass after
+the portability changes. New Android compilation/device checks are still required.
+
 ## Desktop work implemented and checked
 
 - Mac palette, logo/wordmark, coast Home artwork, persistent Studio Home access.

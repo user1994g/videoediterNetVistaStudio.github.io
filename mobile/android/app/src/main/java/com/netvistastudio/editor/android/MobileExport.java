@@ -37,7 +37,12 @@ public final class MobileExport {
      * opacity onto black, because the opaque H.264 output cannot store an alpha channel.
      */
     public static List<Effect> videoEffects(StudioProject.Clip clip, int width, int height) {
+        return videoEffects(clip, width, height, 0);
+    }
+
+    static List<Effect> videoEffects(StudioProject.Clip clip, int width, int height, long compositionStartUs) {
         if (clip == null || clip.settings == null) throw new IllegalArgumentException("Clip settings are missing.");
+        if (!clip.animation.isEmpty()) return Collections.unmodifiableList(new NativeFrameEffects(clip, width, height, compositionStartUs).effects(width, height));
         StudioProject.ClipSettings settings = clip.settings.copy();
         List<Effect> effects = new ArrayList<>();
         effects.add(Presentation.createForWidthAndHeight(width, height, Presentation.LAYOUT_SCALE_TO_FIT));
@@ -100,21 +105,23 @@ public final class MobileExport {
 
     /** Preview may bind live matrices without changing source, trim or audio composition. */
     interface EffectsFactory {
-        List<Effect> create(StudioProject.Clip clip, int width, int height);
+        List<Effect> create(StudioProject.Clip clip, int width, int height, long compositionStartUs);
     }
 
     static Composition composition(StudioProject project, ProjectFiles files, EffectsFactory effectsFactory) throws IOException {
         if (project.clips.isEmpty()) throw new IOException("Import a video before exporting.");
         List<EditedMediaItem> edited = new ArrayList<>();
         List<MediaItem> items = previewItems(project, files);
+        long compositionStartUs = 0;
         for (int i = 0; i < items.size(); i++) {
             MediaItem item = items.get(i);
             StudioProject.Clip clip = project.clips.get(i);
             edited.add(new EditedMediaItem.Builder(item).setFrameRate(30)
                     // CompositionPlayer needs source duration BEFORE clipping, not edit length.
                     .setDurationUs(Math.multiplyExact(clip.durationMs, 1000))
-                    .setEffects(new Effects(Collections.emptyList(), effectsFactory.create(clip, project.width, project.height)))
+                    .setEffects(new Effects(Collections.emptyList(), effectsFactory.create(clip, project.width, project.height, compositionStartUs)))
                     .build());
+            compositionStartUs = Math.addExact(compositionStartUs, Math.multiplyExact(clip.lengthMs(), 1000));
         }
         // Explicit audio/video track types synthesize silence for silent clips and
         // preserve continuous audio across mixed sources. Geometry is normalized

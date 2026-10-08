@@ -11,14 +11,17 @@ Native UIKit + AVFoundation editor. Runs on the device itself; it does not conne
 - Compact Mac-style Media Pool, Program Monitor, inspector and drawn video/linked-audio timeline. Narrow windows use collapsible panels; landscape phones use a side-by-side monitor/timeline.
 - Pinch/zoom/fit, scrub the ruler, hold-and-drag to reorder or edge-trim, Select/Blade tools, split, duplicate, delete and 50-step undo/redo.
 - Saved per-clip scale, position, rotation, opacity, brightness, contrast and saturation. Native sliders and exact numeric entry use the same Core Image processing in preview and export. Position uses half-canvas units, positive Y up and positive rotation counterclockwise.
+- Source-time keyframes for all eight motion/colour properties, evaluated per frame in preview/export. Native diamond lanes, zoom/pan/seek, Add/Update/Remove, previous/next, Auto Key, and all five Mac interpolation modes (Hold, Linear, Ease In, Ease Out, Ease In/Out). Trim/split/move/duplicate retain animation; history and schema-3 saves retain all curves. Static schema-1/2 projects still load without adding animation.
 - Studio Home remains accessible and uses the original Mac coast artwork and logo.
 - Automatic local working-project recovery. Save/Open `.netvistamobile` project packages in Files containing `project.json`, effects, the source pool and deduplicated media. Deleting a timeline instance retains its source. Older version-1 projects migrate with neutral effects. This format is mobile-specific, **not** the desktop `.netvistastudio` format and is **not** interchangeable with Android projects.
 - MP4 exports at 720p, 1080p or 4K, 16:9, 30fps, with a cancellable progress dialog and Files destination picker.
 - Original NetVista logo and adaptive dark phone/tablet workspace with portrait, landscape and split-window layouts.
 
-## Not included in this first mobile edition
+## Remaining full-port work
 
-Desktop photo/3D/game tools, node grading, effect/keyframe stacks, arbitrary audio layers, 16K export, background export and Mac collaboration are not ported yet. Supported codecs depend on the iPad's AVFoundation decoder/encoder. 4K exports can use substantial memory and storage. Keep the app in the foreground during export.
+This is development toward the full app, not a permanent light-edition target. Desktop photo/3D/game workspaces, node grading, full ordered effect stacks/all Mac animated properties, arbitrary audio layers, 16K export, background export and Mac collaboration are not ported yet. Supported codecs depend on the device's AVFoundation decoder/encoder. 4K exports can use substantial memory and storage. Keep the app in the foreground during export. See [the full-port plan](../../design/FULL_PORT_PLAN.md).
+
+The original Mac brush/ABR, grading/LUT/keyer, modelling and game engines are now compiled and exercised directly in isolated UIKit checks, without source copies. Those checks demonstrate reusable processing/document commands, **not** finished Photo/Game/3D interfaces. The Mac brush path retains its original colour and PNG adapters.
 
 ## Installation with AltStore
 
@@ -34,11 +37,14 @@ On a Mac with Xcode and the iOS SDK:
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer bash mobile/ipad/build_ipa.sh /private/tmp/netvista-ipad-output
 swiftc mobile/ipad/Sources/MobileProject.swift mobile/ipad/Tests/ProjectChecks.swift -o /private/tmp/netvista-ipad-project-checks
 /private/tmp/netvista-ipad-project-checks
+swiftc mobile/ipad/Sources/MobileProject.swift mobile/ipad/Tests/AnimationChecks.swift -o /private/tmp/netvista-ipad-animation-checks
+/private/tmp/netvista-ipad-animation-checks
 bash mobile/ipad/Tests/check_effects.sh
 bash mobile/ipad/check_core.sh
 # Separate simulator-only UI checker; cannot be included in an IPA.
 bash mobile/ipad/check_ui.sh /private/tmp/netvista-ios-ui-checks
 # Build and run both disposable simulators, collect screenshots/results, clean up.
+# This also runs the real shared Mac engines in a separate UIKit test bundle.
 bash mobile/ipad/run_ui_checks.sh /private/tmp/netvista-ios-ui-run
 ```
 

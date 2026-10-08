@@ -30,6 +30,8 @@ public final class SharedProjectArchiveTest {
                 new StudioProject.ClipSettings(0.75f, 90f, 0.3f, -0.2f, 0.6f, 0.2f, -0.3f, 0.5f)));
         project.duplicate(0); project.clips.get(1).trim(1800, 2600);
         project.clips.get(1).settings = new StudioProject.ClipSettings(1.2f, -45f, -0.4f, 0.6f, 1f, -0.2f, 0.4f, 1.5f);
+        project.clips.get(1).animation = new ClipAnimation().withKeyframe(ClipAnimation.Property.OPACITY, 100, 0, ClipAnimation.Curve.HOLD)
+                .withKeyframe(ClipAnimation.Property.OPACITY, 1200, 1, ClipAnimation.Curve.LINEAR);
         try {
             copyFixture(testContext, files, used, "red-silent-landscape.mp4");
             copyFixture(testContext, files, unused, "blue-audio-portrait.mp4");
@@ -56,9 +58,16 @@ public final class SharedProjectArchiveTest {
             assertEquals(0.5f, loaded.clips.get(0).settings.saturation, 0f);
             assertEquals(1.2f, loaded.clips.get(1).settings.scale, 0f);
             assertEquals(1.5f, loaded.clips.get(1).settings.saturation, 0f);
+            assertTrue(loaded.clips.get(0).animation.isEmpty());
+            assertEquals(2, loaded.clips.get(1).animation.points(ClipAnimation.Property.OPACITY).size());
+            assertEquals(100, loaded.clips.get(1).animation.points(ClipAnimation.Property.OPACITY).get(0).sourceMs);
+            assertEquals(ClipAnimation.Curve.HOLD, loaded.clips.get(1).animation.points(ClipAnimation.Property.OPACITY).get(0).curve);
+            assertEquals(0, loaded.clips.get(1).settingsAtSourceMs(1000).opacity, 0);
+            assertEquals(1, loaded.clips.get(1).settingsAtSourceMs(1800).opacity, 0);
             for (StudioProject.Clip asset : loaded.assets) {
                 assertTrue(files.mediaFile(asset).isFile()); assertEquals(0, asset.inMs); assertEquals(asset.durationMs, asset.outMs);
                 assertEquals(1f, asset.settings.scale, 0f); assertEquals(0f, asset.settings.brightness, 0f);
+                assertTrue(asset.animation.isEmpty());
             }
             files.mediaFile(used).delete(); files.mediaFile(unused).delete();
             for (StudioProject.Clip asset : loaded.assets) assertTrue("Portable copies must not depend on originals", files.mediaFile(asset).length() > 0);
