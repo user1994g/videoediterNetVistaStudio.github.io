@@ -514,7 +514,8 @@ public final class NativeWorkspaceUiTest {
             final CompositionPlayer excluded;
             final Button pauseButton;
             CompositionPlayer recovered;
-            long firstReadyPosition = -1, firstPlayingPosition = -1;
+            long firstReadyPosition = -1, firstPlayingPosition = -1, positionAtPause = -1;
+            long playbackStartedAtMs = -1, pauseElapsedMs = -1;
             boolean observedPlaying, pressedPause;
             Throwable failure;
             PreviewPlaybackObserver(CompositionPlayer excluded, Button pauseButton) {
@@ -552,12 +553,25 @@ public final class NativeWorkspaceUiTest {
                     observeReady();
                     if (recovered.isPlaying() && !observedPlaying) {
                         firstPlayingPosition = recovered.getCurrentPosition(); observedPlaying = true;
+                        playbackStartedAtMs = SystemClock.elapsedRealtime();
                         assertEquals("Running engine updates its real native transport", "Ⅱ", pauseButton.getText().toString());
                         assertTrue("Real native Pause is enabled", pauseButton.isEnabled());
                         // Run after the current SDK notification rather than
                         // modifying playback state in its listener dispatch.
+                        CompositionPlayer running = recovered;
                         handler.post(() -> {
-                            try { pressedPause = pauseButton.performClick(); }
+                            try {
+                                CompositionPlayer current = (CompositionPlayer) field(activity, "player");
+                                assertSame("Native Pause targets the observed current engine", running, current);
+                                assertSame("Observer still tracks that engine", running, recovered);
+                                // A posted native action may naturally run after
+                                // more frames. Compare Pause with the real head
+                                // immediately before its handler, not with the
+                                // earlier first-playing event's timestamp.
+                                positionAtPause = current.getCurrentPosition();
+                                pauseElapsedMs = SystemClock.elapsedRealtime() - playbackStartedAtMs;
+                                pressedPause = pauseButton.performClick();
+                            }
                             catch (Throwable error) { failure = error; }
                         });
                     }
@@ -636,9 +650,10 @@ public final class NativeWorkspaceUiTest {
                                 + ", firstPlaying=" + observer.firstPlayingPosition,
                         Math.abs(observer.firstPlayingPosition - requested) <= 100);
                 long restored = (Long) field(activity, "playheadMs");
-                assertTrue("Native Pause retains the observed actual playback position; firstPlaying="
-                                + observer.firstPlayingPosition + ", paused=" + restored,
-                        Math.abs(restored - observer.firstPlayingPosition) <= 100);
+                assertTrue("Native Pause retains its immediately observed actual playback position; firstPlaying="
+                                + observer.firstPlayingPosition + ", beforePause=" + observer.positionAtPause
+                                + ", elapsedMs=" + observer.pauseElapsedMs + ", paused=" + restored,
+                        Math.abs(restored - observer.positionAtPause) <= 100);
                 return null;
             });
             CompositionPlayer current = main(() -> (CompositionPlayer) field(activity, "player"));
