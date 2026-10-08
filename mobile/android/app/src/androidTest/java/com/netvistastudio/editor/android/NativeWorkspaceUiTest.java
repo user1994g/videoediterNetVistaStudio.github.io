@@ -62,7 +62,12 @@ import static org.junit.Assume.assumeTrue;
 @OptIn(markerClass = ExperimentalApi.class)
 @RunWith(AndroidJUnit4.class)
 public final class NativeWorkspaceUiTest {
-    @Test(timeout = 180000)
+    // This end-to-end scenario captures 20+ real composited device screenshots.
+    // Software-GPU bitmap readback can consume substantial CI wall-clock time
+    // after native controls/render checks have already passed. This is a global
+    // capture budget, not a responsiveness benchmark: individual preview/seek
+    // checks remain bounded at 12s and actual rendered-pixel oracles at 3s.
+    @Test(timeout = 600000)
     public void homePanelsTimelineEditsAndSavedInspectorWorkOnActualWindow() throws Exception {
         assertFalse(Looper.myLooper() == Looper.getMainLooper());
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
