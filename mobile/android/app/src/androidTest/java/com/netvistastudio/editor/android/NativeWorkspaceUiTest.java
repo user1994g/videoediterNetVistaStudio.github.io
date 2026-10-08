@@ -497,7 +497,7 @@ public final class NativeWorkspaceUiTest {
             click("Ⅱ");
             CompositionPlayer current = main(() -> (CompositionPlayer) field(activity, "player"));
             assertNotSame("An errored CompositionPlayer is replaced, not prepared repeatedly", failed, current);
-            assertNull(current.getPlayerError());
+            assertNull(main(current::getPlayerError));
             long restored = main(() -> (Long) field(activity, "playheadMs"));
             assertTrue("Retry preserves the requested sequence position instead of restarting at zero; requested="
                     + requested + ", restored=" + restored, restored >= requested - 100 && restored <= requested + 400);
