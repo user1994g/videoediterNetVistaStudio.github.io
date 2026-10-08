@@ -153,8 +153,22 @@ public final class ClipEffectsIntegrationTest {
                 assertTrue("Lower contrast raises dark channels and reduces decoded channel separation",
                         Color.green(lowContrast) > Color.green(baseline) + 60 && spread(lowContrast) < spread(baseline) - 60);
                 int gray = pixel(retriever, 3, 0.5f, 0.5f);
-                assertTrue("Saturation zero creates a visibly grayscale, nonblack frame; decoded=" + rgb(gray)
-                                + "; baseline=" + rgb(baseline), spread(gray) < 25 && Color.red(gray) > 60);
+                // The tested Media3 1.11.1 default SDR pipeline produces this matrix
+                // result in encoded BT.709 RGB, despite the generic RgbMatrix docs'
+                // linear-working-space description. Device evidence was baseline
+                // (253,0,0) -> (54,54,54): 253 * 0.2126 = 53.79. Derive the expected
+                // luma from the actual decoded input, not an arbitrary brightness
+                // threshold which incorrectly rejects a valid dark gray. Do not
+                // claim linear-light/Mac colour parity until explicitly configured
+                // and verified in both CompositionPlayer and Transformer.
+                float expectedGray = 0.2126f * Color.red(baseline)
+                        + 0.7152f * Color.green(baseline) + 0.0722f * Color.blue(baseline);
+                String grayEvidence = "Decoded saturation zero; actual=" + rgb(gray)
+                        + "; baseline=" + rgb(baseline) + "; expected encoded BT.709 luma=" + expectedGray;
+                assertTrue(grayEvidence + "; grayscale channels agree", spread(gray) < 8);
+                assertEquals(grayEvidence + "; red channel", expectedGray, Color.red(gray), 8f);
+                assertEquals(grayEvidence + "; green channel", expectedGray, Color.green(gray), 8f);
+                assertEquals(grayEvidence + "; blue channel", expectedGray, Color.blue(gray), 8f);
                 assertBlack("Opacity zero must show background in opaque H264", pixel(retriever, 4, 0.5f, 0.5f));
                 assertRed("Half scale keeps the source center", pixel(retriever, 5, 0.5f, 0.5f));
                 assertBlack("Half scale reveals canvas at the edge instead of changing export dimensions", pixel(retriever, 5, 0.1f, 0.5f));

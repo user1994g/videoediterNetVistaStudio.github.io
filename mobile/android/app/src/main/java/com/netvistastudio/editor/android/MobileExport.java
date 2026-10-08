@@ -31,7 +31,9 @@ public final class MobileExport {
     /**
      * Shared per-clip pipeline for CompositionPlayer preview and Transformer export. Source
      * fitting precedes user transforms; transforms retain the selected canvas and clip at its
-     * edges. Colour operates in Media3's linear RGB space. This single-track editor flattens
+     * edges. Colour uses the native Media3 working space shared by both paths. The verified
+     * default SDR pipeline applies saturation to encoded BT.709 RGB; it is not yet a claim
+     * of linear-light colour parity with the Mac renderer. This single-track editor flattens
      * opacity onto black, because the opaque H.264 output cannot store an alpha channel.
      */
     public static List<Effect> videoEffects(StudioProject.Clip clip, int width, int height) {

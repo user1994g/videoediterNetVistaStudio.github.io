@@ -44,11 +44,7 @@ jobs:
           profile: ${{ matrix.profile }}
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          script: |
-            check_status=0
-            gradle --no-daemon -p mobile/android :app:connectedDebugAndroidTest || check_status=$?
-            adb pull /sdcard/Android/data/com.netvistastudio.editor.android/files/ui-screenshots mobile/android/app/build/ui-screenshots || true
-            exit "$check_status"
+          script: bash mobile/android/check_device.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
