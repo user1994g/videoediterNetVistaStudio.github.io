@@ -21,6 +21,44 @@ public final class StudioProjectTest {
         StudioProject.Clip first = value.clips.get(0); value.move(0, 1);
         assertSame(first, value.clips.get(1)); assertEquals(7000, value.durationMs());
     }
+    @Test public void forwardDropMarkerIsAfterTargetAndBackwardMarkerIsBeforeTarget() {
+        StudioProject value = reorderFixture();
+        assertEquals("Forward A→C draws after C, not before it", 9000, value.reorderBoundaryMs(0, 2));
+        assertEquals("Forward A→B draws after B", 5000, value.reorderBoundaryMs(0, 1));
+        assertEquals("Backward C→A draws before A", 0, value.reorderBoundaryMs(2, 0));
+        assertEquals("Backward C→B draws before B", 2000, value.reorderBoundaryMs(2, 1));
+        assertEquals("No-op B→B retains B's original start", 2000, value.reorderBoundaryMs(1, 1));
+    }
+    @Test public void everyDropBoundaryAgreesWithActualFinalSequencePlacement() {
+        for (int from = 0; from < 3; from++) for (int to = 0; to < 3; to++) {
+            StudioProject value = reorderFixture();
+            StudioProject.Clip moving = value.clips.get(from);
+            long drawnBoundary = value.reorderBoundaryMs(from, to);
+            // Removing an earlier clip shifts its forward insertion boundary left
+            // by precisely that clip's duration; backward boundaries do not shift.
+            long expectedFinalStart = drawnBoundary - (from < to ? moving.lengthMs() : 0);
+            value.move(from, to);
+            long actualFinalStart = 0;
+            for (int index = 0; index < to; index++) actualFinalStart += value.clips.get(index).lengthMs();
+            assertEquals("Marker matches final sequence placement " + from + "→" + to,
+                    expectedFinalStart, actualFinalStart);
+            assertSame(moving, value.clips.get(to));
+            assertEquals(9000, value.durationMs());
+        }
+    }
+    @Test(expected = IllegalArgumentException.class) public void dropBoundaryRejectsInvalidTarget() {
+        reorderFixture().reorderBoundaryMs(0, 3);
+    }
+    private static StudioProject reorderFixture() {
+        StudioProject value = new StudioProject();
+        for (int index = 0; index < 3; index++) {
+            String id = "fe813cc1-e815-4da4-a520-61336618462" + index;
+            long duration = (index + 2) * 1000L;
+            value.clips.add(new StudioProject.Clip(id, "media/" + id + ".video",
+                    Character.toString((char) ('A' + index)), duration, 0, duration));
+        }
+        return value;
+    }
     @Test public void exportSnapshotIsIndependentOfLaterEdits() {
         StudioProject value = new StudioProject(); value.clips.add(clip(0, 4000));
         StudioProject snapshot = value.copy(); value.clips.get(0).trim(1000, 2000); value.clips.clear();

@@ -136,7 +136,7 @@ public final class StudioTimelineView extends View {
         paint.setColor(RED); paint.setStrokeWidth(dp(2)); canvas.drawLine(cursor, 0, cursor, ruler + lane * 2, paint);
         playheadMarker.reset(); playheadMarker.moveTo(cursor - dp(6), 0); playheadMarker.lineTo(cursor + dp(6), 0); playheadMarker.lineTo(cursor, dp(10)); playheadMarker.close(); canvas.drawPath(playheadMarker, paint);
         if (dragged >= 0 && dropIndex >= 0) {
-            long dropTime = startOf(dropIndex);
+            long dropTime = project.reorderBoundaryMs(dragged, dropIndex);
             float dropX = (float) (header + dropTime * pixelsPerSecond / 1000.0 - scroll);
             paint.setColor(Color.WHITE); paint.setStrokeWidth(dp(3)); canvas.drawLine(dropX, ruler, dropX, ruler + lane * 2, paint);
             paint.setTextSize(sp(11)); canvas.drawText("Move clip " + (dragged + 1) + " → " + (dropIndex + 1), Math.max(header + dp(8), Math.min(dropX, getWidth() - dp(150))), getHeight() - dp(8), paint);
@@ -218,7 +218,6 @@ public final class StudioTimelineView extends View {
         for (int i = 0; i < project.clips.size(); i++) { start += project.clips.get(i).lengthMs(); if (position < start) return i; }
         return project.clips.size() - 1;
     }
-    private long startOf(int index) { long value = 0; for (int i = 0; i < index; i++) value += project.clips.get(i).lengthMs(); return value; }
     private double maxScroll() { return Math.max(0, project.durationMs() * pixelsPerSecond / 1000.0 - Math.max(1, getWidth() - laneHeader()) + dp(24)); }
     private float laneHeader() { return dp(66); }
     private float rulerHeight() { return dp(32); }

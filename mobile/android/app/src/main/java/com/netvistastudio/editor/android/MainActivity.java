@@ -18,6 +18,7 @@ import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.text.InputType;
 import android.text.TextUtils;
+import android.util.Log;
 import android.view.inputmethod.EditorInfo;
 import android.view.Gravity;
 import android.view.View;
@@ -99,6 +100,7 @@ public final class MainActivity extends Activity {
     private int inspectorTab, compactPanel = 1;
     private String selectedSource;
     private long playheadMs;
+    private boolean previewPending, previewPlayWhenReady;
     private final ArrayDeque<EditState> undo = new ArrayDeque<>(), redo = new ArrayDeque<>();
     private static final class EditState {
         final StudioProject project; final int selected; final long playhead;
@@ -137,7 +139,7 @@ public final class MainActivity extends Activity {
             main.postDelayed(this, 50);
         }
     };
-    private final Runnable effectsPreview = () -> { if (liveUi() && editorVisible && !operationBusy) preview(false); };
+    private final Runnable effectsPreview = () -> applyPreview(previewPlayWhenReady);
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -287,11 +289,19 @@ public final class MainActivity extends Activity {
         monitorPanel = panel("PROGRAM MONITOR");
         player = new CompositionPlayer.Builder(this).build();
         playerView = new PlayerView(this); playerView.setPlayer(player); playerView.setUseController(false);
+        playerView.setShutterBackgroundColor(Color.BLACK);
         playerView.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT); playerView.setBackgroundColor(Color.BLACK); playerView.setKeepContentOnPlayerReset(true);
         monitorPanel.addView(playerView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        CompositionPlayer previewPlayer = player;
         player.addListener(new Player.Listener() {
-            @Override public void onIsPlayingChanged(boolean playing) { if (liveUi() && playButton != null) playButton.setText(playing ? "Ⅱ" : "▶"); }
-            @Override public void onPlayerError(PlaybackException error) { message("Preview unavailable: " + error.getErrorCodeName() + ". Try a standard H.264 MP4."); }
+            @Override public void onIsPlayingChanged(boolean playing) { if (liveUi() && player == previewPlayer && playButton != null) playButton.setText(playing ? "Ⅱ" : "▶"); }
+            @Override public void onPlayerError(PlaybackException error) {
+                if (!liveUi() || player != previewPlayer) return;
+                Log.w("NetVistaPreview", "Native preview failed: " + error.getErrorCodeName(), error);
+                message(error.errorCode == PlaybackException.ERROR_CODE_TIMEOUT
+                        ? "Preview update timed out. Press Play to retry the current edit; your sources and project are unchanged."
+                        : "Preview unavailable: " + error.getErrorCodeName() + ". Press Play to retry; your project is unchanged.");
+            }
         });
         LinearLayout transport = row(); transport.setGravity(Gravity.CENTER_VERTICAL);
         Button previous = button("|◀", () -> seekTimeline(startOf(Math.max(0, clipAt(playheadMs) - 1)), false), true); previous.setContentDescription("Previous clip"); transport.addView(previous);
@@ -325,7 +335,7 @@ public final class MainActivity extends Activity {
         timeline = new StudioTimelineView(this); timeline.setListener(new StudioTimelineView.Listener() {
             @Override public void selected(int index, long position) { selected = index; seekTimeline(position, false); refreshTimeline(false); }
             @Override public void scrubbed(long position) { seekTimeline(position, false); }
-            @Override public void reordered(int from, int to) { if (!operationBusy) { recordEdit(); project.move(from, to); selected = to; changedEdit(); } }
+            @Override public void reordered(int from, int to) { if (!operationBusy) { flushFocusedEditor(); recordEdit(); project.move(from, to); selected = to; changedEdit(); } }
         });
         timelinePanel.addView(timeline, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         container.addView(timelinePanel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, timelineHeight()));
@@ -485,19 +495,36 @@ public final class MainActivity extends Activity {
                 parameter == 5 ? value : s.brightness, parameter == 6 ? value : s.contrast, parameter == 7 ? value : s.saturation);
     }
     private void resetSettings(boolean colour) {
-        if (operationBusy || selected < 0) return; recordEdit(); StudioProject.Clip clip = project.clips.get(selected); StudioProject.ClipSettings s = clip.settings;
+        if (operationBusy || selected < 0) return; flushFocusedEditor(); recordEdit(); StudioProject.Clip clip = project.clips.get(selected); StudioProject.ClipSettings s = clip.settings;
         clip.settings = colour ? new StudioProject.ClipSettings(s.scale, s.rotationDegrees, s.positionX, s.positionY, s.opacity, 0, 0, 1)
                 : new StudioProject.ClipSettings(1, 0, 0, 0, 1, s.brightness, s.contrast, s.saturation); changedEdit();
     }
-    private void scheduleEffectsPreview() { main.removeCallbacks(effectsPreview); main.postDelayed(effectsPreview, 120); }
+    private void scheduleEffectsPreview() { preview(false); }
     private void preview(boolean play) {
         if (!liveUi() || !editorVisible || operationBusy || player == null) return;
+        // One latest project snapshot per burst of edits. Rebuilding compositions
+        // for each rapid Delete/Add/Undo/Redo can flood native codec reconfiguration
+        // and time out, especially on slower tablets. Paused edit intent stays
+        // authoritative until the coalesced composition has actually prepared.
+        player.pause(); previewPending = true; previewPlayWhenReady = play;
+        if (project.clips.isEmpty()) {
+            // Retaining a frame is useful during edits, but an empty timeline
+            // must never display the deleted clip as if it still exists.
+            playerView.setKeepContentOnPlayerReset(false);
+            playerView.setPlayer(null);
+        }
         main.removeCallbacks(effectsPreview);
+        main.postDelayed(effectsPreview, 120);
+    }
+    private void applyPreview(boolean play) {
+        previewPending = false;
+        if (!liveUi() || !editorVisible || !foreground || operationBusy || player == null) return;
         try {
-            if (project.clips.isEmpty()) { player.stop(); playerView.setPlayer(null); updatePlayhead(false); return; }
+            if (project.clips.isEmpty()) { playerView.setKeepContentOnPlayerReset(false); player.stop(); playerView.setPlayer(null); updatePlayhead(false); return; }
+            playerView.setKeepContentOnPlayerReset(true);
             playerView.setPlayer(player); player.setComposition(MobileExport.composition(project.copy(), files), Math.min(playheadMs, Math.max(0, project.durationMs() - 1)));
             player.prepare(); player.setPlayWhenReady(play); updatePlayhead(false);
-        } catch (Exception e) { message("Preview unavailable: " + e.getMessage()); }
+        } catch (Exception e) { Log.w("NetVistaPreview", "Native composition update failed", e); message("Preview unavailable: " + e.getMessage()); }
     }
     private void togglePlay() {
         if (operationBusy || project.clips.isEmpty() || player == null) { message("Add a source to the timeline first."); return; }
@@ -507,7 +534,7 @@ public final class MainActivity extends Activity {
             player.pause(); updatePlayhead(false);
         } else {
             if (playheadMs >= project.durationMs()) { playheadMs = 0; player.seekTo(0); }
-            if (player.getPlaybackState() == Player.STATE_IDLE) preview(true); else player.play();
+            if (previewPending || player.getPlaybackState() == Player.STATE_IDLE) preview(true); else player.play();
         }
     }
     private void seekTimeline(long position, boolean play) {
@@ -516,7 +543,7 @@ public final class MainActivity extends Activity {
         playheadMs = Math.max(0, Math.min(position, project.durationMs())); int index = clipAt(playheadMs);
         if (selected != index) { selected = index; refreshInspector(); timeline.setProject(project, selected); }
         if (player != null) {
-            if (player.getPlaybackState() == Player.STATE_IDLE) preview(play);
+            if (previewPending || player.getPlaybackState() == Player.STATE_IDLE) preview(play);
             else { player.pause(); player.seekTo(Math.min(playheadMs, Math.max(0, project.durationMs() - 1))); if (play) player.play(); }
         }
         updatePlayhead(false);
@@ -529,6 +556,7 @@ public final class MainActivity extends Activity {
     private int clipAt(long position) { long end = 0; for (int i = 0; i < project.clips.size(); i++) { end += project.clips.get(i).lengthMs(); if (position < end) return i; } return project.clips.size() - 1; }
     private void move(int index, int direction) {
         int target = index + direction; if (operationBusy || index < 0 || target < 0 || target >= project.clips.size()) return;
+        flushFocusedEditor();
         recordEdit(); project.move(index, target); selected = target; playheadMs = startOf(selected); changedEdit();
     }
     private void mark(boolean in) {
@@ -545,7 +573,7 @@ public final class MainActivity extends Activity {
         } catch (Exception e) { message("Out must be after In, inside the source video."); }
     }
     private void addSources(boolean all) {
-        if (operationBusy || !draftReady) return; List<StudioProject.Clip> sources = project.sources();
+        if (operationBusy || !draftReady) return; flushFocusedEditor(); List<StudioProject.Clip> sources = project.sources();
         if (sources.isEmpty()) { message("Import sources first."); return; }
         recordEdit(); int first = project.clips.size();
         for (StudioProject.Clip source : sources) if (all || source.uri.equals(selectedSource)) {
@@ -556,16 +584,17 @@ public final class MainActivity extends Activity {
     }
     private void splitAtPlayhead() {
         if (operationBusy || selected < 0) return;
+        flushFocusedEditor();
         StudioProject.Clip clip = project.clips.get(selected); long sourcePosition = clip.inMs + playheadMs - startOf(selected);
         if (sourcePosition <= clip.inMs || sourcePosition >= clip.outMs) { message("Place the playhead inside a clip before splitting."); return; }
         try { recordEdit(); project.split(selected, sourcePosition); selected++; changedEdit(); message("Split at playhead. Source media is shared, not copied."); }
         catch (IllegalArgumentException e) { message(e.getMessage()); }
     }
-    private void duplicateClip() { if (operationBusy || selected < 0) return; try { recordEdit(); project.duplicate(selected); selected++; playheadMs = startOf(selected); changedEdit(); } catch (IllegalArgumentException e) { message(e.getMessage()); } }
-    private void deleteClip() { if (operationBusy || selected < 0) return; recordEdit(); project.clips.remove(selected); playheadMs = Math.min(playheadMs, project.durationMs()); changedEdit(); }
+    private void duplicateClip() { if (operationBusy || selected < 0) return; flushFocusedEditor(); try { recordEdit(); project.duplicate(selected); selected++; playheadMs = startOf(selected); changedEdit(); } catch (IllegalArgumentException e) { message(e.getMessage()); } }
+    private void deleteClip() { if (operationBusy || selected < 0) return; flushFocusedEditor(); recordEdit(); project.clips.remove(selected); playheadMs = Math.min(playheadMs, project.durationMs()); changedEdit(); }
     private void recordEdit() { undo.addLast(new EditState(project, selected, playheadMs)); while (undo.size() > 80) undo.removeFirst(); redo.clear(); }
-    private void undoEdit() { if (operationBusy || undo.isEmpty()) return; redo.addLast(new EditState(project, selected, playheadMs)); restoreEdit(undo.removeLast()); }
-    private void redoEdit() { if (operationBusy || redo.isEmpty()) return; undo.addLast(new EditState(project, selected, playheadMs)); restoreEdit(redo.removeLast()); }
+    private void undoEdit() { if (operationBusy) return; flushFocusedEditor(); if (undo.isEmpty()) return; redo.addLast(new EditState(project, selected, playheadMs)); restoreEdit(undo.removeLast()); }
+    private void redoEdit() { if (operationBusy) return; flushFocusedEditor(); if (redo.isEmpty()) return; undo.addLast(new EditState(project, selected, playheadMs)); restoreEdit(redo.removeLast()); }
     private void restoreEdit(EditState edit) { project = edit.project.copy(); selected = edit.selected; playheadMs = edit.playhead; changedEdit(); }
     private void changedEdit() { autosave(); if (editorVisible) refreshTimeline(true); else if (homeVisible) showHome(); }
 
@@ -897,7 +926,7 @@ public final class MainActivity extends Activity {
     }
     private void message(String value) { if (!liveUi()) return; if (status != null && (editorVisible || homeVisible)) status.setText(value == null ? "Operation unavailable." : value); }
     @Override public void onConfigurationChanged(Configuration configuration) { super.onConfigurationChanged(configuration); if (operationBusy) pendingLayoutRebuild = true; else if (editorVisible) showEditor(); else if (homeVisible) showHome(); }
-    @Override protected void onResume() { super.onResume(); foreground = true; if (account != null) { account.checkAsync(true); main.removeCallbacks(accountTimer); main.post(accountTimer); } main.removeCallbacks(playheadTimer); if (editorVisible) main.post(playheadTimer); }
+    @Override protected void onResume() { super.onResume(); foreground = true; if (account != null) { account.checkAsync(true); main.removeCallbacks(accountTimer); main.post(accountTimer); } main.removeCallbacks(playheadTimer); if (editorVisible) { main.post(playheadTimer); if (!operationBusy && player != null) preview(false); } }
     @Override protected void onStop() { foreground = false; main.removeCallbacks(accountTimer); main.removeCallbacks(playheadTimer); main.removeCallbacks(effectsPreview); flushFocusedEditor(); if (player != null) player.pause(); if (renderingFile != null) cancelRendering("Export cancelled when the app left the foreground. Keep the app open while rendering."); if (editorVisible || homeVisible) autosave(); super.onStop(); }
     @Override protected void onSaveInstanceState(Bundle saved) { if (completedMovie != null) saved.putString("rendered_movie", completedMovie.getName()); super.onSaveInstanceState(saved); }
     @Override protected void onDestroy() {

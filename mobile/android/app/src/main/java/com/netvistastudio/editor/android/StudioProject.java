@@ -196,6 +196,21 @@ public final class StudioProject {
         Clip clip = clips.remove(from); clips.add(to, clip);
     }
 
+    /**
+     * The insertion boundary to draw on the original (not yet reordered) timeline.
+     * Moving forward inserts after the hovered clip; moving backward inserts
+     * before it, matching move(from, to)'s final-index contract.
+     */
+    public long reorderBoundaryMs(int from, int to) {
+        if (from < 0 || from >= clips.size() || to < 0 || to >= clips.size()) {
+            throw new IllegalArgumentException("Invalid clip position.");
+        }
+        int boundary = from < to ? to + 1 : to;
+        long time = 0;
+        for (int index = 0; index < boundary; index++) time = Math.addExact(time, clips.get(index).lengthMs());
+        return time;
+    }
+
     public long durationMs() {
         long total = 0;
         for (Clip clip : clips) total = Math.addExact(total, clip.lengthMs());

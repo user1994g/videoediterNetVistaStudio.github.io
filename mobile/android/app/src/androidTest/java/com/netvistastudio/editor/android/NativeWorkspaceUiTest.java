@@ -139,6 +139,7 @@ public final class NativeWorkspaceUiTest {
             assertEquals("Deleting every timeline instance does not delete the source pool", 2, ui.project().assets.size());
             assertEquals(2, ui.project().sources().size());
             for (File media : ownedMedia) assertTrue("Source file is retained after timeline deletion", media.isFile());
+            ui.assertEmptyMonitor();
             ui.openPanel("mediaPanel", "Media", "Media Pool");
             ui.assertPanelShown("mediaPanel");
             ui.capture("media-pool-retained");
@@ -150,6 +151,26 @@ public final class NativeWorkspaceUiTest {
             ui.click("Fit"); ui.tapTimeline(600, false);
 
             ui.openWorkspace("Effects", "Motion/Effects");
+            // A native numeric edit has not sent Done/blur yet. Mutating the
+            // timeline must commit it before copying clips or replacing history,
+            // rather than losing it when the inspector's old view is removed.
+            ui.edit("Scale %", "140.0", false);
+            ui.click("Duplicate");
+            StudioProject pendingDuplicate = ui.project();
+            assertEquals(3, pendingDuplicate.clips.size());
+            assertEquals("Duplicate commits the pending original scale", 1.4f, pendingDuplicate.clips.get(0).settings.scale, 0.0001f);
+            assertEquals("New independent instance copies the committed scale", 1.4f, pendingDuplicate.clips.get(1).settings.scale, 0.0001f);
+            ui.click("Undo");
+            assertEquals(2, ui.project().clips.size());
+            assertEquals("Undo duplicate retains its preceding committed field edit", 1.4f, ui.project().clips.get(0).settings.scale, 0.0001f);
+            ui.click("Undo");
+            assertEquals("Second Undo reverses the numeric commit independently", 1f, ui.project().clips.get(0).settings.scale, 0.0001f);
+            ui.click("Redo"); ui.click("Redo");
+            assertEquals(3, ui.project().clips.size());
+            assertEquals(1.4f, ui.project().clips.get(1).settings.scale, 0.0001f);
+            ui.click("Undo"); ui.click("Undo");
+            assertEquals(2, ui.project().clips.size());
+            assertEquals(1f, ui.project().clips.get(0).settings.scale, 0.0001f);
             ui.edit("Scale %", "125.0", true);
             ui.edit("Rotation °", "15.0", true);
             ui.edit("Position X %", "20.0", true);
@@ -412,10 +433,22 @@ public final class NativeWorkspaceUiTest {
                 assertTrue(rectangle.width() > 50 && rectangle.height() > 50); inspectControls(panel); return null; });
         }
         void waitPreview() throws Exception {
-            waitUntil("CompositionPlayer prepares the real local native preview", 12000, () -> main(() -> {
-                CompositionPlayer player = (CompositionPlayer) field(activity, "player");
-                return player != null && player.getPlaybackState() == Player.STATE_READY && player.getPlayerError() == null;
-            }));
+            try {
+                waitUntil("CompositionPlayer prepares the latest real local native preview", 12000, () -> main(() -> {
+                    CompositionPlayer player = (CompositionPlayer) field(activity, "player");
+                    return !(Boolean) field(activity, "previewPending") && player != null
+                            && player.getPlaybackState() == Player.STATE_READY && player.getPlayerError() == null;
+                }));
+            } catch (AssertionError failure) {
+                String diagnostics = main(() -> {
+                    CompositionPlayer player = (CompositionPlayer) field(activity, "player");
+                    return "pending=" + field(activity, "previewPending") + "; clips=" + ((StudioProject) field(activity, "project")).clips.size()
+                            + "; requested=" + field(activity, "playheadMs") + "; player=" + (player == null ? "null"
+                            : "state=" + player.getPlaybackState() + ", position=" + player.getCurrentPosition() + ", error=" + player.getPlayerError());
+                });
+                Log.e("NetVistaNativeUiChecks", "Preview failure: " + diagnostics);
+                throw new AssertionError(failure.getMessage() + "; " + diagnostics, failure);
+            }
         }
         void drainActivityIo() throws Exception {
             ExecutorService io = main(() -> (ExecutorService) field(activity, "io")); io.submit(() -> {}).get(15, TimeUnit.SECONDS);
@@ -551,6 +584,32 @@ public final class NativeWorkspaceUiTest {
                 assertTrue("Native screenshot contains actual green linked A1 clip blocks", green > 100);
                 assertTrue("Native screenshot contains the red timeline playhead", red > 5);
             } finally { screenshot.recycle(); }
+        }
+        void assertEmptyMonitor() throws Exception {
+            waitUntil("Empty timeline detaches native video and completes its latest preview update", 12000,
+                    () -> main(() -> {
+                        StudioProject project = (StudioProject) field(activity, "project");
+                        androidx.media3.ui.PlayerView view = (androidx.media3.ui.PlayerView) field(activity, "playerView");
+                        return project.clips.isEmpty() && !(Boolean) field(activity, "previewPending") && view.getPlayer() == null;
+                    }));
+            instrumentation.waitForIdleSync();
+            Rect bounds = main(() -> {
+                Rect value = new Rect(); assertTrue(((View) field(activity, "playerView")).getGlobalVisibleRect(value)); return value;
+            });
+            Bitmap screenshot = instrumentation.getUiAutomation().takeScreenshot(); assertNotNull(screenshot);
+            if (screenshot.getConfig() == Bitmap.Config.HARDWARE) {
+                Bitmap readable = screenshot.copy(Bitmap.Config.ARGB_8888, false); screenshot.recycle(); screenshot = readable;
+                assertNotNull("Read actual empty monitor screenshot pixels", screenshot);
+            }
+            try {
+                for (float portion : new float[]{0.25f, 0.5f, 0.75f}) {
+                    int pixel = screenshot.getPixel(bounds.left + Math.round((bounds.width() - 1) * portion), bounds.centerY());
+                    assertTrue("Empty timeline clears old source pixels; actual RGB=(" + Color.red(pixel) + ","
+                                    + Color.green(pixel) + "," + Color.blue(pixel) + ")",
+                            Color.red(pixel) < 20 && Color.green(pixel) < 20 && Color.blue(pixel) < 20);
+                }
+            } finally { screenshot.recycle(); }
+            capture("empty-timeline-monitor");
         }
         private static boolean near(int pixel, int red, int green, int blue) {
             return Math.abs(Color.red(pixel) - red) < 12 && Math.abs(Color.green(pixel) - green) < 12 && Math.abs(Color.blue(pixel) - blue) < 12;
