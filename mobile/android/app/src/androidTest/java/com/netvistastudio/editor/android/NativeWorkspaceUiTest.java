@@ -750,10 +750,11 @@ public final class NativeWorkspaceUiTest {
             } finally { press.recycle(); }
             instrumentation.waitForIdleSync();
             try {
-                waitUntil("Graphical timeline changes both the stored and actual native-player sequence playhead", 3000,
+                waitUntil("Graphical timeline changes both the stored and actual native-player sequence playhead", 12000,
                         () -> main(() -> {
                             CompositionPlayer player = (CompositionPlayer) field(activity, "player");
                             return Math.abs((Long) field(activity, "playheadMs") - positionMs) < 150
+                                    && !(Boolean) field(activity, "previewPending") && player.getPlayerError() == null
                                     && player.getPlaybackState() == Player.STATE_READY
                                     && Math.abs(player.getCurrentPosition() - positionMs) < 150;
                         }));
@@ -861,26 +862,42 @@ public final class NativeWorkspaceUiTest {
         }
         void assertGraphicalTimeline() throws Exception {
             instrumentation.waitForIdleSync();
-            Rect bounds = main(() -> { Rect value = new Rect(); assertTrue(((View) field(activity, "timeline")).getGlobalVisibleRect(value)); return value; });
-            Bitmap screenshot = instrumentation.getUiAutomation().takeScreenshot(); assertNotNull(screenshot);
-            if (screenshot.getConfig() == Bitmap.Config.HARDWARE) {
-                Bitmap readable = screenshot.copy(Bitmap.Config.ARGB_8888, false); screenshot.recycle(); screenshot = readable;
-                assertNotNull("Read back native screenshot pixels", screenshot);
-            }
+            final int[] pixels = new int[3];
+            final String[] activePackage = new String[]{"unknown"};
             try {
-                int blue = 0, green = 0, red = 0;
-                for (int y = Math.max(0, bounds.top); y < Math.min(screenshot.getHeight(), bounds.bottom); y += 2) {
-                    for (int x = Math.max(0, bounds.left); x < Math.min(screenshot.getWidth(), bounds.right); x += 2) {
-                        int pixel = screenshot.getPixel(x, y);
-                        if (near(pixel, 53, 111, 159)) blue++;
-                        if (near(pixel, 24, 139, 116)) green++;
-                        if (near(pixel, 240, 91, 94)) red++;
+                // Native UI idle is not a SurfaceFlinger/GPU presentation
+                // barrier after Fit invalidates Canvas. Poll real composited
+                // screenshots; never draw the View directly or fake pixels.
+                waitUntil("Actual native timeline screenshot displays V1, linked A1 and playhead", 12000, () -> {
+                    Rect bounds = main(() -> { Rect value = new Rect(); assertTrue(((View) field(activity, "timeline")).getGlobalVisibleRect(value)); return value; });
+                    AccessibilityNodeInfo active = instrumentation.getUiAutomation().getRootInActiveWindow();
+                    activePackage[0] = active == null ? "none" : String.valueOf(active.getPackageName());
+                    Bitmap screenshot = instrumentation.getUiAutomation().takeScreenshot(); assertNotNull(screenshot);
+                    if (screenshot.getConfig() == Bitmap.Config.HARDWARE) {
+                        Bitmap readable = screenshot.copy(Bitmap.Config.ARGB_8888, false); screenshot.recycle(); screenshot = readable;
+                        assertNotNull("Read back native screenshot pixels", screenshot);
                     }
-                }
-                assertTrue("Native screenshot contains actual blue V1 clip blocks", blue > 100);
-                assertTrue("Native screenshot contains actual green linked A1 clip blocks", green > 100);
-                assertTrue("Native screenshot contains the red timeline playhead", red > 5);
-            } finally { screenshot.recycle(); }
+                    try {
+                        pixels[0] = 0; pixels[1] = 0; pixels[2] = 0;
+                        for (int y = Math.max(0, bounds.top); y < Math.min(screenshot.getHeight(), bounds.bottom); y += 2) {
+                            for (int x = Math.max(0, bounds.left); x < Math.min(screenshot.getWidth(), bounds.right); x += 2) {
+                                int pixel = screenshot.getPixel(x, y);
+                                if (near(pixel, 53, 111, 159)) pixels[0]++;
+                                if (near(pixel, 24, 139, 116)) pixels[1]++;
+                                if (near(pixel, 240, 91, 94)) pixels[2]++;
+                            }
+                        }
+                        // A system ANR/permission/other-app modal is not a
+                        // successful visible NetVista timeline, even if a few
+                        // coloured blocks remain visible behind its scrim.
+                        return context.getPackageName().equals(activePackage[0])
+                                && pixels[0] > 100 && pixels[1] > 100 && pixels[2] > 5;
+                    } finally { screenshot.recycle(); }
+                });
+            } catch (AssertionError failure) {
+                throw new AssertionError(failure.getMessage() + "; actualPixels={V1=" + pixels[0] + ", A1="
+                        + pixels[1] + ", playhead=" + pixels[2] + "}; activeWindow=" + activePackage[0], failure);
+            }
         }
         void assertEmptyMonitor() throws Exception {
             waitUntil("Empty timeline detaches native video and completes its latest preview update", 12000,

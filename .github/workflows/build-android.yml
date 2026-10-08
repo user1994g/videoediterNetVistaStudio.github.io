@@ -41,8 +41,13 @@ jobs:
         with:
           api-level: 35
           arch: x86_64
-          target: google_apis
+          # Native local editing does not need Google Play services. The heavier
+          # Google image produced a Pixel Launcher ANR over our untouched app.
+          # Test a clean AOSP baseline; do not suppress system/application ANRs.
+          target: default
           profile: ${{ matrix.profile }}
+          cores: 4
+          ram-size: 4096M
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: bash mobile/android/check_device.sh
