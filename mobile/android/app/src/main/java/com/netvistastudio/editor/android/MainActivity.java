@@ -124,8 +124,11 @@ public final class MainActivity extends Activity {
         @Override public void run() {
             if (!liveUi() || !editorVisible || !foreground) return;
             if (player != null && !project.clips.isEmpty()) {
-                playheadMs = Math.max(0, Math.min(project.durationMs(), player.getCurrentPosition()));
                 if (player.isPlaying()) {
+                    // Paused seeks and composition updates resolve asynchronously.
+                    // Reading an old player position while paused must never replace
+                    // the user's explicit scrub/edit point before the seek settles.
+                    playheadMs = Math.max(0, Math.min(project.durationMs(), player.getCurrentPosition()));
                     int index = clipAt(playheadMs);
                     if (index != selected) { selected = index; refreshInspector(); refreshPool(); timeline.setProject(project, selected); }
                 }
@@ -263,7 +266,10 @@ public final class MainActivity extends Activity {
         if (!liveUi() || account == null || !account.state().canEdit) return;
         flushFocusedEditor();
         main.removeCallbacks(playheadTimer); main.removeCallbacks(effectsPreview);
-        if (player != null) { playheadMs = player.getCurrentPosition(); player.release(); }
+        if (player != null) {
+            if (player.isPlaying()) playheadMs = player.getCurrentPosition();
+            player.release();
+        }
         editorVisible = true; homeVisible = false; loginStatus = null; signInButton = null;
         wideLayout = getResources().getConfiguration().screenWidthDp >= 900 && getResources().getConfiguration().screenHeightDp >= 420;
         LinearLayout container = screen(); header(container);
@@ -496,7 +502,10 @@ public final class MainActivity extends Activity {
     private void togglePlay() {
         if (operationBusy || project.clips.isEmpty() || player == null) { message("Add a source to the timeline first."); return; }
         flushFocusedEditor();
-        if (player.isPlaying()) player.pause(); else {
+        if (player.isPlaying()) {
+            playheadMs = Math.max(0, Math.min(project.durationMs(), player.getCurrentPosition()));
+            player.pause(); updatePlayhead(false);
+        } else {
             if (playheadMs >= project.durationMs()) { playheadMs = 0; player.seekTo(0); }
             if (player.getPlaybackState() == Player.STATE_IDLE) preview(true); else player.play();
         }

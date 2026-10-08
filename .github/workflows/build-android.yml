@@ -52,5 +52,7 @@ jobs:
           path: |
             mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk
             mobile/android/app/build/reports/
+            mobile/android/app/build/device-instrumentation.txt
             mobile/android/app/build/ui-screenshots/
+            mobile/android/app/build/ui-screenshots-public/
           retention-days: 7

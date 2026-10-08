@@ -214,9 +214,7 @@ public final class ClipEffectsIntegrationTest {
             try {
                 String value = "Effect " + index + ": " + rgb(frame.getPixel(frame.getWidth() / 2, frame.getHeight() / 2));
                 values.append(value).append('\n'); Log.i("NetVistaNativeEffectChecks", value);
-                try (FileOutputStream output = new FileOutputStream(new File(directory, "effect-export-" + index + ".png"))) {
-                    assertTrue(frame.compress(Bitmap.CompressFormat.PNG, 100, output));
-                }
+                QaEvidence.savePng(context, "effect-export-" + index + ".png", frame);
             } finally { frame.recycle(); }
         }
         try (FileOutputStream output = new FileOutputStream(new File(directory, "effect-export-rgb.txt"))) {

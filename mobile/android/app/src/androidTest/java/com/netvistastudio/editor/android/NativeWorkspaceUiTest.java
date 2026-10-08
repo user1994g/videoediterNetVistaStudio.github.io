@@ -191,6 +191,12 @@ public final class NativeWorkspaceUiTest {
             assertEquals("Motion survives window rebuild and actual private autosave", 1.35f,
                     files.loadDraft().clips.get(0).settings.scale, 0.0001f);
             Log.i("NetVistaNativeUiChecks", "PASS: real Studio Home artwork, native adaptive panels, graphical timeline scrub/split/duplicate/delete/pool Add/Undo/Redo, inspector commit/autosave and device screenshots");
+        } catch (Exception | AssertionError failure) {
+            if (ui != null) {
+                try { ui.capture("workspace-failure"); }
+                catch (Exception captureFailure) { Log.w("NetVistaNativeUiChecks", "Could not retain failure screenshot", captureFailure); }
+            }
+            throw failure;
         } finally {
             try { if (ui != null) ui.close(); }
             finally {
@@ -392,6 +398,12 @@ public final class NativeWorkspaceUiTest {
                 try { clickAccessibleText("Close"); }
                 catch (AssertionError failure) { capture("close-dialog-failure"); throw failure; }
                 instrumentation.waitForIdleSync();
+                waitUntil("Native compact dialog is dismissed and editor regains window focus", 3000,
+                        () -> main(() -> {
+                            Object value = field(activity, "compactDialog");
+                            boolean dismissed = !(value instanceof android.app.Dialog) || !((android.app.Dialog) value).isShowing();
+                            return dismissed && root().hasWindowFocus();
+                        }));
             }
         }
         void assertPanelShown(String name) throws Exception {
@@ -410,6 +422,7 @@ public final class NativeWorkspaceUiTest {
             instrumentation.waitForIdleSync();
         }
         void tapTimeline(long positionMs, boolean ruler) throws Exception {
+            waitPreview();
             click("Fit");
             float[] point = main(() -> {
                 StudioTimelineView timeline = (StudioTimelineView) field(activity, "timeline");
@@ -426,8 +439,13 @@ public final class NativeWorkspaceUiTest {
             try { instrumentation.sendPointerSync(press); SystemClock.sleep(60); instrumentation.sendPointerSync(release); }
             finally { press.recycle(); release.recycle(); }
             instrumentation.waitForIdleSync();
-            waitUntil("Graphical timeline changes the actual sequence playhead", 3000,
-                    () -> main(() -> Math.abs((Long) field(activity, "playheadMs") - positionMs) < 150));
+            waitUntil("Graphical timeline changes both the stored and actual native-player sequence playhead", 3000,
+                    () -> main(() -> {
+                        CompositionPlayer player = (CompositionPlayer) field(activity, "player");
+                        return Math.abs((Long) field(activity, "playheadMs") - positionMs) < 150
+                                && player.getPlaybackState() == Player.STATE_READY
+                                && Math.abs(player.getCurrentPosition() - positionMs) < 150;
+                    }));
         }
         void edit(String description, String text, boolean done) throws Exception {
             View inspector = panel("inspectorPanel");
@@ -541,14 +559,10 @@ public final class NativeWorkspaceUiTest {
             instrumentation.waitForIdleSync();
             Bitmap screenshot = instrumentation.getUiAutomation().takeScreenshot(); assertNotNull("Capture actual native device screenshot", screenshot);
             try {
-                File external = context.getExternalFilesDir(null); assertNotNull(external);
-                File directory = new File(external, "ui-screenshots"); assertTrue(directory.isDirectory() || directory.mkdirs());
                 Configuration configuration = main(() -> new Configuration(activity.getResources().getConfiguration()));
                 String name = phase + "_" + configuration.screenWidthDp + "x" + configuration.screenHeightDp + "dp_"
                         + screenshot.getWidth() + "x" + screenshot.getHeight() + ".png";
-                File output = new File(directory, name);
-                try (FileOutputStream stream = new FileOutputStream(output)) { assertTrue(screenshot.compress(Bitmap.CompressFormat.PNG, 100, stream)); }
-                Log.i("NetVistaNativeUiChecks", "Native screenshot: " + output.getAbsolutePath());
+                QaEvidence.savePng(context, name, screenshot);
             } finally { screenshot.recycle(); }
         }
         void checkOtherActivityOrientation() throws Exception {
@@ -568,7 +582,8 @@ public final class NativeWorkspaceUiTest {
                 openPanel("inspectorPanel", "Inspector", "Inspector"); assertPanelShown("inspectorPanel");
                 clickWithin(panel("inspectorPanel"), "Motion"); clickWithin(panel("inspectorPanel"), "Colour");
                 assertPanelShown("inspectorPanel"); capture("short-window-inspector"); closeCompactDialog();
-                assertTrue("Closing short Inspector returns to the actual native editor", main(() -> root().hasWindowFocus()));
+                waitUntil("Closing short Inspector returns to the actual native editor", 3000,
+                        () -> main(() -> root().hasWindowFocus()));
             }
             Log.i("NetVistaNativeUiChecks", "Actual available window: " + actual.screenWidthDp + "x" + actual.screenHeightDp
                     + "dp; orientation request " + (actual.orientation == target ? "honored" : "ignored by platform") + "; wide=" + wide());
