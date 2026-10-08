@@ -52,7 +52,8 @@ class NativeWorkspaceTests(unittest.TestCase):
             self.window.show_page(page)
             self.app.processEvents()
             self.assertEqual(self.window.root_stack.currentWidget(), self.window.editor_root)
-            self.assertLessEqual(self.window.minimumSizeHint().width(), 960)
+            self.assertLessEqual(self.window.minimumSizeHint().width(), 960,
+                                 self.window.workspace_size_diagnostics())
             self.assertGreater(self.window.video_widget.width(), 200)
             if page == "Edit":
                 numeric = self.window.opacity_slider.readout

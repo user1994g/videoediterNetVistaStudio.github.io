@@ -37,8 +37,10 @@ jobs:
       - name: Test native widgets, editing and decoded export frames
         run: python -m unittest discover -s tests -v
       - name: Render native layout references
+        if: always()
         run: python tests/workspace_preview.py workspace-qa
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: Native-desktop-layout-${{ runner.os }}
           path: cross_platform/workspace-qa/*.png

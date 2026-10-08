@@ -44,8 +44,8 @@ QLabel#panelTitle {{ color: {theme['secondaryText']}; font-size: 10px; font-weig
 QLabel#status {{ color: {theme['secondaryText']}; padding: 6px 10px; }}
 QPushButton, QToolButton {{ background: {theme['controlBackground']}; border: 1px solid {theme['separator']}; border-radius: {radius}px; padding: 5px 9px; }}
 QPushButton:hover, QToolButton:hover {{ background: {theme['cardBackground']}; border-color: {theme['accent']}; }}
-QPushButton:checked {{ background: {theme['accent']}; border-color: {theme['accent']}; color: {theme['primaryText']}; }}
-QPushButton:disabled {{ color: {theme['secondaryText']}; }}
+QPushButton:checked, QToolButton:checked {{ background: {theme['accent']}; border-color: {theme['accent']}; color: {theme['primaryText']}; }}
+QPushButton:disabled, QToolButton:disabled {{ color: {theme['secondaryText']}; }}
 QPushButton#primary {{ background: {theme['accent']}; border-color: {theme['accent']}; font-weight: 700; }}
 QPushButton#danger {{ color: {theme['danger']}; }}
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ background: {theme['controlBackground']}; border: 1px solid {theme['separator']}; border-radius: {radius}px; padding: 6px; }}

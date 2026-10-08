@@ -183,15 +183,16 @@ class MainWindow(QMainWindow):
         self.timeline_scroll.setMinimumHeight(260)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setObjectName("editorHorizontalSplit")
         self.media_panel = self._media_panel()
         splitter.addWidget(self.media_panel)
-        center = QWidget()
+        center = QWidget(objectName="editorCenter")
         center_layout = QVBoxLayout(center)
         center_layout.setContentsMargins(0, 0, 0, 0)
         center_layout.setSpacing(0)
         vertical = QSplitter(Qt.Orientation.Vertical)
         vertical.addWidget(self._program_panel())
-        timeline_panel = QWidget()
+        timeline_panel = QWidget(objectName="timelinePanel")
         timeline_column = QVBoxLayout(timeline_panel)
         timeline_column.setContentsMargins(0, 0, 0, 0)
         timeline_column.setSpacing(0)
@@ -225,8 +226,20 @@ class MainWindow(QMainWindow):
         row.addWidget(QLabel("NetVista", objectName="brand"))
         row.addWidget(QLabel("STUDIO", objectName="studio"))
 
+    def _tool_button(self, title: str, callback: Callable, *, checkable: bool = False) -> QToolButton:
+        # Push buttons inherit the platform's dialog-button minimum width
+        # (80 px on Windows), even for short transport/toolbar titles. Native
+        # tool buttons size to their unwrapped label instead and leave space
+        # for the canvas and inspector at compact desktop widths.
+        button = QToolButton()
+        button.setText(title)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        button.setCheckable(checkable)
+        button.clicked.connect(callback)
+        return button
+
     def _home_panel(self) -> QWidget:
-        home = QWidget()
+        home = QWidget(objectName="studioHome")
         column = QVBoxLayout(home)
         column.setContentsMargins(32, 20, 32, 28)
         header = QHBoxLayout()
@@ -300,11 +313,9 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout(frame)
         row.setContentsMargins(14, 8, 14, 8)
         self._brand(row)
-        home = QPushButton("Studio Home")
-        home.clicked.connect(self.show_home)
+        home = self._tool_button("Studio Home", self.show_home)
         row.addWidget(home)
-        self.account_button = QPushButton("Sign in")
-        self.account_button.clicked.connect(lambda: self.account_controller.show() if hasattr(self, "account_controller") else None)
+        self.account_button = self._tool_button("Sign in", lambda: self.account_controller.show() if hasattr(self, "account_controller") else None)
         row.addWidget(self.account_button)
         row.addStretch()
         self.title_edit = QLineEdit("Untitled Project")
@@ -320,8 +331,7 @@ class MainWindow(QMainWindow):
             action.clicked.connect(callback)
             row.addWidget(action)
         for title, callback in [("Open", self.open_project), ("Save your work", self.save_project)]:
-            button = QPushButton(title)
-            button.clicked.connect(callback)
+            button = self._tool_button(title, callback)
             row.addWidget(button)
         options = QMenu(self)
         self.update_button = options.addAction("Check for update…", self.check_for_updates)
@@ -334,7 +344,7 @@ class MainWindow(QMainWindow):
         return frame
 
     def _media_panel(self) -> QWidget:
-        panel = QWidget()
+        panel = QWidget(objectName="mediaPanel")
         column = QVBoxLayout(panel)
         column.setContentsMargins(8, 10, 8, 8)
         heading = QLabel("MEDIA POOL", objectName="panelTitle")
@@ -361,7 +371,7 @@ class MainWindow(QMainWindow):
         return panel
 
     def _program_panel(self) -> QWidget:
-        panel = QWidget()
+        panel = QWidget(objectName="programPanel")
         column = QVBoxLayout(panel)
         column.setContentsMargins(0, 0, 0, 0)
         self.workspace_title = QLabel("MEDIA WORKSPACE")
@@ -384,26 +394,26 @@ class MainWindow(QMainWindow):
         self.player.setVideoOutput(self.video_widget)
         self.player.positionChanged.connect(self.player_position_changed)
         self.player.mediaStatusChanged.connect(self.media_loaded)
-        controls = QHBoxLayout()
+        transport = QFrame(objectName="programTransport")
+        controls = QHBoxLayout(transport)
+        controls.setContentsMargins(0, 0, 0, 0)
         controls.addWidget(QLabel("PROGRAM MONITOR", objectName="panelTitle"))
-        back = QPushButton("‹")
-        back.clicked.connect(lambda: self.step_transport(-1))
-        self.play_button = QPushButton("Play")
-        self.play_button.clicked.connect(self.toggle_playback)
-        stop = QPushButton("Stop")
-        stop.clicked.connect(self.stop_playback)
-        forward = QPushButton("›")
-        forward.clicked.connect(lambda: self.step_transport(1))
+        back = self._tool_button("‹", lambda: self.step_transport(-1))
+        back.setToolTip("Previous second")
+        self.play_button = self._tool_button("Play", self.toggle_playback)
+        stop = self._tool_button("Stop", self.stop_playback)
+        forward = self._tool_button("›", lambda: self.step_transport(1))
+        forward.setToolTip("Next second")
         self.time_label = QLabel("00:00:00:00")
         controls.addStretch()
         for widget in [back, self.play_button, stop, forward, self.time_label]:
             controls.addWidget(widget)
         controls.addStretch()
-        column.addLayout(controls)
+        column.addWidget(transport)
         return panel
 
     def _inspector_panel(self) -> QWidget:
-        panel = QWidget()
+        panel = QWidget(objectName="inspectorPanel")
         column = QVBoxLayout(panel)
         column.setContentsMargins(10, 10, 10, 10)
         self.inspector_title = QLabel("INSPECTOR", objectName="panelTitle")
@@ -431,10 +441,8 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout(frame)
         row.setContentsMargins(10, 5, 10, 5)
         row.addWidget(QLabel("TIMELINE 1", objectName="panelTitle"))
-        cut = QPushButton("Cut clip")
-        cut.clicked.connect(self.cut_selected)
-        delete = QPushButton("Delete")
-        delete.clicked.connect(self.delete_selected_clip)
+        cut = self._tool_button("Cut clip", self.cut_selected)
+        delete = self._tool_button("Delete", self.delete_selected_clip)
         row.addWidget(cut)
         row.addWidget(delete)
         menu = QMenu(self)
@@ -460,8 +468,7 @@ class MainWindow(QMainWindow):
         zoom.setToolTip("Timeline zoom")
         zoom.valueChanged.connect(lambda value: self.timeline.set_zoom(value))
         row.addWidget(zoom)
-        fit = QPushButton("Fit")
-        fit.clicked.connect(self.fit_timeline)
+        fit = self._tool_button("Fit", self.fit_timeline)
         row.addWidget(fit)
         return frame
 
@@ -470,15 +477,27 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout(frame)
         row.setContentsMargins(10, 7, 10, 7)
         row.addStretch()
-        self.page_buttons: dict[str, QPushButton] = {}
+        self.page_buttons: dict[str, QToolButton] = {}
         for page in self.pages:
-            button = QPushButton({"Color": "Colour", "3D Scene": "3D Assets"}.get(page, page))
-            button.setCheckable(True)
-            button.clicked.connect(lambda _checked=False, name=page: self.show_page(name))
+            button = self._tool_button({"Color": "Colour", "3D Scene": "3D Assets"}.get(page, page),
+                                       lambda _checked=False, name=page: self.show_page(name), checkable=True)
             self.page_buttons[page] = button
             row.addWidget(button)
         row.addStretch()
         return frame
+
+    def workspace_size_diagnostics(self) -> str:
+        """Name the row/panel that imposed a minimum in native layout checks."""
+        names = ("studioHome", "topBar", "editorHorizontalSplit", "mediaPanel", "editorCenter",
+                 "programPanel", "programTransport", "timelinePanel", "timelineTools", "inspectorPanel", "dock")
+        rows = []
+        for name in names:
+            widget = self.findChild(QWidget, name)
+            if widget is not None:
+                children = [f"{child.metaObject().className()}:{getattr(child, 'text', lambda: '')()}={child.minimumSizeHint().width()}"
+                            for child in widget.findChildren(QWidget, options=Qt.FindChildOption.FindDirectChildrenOnly)]
+                rows.append(f"{name}: minimum={widget.minimumSizeHint().toTuple()}, actual={widget.size().toTuple()}, children={children}")
+        return f"Page={self.current_page}, window={self.size().toTuple()}\n" + "\n".join(rows)
 
     def _make_inspector(self, page: str) -> QWidget:
         widget = QWidget()
