@@ -41,7 +41,7 @@ def prepare_native_font_database() -> None:
     if QFontDatabase.families():
         return
     folder = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
-    for filename in ("arial.ttf", "arialbd.ttf", "segoeui.ttf", "segoeuib.ttf"):
+    for filename in ("arial.ttf", "arialbd.ttf", "segoeui.ttf", "segoeuib.ttf", "seguisym.ttf"):
         font = folder / filename
         if font.is_file():
             QFontDatabase.addApplicationFont(str(font))

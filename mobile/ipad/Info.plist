@@ -11,7 +11,12 @@
   <key>NetVistaReleaseTag</key><string>v1.4.0-beta.7</string>
   <key>MinimumOSVersion</key><string>16.0</string>
   <key>LSRequiresIPhoneOS</key><true/>
-  <key>UIDeviceFamily</key><array><integer>2</integer></array>
+  <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
+  <key>UISupportedInterfaceOrientations</key><array>
+    <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
   <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>
   <key>UIUserInterfaceStyle</key><string>Dark</string>
   <key>UIApplicationSceneManifest</key><dict>

@@ -1,4 +1,4 @@
-name: Check native iPad editor
+name: Check native iPhone and iPad editor
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
       - 'mobile/ipad/**'
       - 'StudioAccount.swift'
       - 'assets/NetVistaStudio.png'
+      - 'assets/home-video-coast.png'
       - '.github/workflows/build-ipad.yml'
   workflow_dispatch:
 
@@ -31,11 +32,26 @@ jobs:
           "$RUNNER_TEMP/ipad-project-checks"
           swiftc -swift-version 5 StudioAccount.swift mobile/ipad/Sources/MobileAccount.swift mobile/ipad/Tests/AccountChecks.swift -o "$RUNNER_TEMP/ipad-account-checks"
           "$RUNNER_TEMP/ipad-account-checks"
+      - name: Test actual composed and encoded effect pixels
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ffmpeg || brew install ffmpeg
+          bash mobile/ipad/Tests/check_effects.sh
+          bash mobile/ipad/check_core.sh
+      - name: Test actual native phone and tablet UI playback
+        shell: bash
+        run: |
+          export DEVELOPER_DIR="$(xcode-select --print-path)"
+          bash mobile/ipad/run_ui_checks.sh "$RUNNER_TEMP/ipad-ui-checks"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: iPad-AltStore-package
+          name: iPhone-iPad-native-workspace-preview
           path: |
             ${{ runner.temp }}/ipad-output/*.ipa
             ${{ runner.temp }}/ipad-output/ipad-build-platform.txt
+            ${{ runner.temp }}/ipad-ui-checks/phone/**
+            ${{ runner.temp }}/ipad-ui-checks/tablet/**
           if-no-files-found: error
           retention-days: 7
