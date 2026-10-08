@@ -15,4 +15,5 @@ pyinstaller --noconfirm --clean --windowed --onedir \
   --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets \
   app.py
 QT_QPA_PLATFORM=offscreen dist/NetVistaStudio/NetVistaStudio --smoke-test
+python tests/package_media_check.py dist/NetVistaStudio
 echo "Built dist/NetVistaStudio/NetVistaStudio"

@@ -12,6 +12,9 @@ on:
       - ".github/workflows/build-cross-platform.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: ${{ matrix.name }}
@@ -22,11 +25,15 @@ jobs:
           - name: Windows app
             os: windows-latest
             script: powershell -ExecutionPolicy Bypass -File build_windows.ps1
-            artifact: NetVista-Studio-Windows-Beta
+            artifact: NetVista-Studio-Windows-Workspace-Preview
+            package: Compress-Archive -Path dist/NetVistaStudio -DestinationPath dist/NetVista-Studio-Windows-Workspace-Preview.zip
+            output: cross_platform/dist/NetVista-Studio-Windows-Workspace-Preview.zip
           - name: Linux app
             os: ubuntu-24.04
             script: sh build_linux.sh
-            artifact: NetVista-Studio-Linux-Beta
+            artifact: NetVista-Studio-Linux-Workspace-Preview
+            package: tar -czf dist/NetVista-Studio-Linux-Workspace-Preview.tar.gz -C dist NetVistaStudio
+            output: cross_platform/dist/NetVista-Studio-Linux-Workspace-Preview.tar.gz
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -43,9 +50,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libpulse0
       - name: Build and test
         run: ${{ matrix.script }}
+      - name: Archive complete portable app (preserve Linux executable bits)
+        run: ${{ matrix.package }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: cross_platform/dist/NetVistaStudio
+          path: ${{ matrix.output }}
           if-no-files-found: error
           retention-days: 30
