@@ -91,7 +91,7 @@ public final class NativeWorkspaceUiTest {
             ui.installInMemoryTestSnapshot(account);
 
             assertTrue(ui.main(() -> (Boolean) field(activity, "homeVisible")));
-            ImageView artwork = ui.main(() -> (ImageView) findDescription(ui.root(), "NetVista Video Editor coast artwork"));
+            ImageView artwork = ui.main(() -> (ImageView) findDescription(current.root(), "NetVista Video Editor coast artwork"));
             assertNotNull("Studio Home uses the original native coast artwork", artwork);
             ui.reveal(artwork);
             ui.main(() -> { assertNotNull(artwork.getDrawable()); assertTrue(artwork.getWidth() > 100); return null; });
