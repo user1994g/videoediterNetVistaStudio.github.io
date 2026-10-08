@@ -27,6 +27,7 @@ import android.widget.ImageView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.annotation.OptIn;
+import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.ExperimentalApi;
 import androidx.media3.common.util.UnstableApi;
@@ -103,6 +104,7 @@ public final class NativeWorkspaceUiTest {
             ui.click("Fit");
             ui.assertGraphicalTimeline();
             ui.capture("editor-initial");
+            ui.assertErroredPreviewRecovery();
 
             // A pre-existing maximum native contrast is outside the visible 400% factor cap.
             // Inspecting it and editing a different grade must never silently normalize it.
@@ -176,6 +178,14 @@ public final class NativeWorkspaceUiTest {
             ui.edit("Position X %", "20.0", true);
             ui.edit("Position Y %", "15.0", true);
             ui.edit("Opacity %", "80.0", true);
+            // Short phone windows use a native modal Inspector. Dismiss its
+            // opaque/dimmed surface before sampling the actual monitor, then
+            // reopen it for the controls screenshot and in-panel navigation.
+            ui.closeCompactDialog();
+            ui.waitPreview();
+            ui.assertMotionPreview();
+            ui.capture("motion-preview");
+            ui.openWorkspace("Effects", "Motion/Effects");
             ui.scrollInspectorToTop(); ui.capture("motion-effects");
             // Native in-panel tab navigation must not create a stack of empty modal dialogs.
             ui.clickWithin(ui.panel("inspectorPanel"), "Colour");
@@ -183,10 +193,17 @@ public final class NativeWorkspaceUiTest {
             ui.edit("Brightness %", "25.0", true);
             ui.edit("Contrast %", "80.0", true);
             ui.edit("Saturation %", "60.0", true);
+            ui.closeCompactDialog();
+            ui.waitPreview();
+            ui.assertColourPreview();
+            ui.capture("colour-preview");
+            ui.openWorkspace("Colour", "Colour");
             ui.scrollInspectorToTop(); ui.capture("colour");
             ui.closeCompactDialog();
             ui.click("Undo"); assertEquals(1f, ui.project().clips.get(0).settings.saturation, 0.0001f);
             ui.click("Redo"); assertEquals(0.6f, ui.project().clips.get(0).settings.saturation, 0.0001f);
+            ui.waitPreview();
+            ui.assertColourPreview();
             ui.drainActivityIo();
             StudioProject saved = files.loadDraft();
             StudioProject.ClipSettings settings = saved.clips.get(0).settings;
@@ -448,6 +465,82 @@ public final class NativeWorkspaceUiTest {
                 });
                 Log.e("NetVistaNativeUiChecks", "Preview failure: " + diagnostics);
                 throw new AssertionError(failure.getMessage() + "; " + diagnostics, failure);
+            }
+        }
+        void assertErroredPreviewRecovery() throws Exception {
+            tapTimeline(600, false);
+            String savedBefore = ProjectCodec.encode(project());
+            long requested = main(() -> (Long) field(activity, "playheadMs"));
+            CompositionPlayer failed = main(() -> (CompositionPlayer) field(activity, "player"));
+            main(() -> {
+                // Process-local instrumentation only. This reproduces the pinned
+                // SDK's sticky error field without bad media, account writes or
+                // any production error-injection hook.
+                PlaybackException error = new PlaybackException("Native recovery QA", null, PlaybackException.ERROR_CODE_TIMEOUT);
+                setField(failed, "playbackException", error);
+                assertSame(error, failed.getPlayerError());
+                return null;
+            });
+            click("▶");
+            waitPreview();
+            waitUntil("Explicit Play recovers with a fresh running native decoder", 3000,
+                    () -> main(() -> {
+                        CompositionPlayer current = (CompositionPlayer) field(activity, "player");
+                        return current != failed && current.isPlaying() && current.getPlayerError() == null;
+                    }));
+            click("Ⅱ");
+            CompositionPlayer current = main(() -> (CompositionPlayer) field(activity, "player"));
+            assertNotSame("An errored CompositionPlayer is replaced, not prepared repeatedly", failed, current);
+            assertNull(current.getPlayerError());
+            long restored = main(() -> (Long) field(activity, "playheadMs"));
+            assertTrue("Retry preserves the requested sequence position instead of restarting at zero; requested="
+                    + requested + ", restored=" + restored, restored >= requested - 100 && restored <= requested + 400);
+            assertEquals("Engine recovery does not mutate clips, settings, IDs or the source pool", savedBefore, ProjectCodec.encode(project()));
+            waitUntil("Fresh native decoder actually renders the retained red source", 3000, () -> {
+                int pixel = monitorCenterPixel();
+                return Color.red(pixel) > 170 && Color.green(pixel) < 75 && Color.blue(pixel) < 75;
+            });
+            capture("preview-recovered");
+        }
+        int monitorCenterPixel() throws Exception {
+            Rect bounds = main(() -> {
+                Rect value = new Rect(); assertTrue(((View) field(activity, "playerView")).getGlobalVisibleRect(value)); return value;
+            });
+            Bitmap screenshot = instrumentation.getUiAutomation().takeScreenshot(); assertNotNull(screenshot);
+            if (screenshot.getConfig() == Bitmap.Config.HARDWARE) {
+                Bitmap readable = screenshot.copy(Bitmap.Config.ARGB_8888, false); screenshot.recycle(); screenshot = readable;
+                assertNotNull("Read recovered native monitor pixels", screenshot);
+            }
+            try { return screenshot.getPixel(bounds.centerX(), bounds.centerY()); }
+            finally { screenshot.recycle(); }
+        }
+        void assertMotionPreview() throws Exception {
+            // The source is solid red. Its centered interior is still covered
+            // after the tested scale/rotation/offset; 80% opacity must change its
+            // actual output RGB, not only the stored control value.
+            waitUntil("Latest native motion preview displays actual 80-percent source opacity", 3000, () -> {
+                int pixel = monitorCenterPixel();
+                return Color.red(pixel) >= 190 && Color.red(pixel) <= 215 && Color.green(pixel) < 15 && Color.blue(pixel) < 15;
+            });
+        }
+        void assertColourPreview() throws Exception {
+            // Native default SDR RGB matrix composition: source (1,0,0),
+            // brightness +.25 -> (1.25,.25,.25), contrast factor .8 ->
+            // (1.1,.3,.3), saturation .6 -> (.848032,.368032,.368032),
+            // opacity .8 -> (.6784256,.2944256,.2944256): about (173,75,75).
+            // Tight screenshot tolerance permits native surface/codec rounding,
+            // but rejects stale ungraded red and opacity-only previews.
+            final int[] last = new int[1];
+            try {
+                waitUntil("Latest native colour preview renders the combined saved grade", 3000, () -> {
+                    last[0] = monitorCenterPixel();
+                    return Math.abs(Color.red(last[0]) - 173) < 18
+                            && Math.abs(Color.green(last[0]) - 75) < 18
+                            && Math.abs(Color.blue(last[0]) - 75) < 18;
+                });
+            } catch (AssertionError failure) {
+                throw new AssertionError(failure.getMessage() + "; actualRGB=(" + Color.red(last[0]) + ","
+                        + Color.green(last[0]) + "," + Color.blue(last[0]) + ")", failure);
             }
         }
         void drainActivityIo() throws Exception {

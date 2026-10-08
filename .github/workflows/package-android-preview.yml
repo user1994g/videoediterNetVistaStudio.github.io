@@ -1,0 +1,80 @@
+name: Package verified Android workspace preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      checked_run_id:
+        description: Successful native phone/tablet check run ID for this Android source
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  preview:
+    if: github.ref == 'refs/heads/codex/native-workspace-test'
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CHECKED_RUN_ID: ${{ inputs.checked_run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require successful checks for the exact Android source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CHECKED_RUN_ID" =~ ^[0-9]+$ ]]
+          CHECKED_RUN="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CHECKED_RUN_ID")"
+          [[ "$(jq -r .conclusion <<< "$CHECKED_RUN")" == success ]]
+          [[ "$(jq -r .path <<< "$CHECKED_RUN")" == .github/workflows/build-android.yml ]]
+          [[ "$(jq -r .head_branch <<< "$CHECKED_RUN")" == codex/native-workspace-test ]]
+          CHECKED_SHA="$(jq -r .head_sha <<< "$CHECKED_RUN")"
+          [[ "$CHECKED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags --depth=1 origin "$CHECKED_SHA"
+          git diff --exit-code "$CHECKED_SHA" HEAD -- mobile/android assets/NetVistaStudio.png assets/home-video-coast.png .github/workflows/build-android.yml
+      - uses: actions/download-artifact@v4
+        with:
+          name: Android-native-build-pixel_2
+          run-id: ${{ inputs.checked_run_id }}
+          github-token: ${{ github.token }}
+          path: staging
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'build-tools;36.0.0'
+      - name: Sign verified development APK with the maintained update identity
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY_BASE64 }}
+          SIGNING_CERT: ${{ secrets.ANDROID_SIGNING_CERT_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ -n "$SIGNING_KEY" && -n "$SIGNING_CERT" ]]
+          SIGNING_DIR="$(mktemp -d "$RUNNER_TEMP/netvista-preview-signing.XXXXXX")"
+          trap 'rm -f "$SIGNING_DIR/release-key.pk8" "$SIGNING_DIR/release-cert.pem"; rmdir "$SIGNING_DIR"' EXIT
+          printf '%s' "$SIGNING_KEY" | base64 --decode > "$SIGNING_DIR/release-key.pk8"
+          printf '%s' "$SIGNING_CERT" | base64 --decode > "$SIGNING_DIR/release-cert.pem"
+          unset SIGNING_KEY SIGNING_CERT
+          mkdir -p dist
+          TOOLS="$ANDROID_HOME/build-tools/36.0.0"
+          "$TOOLS/zipalign" -p -f 4 staging/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/netvista-preview-aligned.apk"
+          APK=dist/NetVista-Studio-Android-Workspace-Preview.apk
+          "$TOOLS/apksigner" sign --key "$SIGNING_DIR/release-key.pk8" --cert "$SIGNING_DIR/release-cert.pem" --out "$APK" "$RUNNER_TEMP/netvista-preview-aligned.apk"
+          "$TOOLS/apksigner" verify --verbose --print-certs "$APK"
+          BADGING="$("$TOOLS/aapt" dump badging "$APK")"
+          [[ "$BADGING" == *"name='com.netvistastudio.editor.android'"* ]]
+          sha256sum "$APK"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Android-signed-workspace-preview
+          path: dist/NetVista-Studio-Android-Workspace-Preview.apk
+          if-no-files-found: error
+          retention-days: 7

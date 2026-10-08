@@ -287,22 +287,11 @@ public final class MainActivity extends Activity {
         inspectorTabs.addView(weighted(button("Colour", () -> selectWorkspace(2), false))); inspectorPanel.addView(inspectorTabs);
         ScrollView settingsScroll = new ScrollView(this); inspector = column(); settingsScroll.addView(inspector); inspectorPanel.addView(settingsScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         monitorPanel = panel("PROGRAM MONITOR");
-        player = new CompositionPlayer.Builder(this).build();
+        player = createPreviewPlayer();
         playerView = new PlayerView(this); playerView.setPlayer(player); playerView.setUseController(false);
         playerView.setShutterBackgroundColor(Color.BLACK);
         playerView.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT); playerView.setBackgroundColor(Color.BLACK); playerView.setKeepContentOnPlayerReset(true);
         monitorPanel.addView(playerView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-        CompositionPlayer previewPlayer = player;
-        player.addListener(new Player.Listener() {
-            @Override public void onIsPlayingChanged(boolean playing) { if (liveUi() && player == previewPlayer && playButton != null) playButton.setText(playing ? "Ⅱ" : "▶"); }
-            @Override public void onPlayerError(PlaybackException error) {
-                if (!liveUi() || player != previewPlayer) return;
-                Log.w("NetVistaPreview", "Native preview failed: " + error.getErrorCodeName(), error);
-                message(error.errorCode == PlaybackException.ERROR_CODE_TIMEOUT
-                        ? "Preview update timed out. Press Play to retry the current edit; your sources and project are unchanged."
-                        : "Preview unavailable: " + error.getErrorCodeName() + ". Press Play to retry; your project is unchanged.");
-            }
-        });
         LinearLayout transport = row(); transport.setGravity(Gravity.CENTER_VERTICAL);
         Button previous = button("|◀", () -> seekTimeline(startOf(Math.max(0, clipAt(playheadMs) - 1)), false), true); previous.setContentDescription("Previous clip"); transport.addView(previous);
         playButton = button("▶", this::togglePlay, true); playButton.setTextSize(17); playButton.setContentDescription("Play or pause"); transport.addView(playButton);
@@ -500,6 +489,49 @@ public final class MainActivity extends Activity {
                 : new StudioProject.ClipSettings(1, 0, 0, 0, 1, s.brightness, s.contrast, s.saturation); changedEdit();
     }
     private void scheduleEffectsPreview() { preview(false); }
+
+    private CompositionPlayer createPreviewPlayer() {
+        CompositionPlayer created = new CompositionPlayer.Builder(this).build();
+        created.addListener(new Player.Listener() {
+            @Override public void onIsPlayingChanged(boolean playing) {
+                if (liveUi() && player == created && playButton != null) playButton.setText(playing ? "Ⅱ" : "▶");
+            }
+            @Override public void onPlayerError(PlaybackException error) {
+                if (!liveUi() || player != created) return;
+                Log.w("NetVistaPreview", "Native preview failed: " + error.getErrorCodeName(), error);
+                message(error.errorCode == PlaybackException.ERROR_CODE_TIMEOUT
+                        ? "Preview update timed out. Press Play to retry the current edit; your sources and project are unchanged."
+                        : "Preview unavailable: " + error.getErrorCodeName() + ". Press Play to retry; your project is unchanged.");
+            }
+            @Override public void onPlaybackStateChanged(int state) {
+                if (state == Player.STATE_READY) previewReady(created);
+            }
+            @Override public void onRenderedFirstFrame() { previewReady(created); }
+        });
+        return created;
+    }
+
+    private void previewReady(CompositionPlayer current) {
+        if (liveUi() && player == current && !previewPending
+                && current.getPlaybackState() == Player.STATE_READY && current.getPlayerError() == null) {
+            message("Program monitor ready — current edit.");
+        }
+    }
+
+    private void recreateErroredPreviewPlayer() {
+        if (player == null || player.getPlayerError() == null) return;
+        // Media3 1.11.1 keeps CompositionPlayer's playbackException sticky even
+        // across prepare/stop/setComposition. Retry the latest model with a new
+        // native engine, only on an explicit preview request after a real error.
+        CompositionPlayer failed = player;
+        playerView.setKeepContentOnPlayerReset(false);
+        playerView.setPlayer(null);
+        player = null; // Ignore late callbacks from the released engine.
+        try { failed.release(); }
+        catch (RuntimeException error) { Log.w("NetVistaPreview", "Errored native preview release failed", error); }
+        player = createPreviewPlayer();
+    }
+
     private void preview(boolean play) {
         if (!liveUi() || !editorVisible || operationBusy || player == null) return;
         // One latest project snapshot per burst of edits. Rebuilding compositions
@@ -517,10 +549,31 @@ public final class MainActivity extends Activity {
         main.postDelayed(effectsPreview, 120);
     }
     private void applyPreview(boolean play) {
+        if (!liveUi() || !editorVisible || !foreground || operationBusy || player == null) { previewPending = false; return; }
+        if (project.clips.isEmpty()) {
+            // Deletion already removes the video surface immediately. Do not
+            // wait for that obsolete graph to render its first frame/READY:
+            // it no longer has a surface, and no decoder is needed at all.
+            previewPending = false;
+            try {
+                playerView.setKeepContentOnPlayerReset(false); player.stop(); playerView.setPlayer(null); updatePlayhead(false);
+            } catch (RuntimeException error) {
+                Log.w("NetVistaPreview", "Could not stop deleted native preview", error);
+            }
+            return;
+        }
+        if (player.getPlayerError() == null && player.getPlaybackState() == Player.STATE_BUFFERING) {
+            // Do not tear down a native graph while its codecs/surfaces are
+            // still preparing. Keep one explicit latest edit pending; once the
+            // prior graph is ready (or has a real error), apply only that edit.
+            previewPending = true;
+            main.removeCallbacks(effectsPreview);
+            main.postDelayed(effectsPreview, 50);
+            return;
+        }
         previewPending = false;
-        if (!liveUi() || !editorVisible || !foreground || operationBusy || player == null) return;
         try {
-            if (project.clips.isEmpty()) { playerView.setKeepContentOnPlayerReset(false); player.stop(); playerView.setPlayer(null); updatePlayhead(false); return; }
+            recreateErroredPreviewPlayer();
             playerView.setKeepContentOnPlayerReset(true);
             playerView.setPlayer(player); player.setComposition(MobileExport.composition(project.copy(), files), Math.min(playheadMs, Math.max(0, project.durationMs() - 1)));
             player.prepare(); player.setPlayWhenReady(play); updatePlayhead(false);
@@ -534,7 +587,7 @@ public final class MainActivity extends Activity {
             player.pause(); updatePlayhead(false);
         } else {
             if (playheadMs >= project.durationMs()) { playheadMs = 0; player.seekTo(0); }
-            if (previewPending || player.getPlaybackState() == Player.STATE_IDLE) preview(true); else player.play();
+            if (previewPending || player.getPlayerError() != null || player.getPlaybackState() == Player.STATE_IDLE) preview(true); else player.play();
         }
     }
     private void seekTimeline(long position, boolean play) {
@@ -543,7 +596,7 @@ public final class MainActivity extends Activity {
         playheadMs = Math.max(0, Math.min(position, project.durationMs())); int index = clipAt(playheadMs);
         if (selected != index) { selected = index; refreshInspector(); timeline.setProject(project, selected); }
         if (player != null) {
-            if (previewPending || player.getPlaybackState() == Player.STATE_IDLE) preview(play);
+            if (previewPending || player.getPlayerError() != null || player.getPlaybackState() == Player.STATE_IDLE) preview(play);
             else { player.pause(); player.seekTo(Math.min(playheadMs, Math.max(0, project.durationMs() - 1))); if (play) player.play(); }
         }
         updatePlayhead(false);

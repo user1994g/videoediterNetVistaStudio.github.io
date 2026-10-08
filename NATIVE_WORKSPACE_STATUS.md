@@ -20,6 +20,9 @@ downloads remain unchanged until a new, tested release is explicitly published.
   remain on-screen. Native widget tests and actual decoded export/frame pixels.
 - 44 tests pass locally and on Windows/Linux CI. Windows headless runners with
   an empty font database load installed system fonts instead of unreadable boxes.
+- Frozen Windows/Linux portable app builds pass native launch checks and actual
+  bundled-FFmpeg H.264 encoding/decoded-pixel checks. Complete Windows ZIP and
+  Linux TAR.GZ previews preserve all runtime files and Linux executable bits.
 
 ## Apple / Android native Video workspaces
 
@@ -38,6 +41,9 @@ transforms, primary grading, silent export and audio across clip boundaries.
 The universal device IPA compiles, passes signature/package inspection and
 contains the correct IOS platform, both device families and original icons.
 AltStore must re-sign it; physical installation is not yet established.
+The same source also passes CI compilation with the stable iOS 18.5 SDK and
+real playback on the runner's phone/tablet simulators, without the compatibility
+fallback required on the locally installed iOS 27 beta simulator.
 
 On an OS that rejects custom-compositor playback, Apple now falls back after a
 real player error to a locally rendered 720p edited preview. This path is tested
@@ -45,12 +51,15 @@ on the installed iOS 27 simulator. It preserves effects and seek intent, cancels
 stale work and never silently substitutes the unedited source. It requires
 rendering after edits and is not equivalent to instant live grading.
 
-Android phone CI passes all nine instrumentation methods, including actual
-edited export pixels and project archives. Tablet checks exposed a native
-preview timeout after rapid delete/add/undo/redo. Latest source coalesces graph
-updates, preserves paused seek intent, clears the empty monitor and fixes the
-forward-drag insertion marker. A fresh device CI run is required for these
-repairs before claiming a verified Android package.
+Android phone and tablet CI pass nine instrumentation methods, including actual
+edited export pixels, archives, empty-monitor pixels, and uncommitted numeric
+input across duplicate/undo/redo. Source coalesces graph updates, preserves
+paused seek intent and fixes the forward-drag insertion marker. Review of the
+final tablet screenshots exposed a later effects-preview timeout beyond the
+earlier ready check. Stronger final-grade checks, serialized preparations and
+real error recovery are in progress; the APK is not claimed final until those
+checks pass. Preview signing requires successful checks of the exact source and
+uses the maintained update certificate, without replacing public beta assets.
 
 ## Remaining parity boundaries
 

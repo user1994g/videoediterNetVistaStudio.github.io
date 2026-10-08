@@ -25,7 +25,11 @@ This is the native desktop Windows/Linux edition of NetVista Studio. It uses Qt 
 - Press **Update** in the top bar to check public GitHub releases, download the correct Windows or Linux beta to Downloads, and verify its published size and SHA-256 digest before installation.
 - Open **Mods** to install portable `.netvistamod` creator packs by button or drag-and-drop, switch them on or off, remove them, and open the persistent per-user Mods folder. Mods v1 use checked declarative data for themes, pages, and viewable creator catalogs; catalog maps, props, and presets are not applied automatically in this beta. Mods never run creator scripts or native code.
 
-16K delivery is real, but it requires an encoder that accepts the raster and a computer with substantial memory, storage and render time. NetVista Studio selects HEVC rather than H.264 for 16K by default.
+16K controls are available, but selecting a preset does not establish that a
+particular encoder/device can deliver that raster. It needs substantial memory,
+storage and render time. NetVista selects HEVC rather than H.264 for 16K by
+default; the workspace preview checks below verify small decoded exports, not a
+certification of every 16K codec or high-resolution delivery.
 
 ## Run from source
 
@@ -55,7 +59,16 @@ The `imageio-ffmpeg` package supplies a portable FFmpeg executable. Set `NETVIST
 - Windows: `powershell -ExecutionPolicy Bypass -File build_windows.ps1`
 - Linux: `sh build_linux.sh`
 
-The packaged app is written to `dist/NetVistaStudio`. GitHub Actions runs the same builds and publishes downloadable Windows and Linux ZIP artifacts for every tagged release.
+The packaged app is written to `dist/NetVistaStudio`. The artifact-only
+`build-cross-platform.yml` workflow can be dispatched on a development branch.
+It verifies the frozen app enters its native event loop, then executes the
+bundled FFmpeg to encode H.264 and decode expected pixels. It uploads a Windows
+ZIP or Linux TAR.GZ containing the complete folder; Linux executable bits remain
+intact. Extract the whole archive, not just the executable. These are portable
+development previews, not installers, signatures or public-release updates.
+
+The separate release workflow publishes exact, approved release tags. Ordinary
+preview builds do not replace public downloads or change GitHub tags.
 
 ## Current beta difference
 
