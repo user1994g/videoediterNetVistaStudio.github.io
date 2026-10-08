@@ -13,6 +13,11 @@ adb shell am instrument -w -r com.netvistastudio.editor.android.test/androidx.te
   | tee mobile/android/app/build/device-instrumentation.txt || check_status=$?
 adb pull /sdcard/Android/data/com.netvistastudio.editor.android/files/ui-screenshots mobile/android/app/build/ui-screenshots || true
 adb pull /sdcard/Pictures/NetVistaWorkspaceQA mobile/android/app/build/ui-screenshots-public || true
+# Read only native preview/codec diagnostics from this disposable, account-free
+# emulator. Keep the real nested SDK error when an effects graph fails later than
+# its first READY event; screenshots and stored values alone cannot explain it.
+adb logcat -d -v threadtime -s NetVistaPreview NetVistaNativeUiChecks ExoPlayerImpl MediaCodecVideoRenderer MediaCodecRenderer DefaultVideoFrameProcessor VideoFrameProcessingTaskExecutor AndroidRuntime \
+  > mobile/android/app/build/preview-logcat.txt || true
 # Android's am instrument can exit zero even when JUnit reports failures.
 if ! grep -Eq '^OK \([1-9][0-9]* tests?\)' mobile/android/app/build/device-instrumentation.txt; then check_status=1; fi
 exit "$check_status"

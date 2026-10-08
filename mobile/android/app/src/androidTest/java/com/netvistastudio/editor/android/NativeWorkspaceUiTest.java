@@ -461,17 +461,33 @@ public final class NativeWorkspaceUiTest {
                     CompositionPlayer player = (CompositionPlayer) field(activity, "player");
                     return "pending=" + field(activity, "previewPending") + "; clips=" + ((StudioProject) field(activity, "project")).clips.size()
                             + "; requested=" + field(activity, "playheadMs") + "; player=" + (player == null ? "null"
-                            : "state=" + player.getPlaybackState() + ", position=" + player.getCurrentPosition() + ", error=" + player.getPlayerError());
+                            : "state=" + player.getPlaybackState() + ", position=" + player.getCurrentPosition()
+                            + ", error=" + describePlaybackError(player.getPlayerError()));
                 });
                 Log.e("NetVistaNativeUiChecks", "Preview failure: " + diagnostics);
                 throw new AssertionError(failure.getMessage() + "; " + diagnostics, failure);
             }
+        }
+        String describePlaybackError(PlaybackException error) {
+            if (error == null) return "none";
+            StringBuilder detail = new StringBuilder(error.getErrorCodeName()).append("(").append(error.errorCode).append(")");
+            Throwable cause = error;
+            for (int depth = 0; cause != null && depth < 6; depth++, cause = cause.getCause()) {
+                detail.append(" -> ").append(cause.getClass().getName()).append(": ").append(cause.getMessage());
+                // ExoTimeoutException exposes which operation actually timed
+                // out. Preserve that pinned SDK diagnostic without adding a
+                // production dependency or assuming all errors are decode ones.
+                try { detail.append(" [timeoutOperation=").append(cause.getClass().getField("timeoutOperation").get(cause)).append("]"); }
+                catch (ReflectiveOperationException | SecurityException ignored) { }
+            }
+            return detail.toString();
         }
         void assertErroredPreviewRecovery() throws Exception {
             tapTimeline(600, false);
             String savedBefore = ProjectCodec.encode(project());
             long requested = main(() -> (Long) field(activity, "playheadMs"));
             CompositionPlayer failed = main(() -> (CompositionPlayer) field(activity, "player"));
+            Button pauseButton = main(() -> (Button) field(activity, "playButton"));
             main(() -> {
                 // Process-local instrumentation only. Use the pinned SDK's real
                 // error transition: it stops the holders and invalidates the
@@ -487,20 +503,85 @@ public final class NativeWorkspaceUiTest {
                 assertEquals(Player.STATE_IDLE, failed.getPlaybackState());
                 return null;
             });
-            click("▶");
-            waitPreview();
-            waitUntil("Explicit Play recovers with a fresh running native decoder", 3000,
-                    () -> main(() -> {
+            // Arm the main-looper observer BEFORE native Play. Waiting for UI
+            // idle before pressing Pause can legitimately allow seconds of
+            // playback on a slow device; it cannot prove the initial seek.
+            // Record the fresh engine's first READY/playing position instead,
+            // and immediately run the same real native Pause button handler.
+            final class RecoveryObserver implements Runnable, Player.Listener {
+                final Handler handler = new Handler(Looper.getMainLooper());
+                final long deadline = SystemClock.elapsedRealtime() + 15000;
+                CompositionPlayer recovered;
+                long firstReadyPosition = -1, firstPlayingPosition = -1;
+                boolean observedPlaying, pressedPause;
+                Throwable failure;
+                @Override public void run() {
+                    try {
                         CompositionPlayer current = (CompositionPlayer) field(activity, "player");
-                        return current != failed && current.isPlaying() && current.getPlayerError() == null;
-                    }));
-            click("Ⅱ");
+                        if (current == null || current == failed) {
+                            if (SystemClock.elapsedRealtime() >= deadline) throw new AssertionError("Recovery never created a fresh engine");
+                            handler.postDelayed(this, 10); return;
+                        }
+                        recovered = current; current.addListener(this); observeReady();
+                        // If attachment caught an already-playing graph, run
+                        // after its queued native listener notifications, not
+                        // inside an earlier READY notification.
+                        if (current.isPlaying()) handler.post(this::observePlaying);
+                    } catch (Throwable error) { failure = error; }
+                }
+                @Override public void onPlaybackStateChanged(int state) { if (state == Player.STATE_READY) observeReady(); }
+                @Override public void onIsPlayingChanged(boolean playing) { if (playing) observePlaying(); }
+                void observeReady() {
+                    try {
+                        if (recovered == null || recovered.getPlayerError() != null
+                                || recovered.getPlaybackState() != Player.STATE_READY) return;
+                        if (firstReadyPosition < 0) firstReadyPosition = recovered.getCurrentPosition();
+                    } catch (Throwable error) { failure = error; }
+                }
+                void observePlaying() {
+                    try {
+                        if (recovered == null || recovered.getPlayerError() != null
+                                || recovered.getPlaybackState() != Player.STATE_READY) return;
+                        observeReady();
+                        if (recovered.isPlaying() && !observedPlaying) {
+                            firstPlayingPosition = recovered.getCurrentPosition(); observedPlaying = true;
+                            assertEquals("Fresh engine updates its real native transport", "Ⅱ", pauseButton.getText().toString());
+                            assertTrue("Real native Pause is enabled", pauseButton.isEnabled());
+                            pressedPause = pauseButton.performClick();
+                        }
+                    } catch (Throwable error) { failure = error; }
+                }
+                void close() { handler.removeCallbacksAndMessages(null); if (recovered != null) recovered.removeListener(this); }
+            }
+            RecoveryObserver observer = new RecoveryObserver();
+            main(() -> { observer.handler.post(observer); return null; });
+            try {
+                click("▶");
+                waitPreview();
+                waitUntil("Explicit Play recovers with a fresh actually-playing native decoder and native Pause", 3000,
+                        () -> main(() -> {
+                            if (observer.failure != null) throw new AssertionError("Native recovery observer failed", observer.failure);
+                            CompositionPlayer current = (CompositionPlayer) field(activity, "player");
+                            return observer.recovered == current && current != failed && observer.observedPlaying
+                                    && observer.pressedPause && current.getPlayerError() == null && !current.isPlaying();
+                        }));
+                main(() -> {
+                    assertTrue("Fresh engine's first READY preserves the requested seek, not zero; requested=" + requested
+                                    + ", firstReady=" + observer.firstReadyPosition,
+                            Math.abs(observer.firstReadyPosition - requested) <= 100);
+                    assertTrue("Fresh engine actually starts playback at that seek; requested=" + requested
+                                    + ", firstPlaying=" + observer.firstPlayingPosition,
+                            Math.abs(observer.firstPlayingPosition - requested) <= 100);
+                    long restored = (Long) field(activity, "playheadMs");
+                    assertTrue("Native Pause retains the observed actual playback position; firstPlaying="
+                                    + observer.firstPlayingPosition + ", paused=" + restored,
+                            Math.abs(restored - observer.firstPlayingPosition) <= 100);
+                    return null;
+                });
+            } finally { main(() -> { observer.close(); return null; }); }
             CompositionPlayer current = main(() -> (CompositionPlayer) field(activity, "player"));
             assertNotSame("An errored CompositionPlayer is replaced, not prepared repeatedly", failed, current);
             assertNull(main(current::getPlayerError));
-            long restored = main(() -> (Long) field(activity, "playheadMs"));
-            assertTrue("Retry preserves the requested sequence position instead of restarting at zero; requested="
-                    + requested + ", restored=" + restored, restored >= requested - 100 && restored <= requested + 400);
             assertEquals("Engine recovery does not mutate clips, settings, IDs or the source pool", savedBefore, ProjectCodec.encode(project()));
             waitUntil("Fresh native decoder actually renders the retained red source", 3000, () -> {
                 int pixel = monitorCenterPixel();
