@@ -473,12 +473,18 @@ public final class NativeWorkspaceUiTest {
             long requested = main(() -> (Long) field(activity, "playheadMs"));
             CompositionPlayer failed = main(() -> (CompositionPlayer) field(activity, "player"));
             main(() -> {
-                // Process-local instrumentation only. This reproduces the pinned
-                // SDK's sticky error field without bad media, account writes or
-                // any production error-injection hook.
-                PlaybackException error = new PlaybackException("Native recovery QA", null, PlaybackException.ERROR_CODE_TIMEOUT);
-                setField(failed, "playbackException", error);
-                assertSame(error, failed.getPlayerError());
+                // Process-local instrumentation only. Use the pinned SDK's real
+                // error transition: it stops the holders and invalidates the
+                // SimpleBasePlayer cached state, unlike a private-field write.
+                // No bad media, account writes or production injection hook.
+                Method fail = CompositionPlayer.class.getDeclaredMethod("maybeUpdatePlaybackError",
+                        String.class, Exception.class, int.class);
+                fail.setAccessible(true);
+                fail.invoke(failed, "Native recovery QA", new IllegalStateException("Native recovery QA"),
+                        PlaybackException.ERROR_CODE_TIMEOUT);
+                assertNotNull("Pinned native error is exposed through actual cached Player state", failed.getPlayerError());
+                assertEquals(PlaybackException.ERROR_CODE_TIMEOUT, failed.getPlayerError().errorCode);
+                assertEquals(Player.STATE_IDLE, failed.getPlaybackState());
                 return null;
             });
             click("▶");
