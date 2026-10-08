@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QThread, QTimer, QUrl, Qt, Signal, QMimeData, QSize
-from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QKeySequence, QDrag, QPixmap, QPainter
+from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QKeySequence, QDrag, QPixmap, QPainter, QFontInfo
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
@@ -20,7 +20,7 @@ from .ffmpeg_engine import (RESOLUTION_PRESETS, ExportOptions, ExportProcess, FF
                             probe_media, render_frame)
 from .model import MediaAsset, Project, TimelineClip, ProjectHistory, finite
 from .mods import ModCatalog, ModError, ModManager, ModPackage
-from .theme import build_app_style
+from .theme import build_app_style, prepare_native_font_database
 from .timeline import TimelineWidget
 from .updater import AvailableUpdate, check_for_update, download_update
 from . import __version__
@@ -150,6 +150,7 @@ class MainWindow(QMainWindow):
         self.resize(1500, 930)
         self.setMinimumSize(960, 640)
         self.setAcceptDrops(True)
+        prepare_native_font_database()
         self.setStyleSheet(build_app_style(self.mod_manager.active_theme_tokens(self.mod_catalog)))
         self._build_ui()
         self._build_shortcuts()
@@ -451,7 +452,7 @@ class MainWindow(QMainWindow):
             action = menu.addAction(text)
             action.setCheckable(True)
             action.setChecked(True)
-            action.toggled.connect(lambda checked, key=setting: setattr(self.timeline, key, checked))
+            action.toggled.connect(lambda checked, key=setting: self.set_timeline_option(key, checked))
         more = QToolButton()
         more.setText("•••")
         more.setToolTip("Duplicate, linked selection and snapping")
@@ -471,6 +472,11 @@ class MainWindow(QMainWindow):
         fit = self._tool_button("Fit", self.fit_timeline)
         row.addWidget(fit)
         return frame
+
+    def set_timeline_option(self, key: str, enabled: bool) -> None:
+        setattr(self.timeline, key, enabled)
+        if key == "linked":
+            self.load_clip_controls()
 
     def _page_dock(self) -> QWidget:
         frame = QFrame(objectName="dock")
@@ -497,16 +503,23 @@ class MainWindow(QMainWindow):
                 children = [f"{child.metaObject().className()}:{getattr(child, 'text', lambda: '')()}={child.minimumSizeHint().width()}"
                             for child in widget.findChildren(QWidget, options=Qt.FindChildOption.FindDirectChildrenOnly)]
                 rows.append(f"{name}: minimum={widget.minimumSizeHint().toTuple()}, actual={widget.size().toTuple()}, children={children}")
-        return f"Page={self.current_page}, window={self.size().toTuple()}\n" + "\n".join(rows)
+        font = self.font()
+        return (f"Page={self.current_page}, window={self.size().toTuple()}, "
+                f"font={QFontInfo(font).family()}, pixelSize={font.pixelSize()}, pointSize={font.pointSizeF()}, "
+                f"logicalDpi={self.logicalDpiX()}, devicePixelRatio={self.devicePixelRatioF()}\n" + "\n".join(rows))
 
     def _make_inspector(self, page: str) -> QWidget:
         widget = QWidget()
         column = QVBoxLayout(widget)
         column.setContentsMargins(0, 8, 0, 0)
         if page == "Media":
-            column.addWidget(QLabel("Import video and audio, then double-click an item or press Add selected to place it on the timeline."))
+            help_text = QLabel("Import video and audio, then double-click an item or press Add selected to place it on the timeline.")
+            help_text.setWordWrap(True)
+            column.addWidget(help_text)
         elif page == "Cut":
-            column.addWidget(QLabel("Select clips, drag them side by side or between tracks, and cut at the red playhead."))
+            help_text = QLabel("Select clips, drag them side by side or between tracks, and cut at the red playhead.")
+            help_text.setWordWrap(True)
+            column.addWidget(help_text)
         elif page == "Edit":
             self.position_x_slider = self._slider(column, "Position X", -100, 100, 0, self.clip_controls_changed)
             self.position_y_slider = self._slider(column, "Position Y", -100, 100, 0, self.clip_controls_changed)
@@ -534,6 +547,9 @@ class MainWindow(QMainWindow):
             reset.clicked.connect(lambda: self.reset_clip_settings("colour"))
             column.addWidget(reset)
         elif page == "Audio":
+            self.audio_target_label = QLabel("Select a green audio clip, or its linked video, to adjust sound.")
+            self.audio_target_label.setWordWrap(True)
+            column.addWidget(self.audio_target_label)
             self.volume_slider = self._slider(column, "Volume", 0, 200, 100, self.clip_controls_changed)
         elif page == "3D Scene":
             note = QLabel("3D source references\nOBJ, DAE, GLTF and GLB files can be catalogued here. This portable edition does not render or sculpt them.")
@@ -1052,6 +1068,14 @@ class MainWindow(QMainWindow):
         for slider in self.property_sliders:
             slider.setEnabled(clip is not None)
             slider.readout.setEnabled(clip is not None)
+        audio_clip = self.audio_clip_for_selection()
+        self.volume_slider.setEnabled(audio_clip is not None)
+        self.volume_slider.readout.setEnabled(audio_clip is not None)
+        if audio_clip is not None:
+            prefix = "Linked audio" if clip and clip.kind == "video" else "Audio clip"
+            self.audio_target_label.setText(f"{prefix}: {audio_clip.name}")
+        else:
+            self.audio_target_label.setText("Select a green audio clip, or its linked video, to adjust sound.")
         if not clip:
             self.effects_summary.setText("Select a clip to edit its effects.")
             return
@@ -1066,7 +1090,7 @@ class MainWindow(QMainWindow):
                   (self.contrast_slider, finite(clip.contrast, 1) * 100),
                   (self.saturation_slider, finite(clip.saturation, 1) * 100),
                   (self.gamma_slider, finite(clip.gamma, 1) * 100),
-                  (self.volume_slider, finite(clip.volume, 1) * 100)]
+                  (self.volume_slider, finite(audio_clip.volume, 1) * 100 if audio_clip else 100)]
         for slider, value in values:
             if slider:
                 value = int(max(slider.minimum(), min(slider.maximum(), value)))
@@ -1079,13 +1103,26 @@ class MainWindow(QMainWindow):
             active.append("Sharpen")
         self.effects_summary.setText("Applied: " + " + ".join(active) if active else "No effects applied")
 
+    def audio_clip_for_selection(self) -> TimelineClip | None:
+        clip = self.project.clip(self.selected_clip_id)
+        if clip is None:
+            return None
+        if clip.kind == "audio":
+            return clip
+        if self.timeline.linked and clip.group_id:
+            return next((other for other in self.project.timeline
+                         if other.kind == "audio" and other.group_id == clip.group_id), None)
+        return None
+
     def clip_controls_changed(self, _value: int) -> None:
         clip = self.project.clip(self.selected_clip_id)
+        changed = self.sender()
+        if changed is self.volume_slider:
+            clip = self.audio_clip_for_selection()
         if not clip:
             return
         if not any(slider.isSliderDown() for slider in self.property_sliders):
             self.remember_edit()
-        changed = self.sender()
         # Write only the property the user touched. A portable UI with fewer
         # controls must never replace richer Mac values just by editing opacity.
         properties = [
@@ -1458,6 +1495,8 @@ class MainWindow(QMainWindow):
             project = Project.load(path)
             self.player.stop()
             self.player.setSource(QUrl())
+            self.frame_view.setText("Import media to start editing")
+            self.viewer_stack.setCurrentWidget(self.frame_view)
             self.preview_revision += 1
             self.program_mode = True
             self.preview_pending_play = False

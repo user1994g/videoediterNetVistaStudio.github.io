@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import re
+import os
+import sys
+from pathlib import Path
 from typing import Any, Mapping
 
 
@@ -22,6 +25,26 @@ DEFAULT_THEME: dict[str, Any] = {
 }
 
 _SAFE_COLOUR = re.compile(r"^#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?$")
+
+
+def prepare_native_font_database() -> None:
+    """Keep normal native fonts; recover an empty headless Windows database.
+
+    Qt's offscreen platform can lack the Windows font-database integration.
+    In that case even ASCII renders as wide missing-glyph boxes, producing
+    misleading layout minima. Register a few already-installed system fonts;
+    do not download fonts or override a working native font configuration.
+    """
+    if sys.platform != "win32":
+        return
+    from PySide6.QtGui import QFontDatabase
+    if QFontDatabase.families():
+        return
+    folder = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+    for filename in ("arial.ttf", "arialbd.ttf", "segoeui.ttf", "segoeuib.ttf"):
+        font = folder / filename
+        if font.is_file():
+            QFontDatabase.addApplicationFont(str(font))
 
 
 def build_app_style(overrides: Mapping[str, Any] | None = None) -> str:

@@ -13,10 +13,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 try:
     from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QPixmap, QRawFont
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
     from netvista.main_window import MainWindow
     from netvista.mods import ModManager
+    from netvista.model import Project
 except ImportError:
     QApplication = None
 
@@ -60,6 +62,62 @@ class NativeWorkspaceTests(unittest.TestCase):
                 self.assertLessEqual(numeric.mapTo(self.window, QPoint(numeric.width(), 0)).x(), self.window.width())
         self.window.show_home()
         self.assertEqual(self.window.root_stack.currentIndex(), 0)
+
+    def test_native_typography_has_real_ascii_glyphs(self):
+        # A headless Windows font database with no fonts draws boxes for even
+        # ASCII and doubles size hints. A layout pass is meaningless in that
+        # state, so test actual usable glyphs rather than only font names.
+        font = QRawFont.fromFont(self.window.font())
+        self.assertTrue(font.isValid(), self.window.workspace_size_diagnostics())
+        for character in "NetVista0123":
+            self.assertTrue(font.supportsCharacter(ord(character)),
+                            self.window.workspace_size_diagnostics())
+
+    def test_open_empty_project_clears_previous_program_frame(self):
+        window = self.window
+        image = QPixmap(20, 20)
+        image.fill(Qt.GlobalColor.red)
+        window.frame_view.setPixmap(image)
+        window.viewer_stack.setCurrentWidget(window.frame_view)
+        path = str(Path(self.mod_folder.name) / "empty.netvistastudio")
+        Project().save(path)
+        with patch("netvista.main_window.QFileDialog.getOpenFileName", return_value=(path, "")):
+            window.open_project()
+        self.assertTrue(window.frame_view.image.isNull())
+        self.assertEqual(window.frame_view.message, "Import media to start editing")
+        self.assertEqual(window.viewer_stack.currentWidget(), window.frame_view)
+        self.assertTrue(window.program_mode)
+
+    def test_audio_volume_targets_linked_sound_not_video(self):
+        window = self.window
+        source = window.project.add_asset("/tmp/not-a-real-clip.mp4", "video", 6, True)
+        video_id, audio_id = window.project.add_to_timeline(source)
+        window.timeline.set_project(window.project)
+        window.select_clip(video_id)
+        window.show_page("Audio")
+        self.assertTrue(window.volume_slider.isEnabled())
+        self.assertIn("Linked audio", window.audio_target_label.text())
+        window.volume_slider.setValue(35)
+        window.frame_timer.stop()
+        self.assertEqual(window.project.clip(audio_id).volume, .35)
+        self.assertEqual(window.project.clip(video_id).volume, 1)
+        window.undo()
+        window.frame_timer.stop()
+        self.assertEqual(window.project.clip(audio_id).volume, 1)
+        window.set_timeline_option("linked", False)
+        self.assertFalse(window.volume_slider.isEnabled())
+        window.select_clip(audio_id)
+        self.assertTrue(window.volume_slider.isEnabled())
+        window.volume_slider.setValue(80)
+        window.frame_timer.stop()
+        self.assertEqual(window.project.clip(audio_id).volume, .8)
+
+    def test_media_and_cut_help_wrap_inside_inspector(self):
+        from PySide6.QtWidgets import QLabel
+        for page in ("Media", "Cut"):
+            labels = self.window.inspector_pages[page].findChildren(QLabel)
+            self.assertEqual(len(labels), 1)
+            self.assertTrue(labels[0].wordWrap())
 
     def test_property_values_selection_and_undo(self):
         self.window.show_editor()
