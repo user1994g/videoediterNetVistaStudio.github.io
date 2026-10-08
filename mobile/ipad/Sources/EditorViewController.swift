@@ -578,6 +578,9 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
     private var selectedSource: Int?
     private var propertyBefore: MobileProject?
     private var propertySourceTime: Double?
+    private var propertyClipID: UUID?
+    private var propertyChanged = false
+    private var propertyGestureRejected = false
     private var propertySeekTask: Task<Void, Never>?
     private var propertySeekGeneration = 0
     private var previewUnavailableMessage: String?
@@ -727,7 +730,9 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
         let row = MobilePropertyRow(key: key, title: title, range: range, multiplier: multiplier); rows[key] = row
         row.accessibilityIdentifier = "property.\(key)"; row.slider.accessibilityIdentifier = "property.\(key).slider"
         row.onBegin = { [weak self] in
-            guard let self, self.canEdit else { return }; self.propertyBefore = self.project; self.propertySourceTime = self.selectedSourceTime
+            guard let self, self.canEdit, let selected = self.selected, self.project.clips.indices.contains(selected) else { return }
+            self.finishPropertyGesture(); self.propertyBefore = self.project; self.propertySourceTime = self.selectedSourceTime
+            self.propertyClipID = self.project.clips[selected].id
             if self.autoKeyframe || self.selected.flatMap({ self.project.clips.indices.contains($0) ? self.project.clips[$0].effects.keyframes[key] : nil }) != nil {
                 self.player.pause(); self.pendingPlay = false
             }
@@ -1072,21 +1077,41 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
         effects.keyframes[animationProperty.rawValue] = track; applyAnimatedEffects(effects)
     }
     private func changeProperty(_ key: String, value: Double, ended: Bool) {
-        guard canEdit, let selected, project.clips.indices.contains(selected) else { propertyBefore = nil; propertySourceTime = nil; refresh(); return }
-        if propertyBefore == nil { propertyBefore = project; propertySourceTime = selectedSourceTime }
+        if propertyGestureRejected { if ended { finishPropertyGesture(); refresh() }; return }
+        guard canEdit, let selected, project.clips.indices.contains(selected) else { finishPropertyGesture(); refresh(); return }
+        if let propertyClipID, propertyClipID != project.clips[selected].id {
+            // A second finger can select another clip while a slider is held.
+            // Finishing that gesture must never write its old time/value into
+            // the newly selected clip.
+            finishPropertyGesture(); propertyGestureRejected = !ended; refresh(); return
+        }
+        if propertyBefore == nil { propertyBefore = project; propertySourceTime = selectedSourceTime; propertyClipID = project.clips[selected].id }
         var effects = project.clips[selected].effects; assignProperty(key, value: value, effects: &effects)
         if let property = MobileEffectProperty(rawValue: key), autoKeyframe || !effects.frames(for: property).isEmpty {
             let sourceTime = propertySourceTime ?? selectedSourceTime
             let interpolation = effects.keyframeIndex(for: property, at: sourceTime).map { effects.frames(for: property)[$0].interpolation } ?? animationInterpolation
             do { try effects.upsertKeyframe(for: property, at: sourceTime, value: value, interpolation: interpolation) }
-            catch { self.error(error); return }
+            catch { rejectPropertyGesture(error, ended: ended); return }
             animationProperty = property
         }
-        guard (try? effects.validate(duration: project.clips[selected].duration)) != nil else { return }
+        do { try effects.validate(duration: project.clips[selected].duration) }
+        catch { rejectPropertyGesture(error, ended: ended); return }
+        propertyChanged = propertyChanged || effects != project.clips[selected].effects
         project.clips[selected].effects = effects
         updateEffectPreview(ended: ended)
-        if ended { if let before = propertyBefore, before != project { history.record(before) }; propertyBefore = nil; propertySourceTime = nil; saveWorking(); refresh() }
+        if ended { finishPropertyGesture(); refresh() }
         else { refreshAnimationControls() }
+    }
+    private func finishPropertyGesture() {
+        if propertyChanged, let before = propertyBefore, before != project { history.record(before); saveWorking() }
+        propertyBefore = nil; propertySourceTime = nil; propertyClipID = nil
+        propertyChanged = false; propertyGestureRejected = false
+    }
+    private func rejectPropertyGesture(_ error: Error, ended: Bool) {
+        // Preserve earlier valid edits in this gesture, but never add history
+        // for a rejected edit. Ignore remaining callbacks until touch-up so a
+        // drag at the key limit cannot present an alert for every slider tick.
+        finishPropertyGesture(); propertyGestureRejected = !ended; refresh(); self.error(error)
     }
     private func updateEffectPreview(ended: Bool) {
         guard let selected, project.clips.indices.contains(selected) else { return }
@@ -1113,12 +1138,15 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
         }
     }
     private func numericProperty(_ key: String) {
-        guard canEdit, let selected, let row = rows[key] else { return }
+        guard canEdit, let selected, project.clips.indices.contains(selected), let row = rows[key] else { return }
+        let clipID = project.clips[selected].id
         let dialog = UIAlertController(title: row.slider.accessibilityLabel, message: "\(String(format: "%.1f", Double(row.slider.minimumValue) * row.multiplier)) – \(String(format: "%.1f", Double(row.slider.maximumValue) * row.multiplier))", preferredStyle: .alert)
         dialog.addTextField { field in field.text = String(format: "%.2f", self.propertyValue(key, self.project.clips[selected].effects.evaluated(at: self.selectedSourceTime)) * row.multiplier); field.keyboardType = .numbersAndPunctuation }
         dialog.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         dialog.addAction(UIAlertAction(title: "Apply", style: .default) { [weak self] _ in
-            guard let self, let value = Double(dialog.textFields?.first?.text ?? ""), value.isFinite,
+            guard let self, let current = self.selected, self.project.clips.indices.contains(current),
+                  self.project.clips[current].id == clipID,
+                  let value = Double(dialog.textFields?.first?.text ?? ""), value.isFinite,
                   value / row.multiplier >= Double(row.slider.minimumValue), value / row.multiplier <= Double(row.slider.maximumValue) else { return }
             self.changeProperty(key, value: value / row.multiplier, ended: true)
         }); present(dialog, animated: true)

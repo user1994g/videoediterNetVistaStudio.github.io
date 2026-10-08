@@ -125,12 +125,12 @@ struct MobileClipEffects: Codable, Equatable {
     mutating func upsertKeyframe(for property: MobileEffectProperty, at seconds: Double, value: Double,
                                 interpolation: MobileKeyframeInterpolation = .linear) throws {
         guard seconds.isFinite, (0...31_536_000).contains(seconds), value.isFinite, property.range.contains(value) else {
-            throw MobileProjectError.invalidClip
+            throw MobileProjectError.invalidAnimation
         }
         var track = frames(for: property)
         let frame = MobileEffectKeyframe(sourceSeconds: seconds, value: value, interpolation: interpolation)
         if let index = keyframeIndex(for: property, at: seconds) { track[index] = frame }
-        else { guard track.count < 2_000 else { throw MobileProjectError.invalidClip }; track.append(frame) }
+        else { guard track.count < 2_000 else { throw MobileProjectError.animationLimit }; track.append(frame) }
         track.sort { $0.sourceSeconds < $1.sourceSeconds }
         var next = self; next.keyframes[property.rawValue] = track; try next.validate(); self = next
     }
@@ -147,15 +147,16 @@ struct MobileClipEffects: Codable, Equatable {
               contrast.isFinite, (0...4).contains(contrast), saturation.isFinite, (0...4).contains(saturation) else {
             throw MobileProjectError.invalidClip
         }
-        guard keyframes.count <= MobileEffectProperty.allCases.count,
-              keyframes.values.reduce(0, { $0 + $1.count }) <= 10_000 else { throw MobileProjectError.invalidClip }
+        guard keyframes.count <= MobileEffectProperty.allCases.count else { throw MobileProjectError.invalidAnimation }
+        guard keyframes.values.reduce(0, { $0 + $1.count }) <= 10_000 else { throw MobileProjectError.animationLimit }
         for (key, frames) in keyframes {
-            guard let property = MobileEffectProperty(rawValue: key), !frames.isEmpty, frames.count <= 2_000 else { throw MobileProjectError.invalidClip }
+            guard let property = MobileEffectProperty(rawValue: key), !frames.isEmpty else { throw MobileProjectError.invalidAnimation }
+            guard frames.count <= 2_000 else { throw MobileProjectError.animationLimit }
             var previous: Double = -1
             for frame in frames {
                 guard frame.sourceSeconds.isFinite, frame.sourceSeconds >= 0, frame.sourceSeconds <= duration + 0.001,
                       frame.sourceSeconds - previous > 1.0 / 600, frame.value.isFinite, property.range.contains(frame.value) else {
-                    throw MobileProjectError.invalidClip
+                    throw MobileProjectError.invalidAnimation
                 }
                 previous = frame.sourceSeconds
             }
@@ -200,11 +201,13 @@ struct MobileClip: Codable, Equatable, Identifiable {
 }
 
 enum MobileProjectError: LocalizedError {
-    case invalidClip, invalidProject, missingMedia(String), noVideo
+    case invalidClip, invalidProject, invalidAnimation, animationLimit, missingMedia(String), noVideo
     var errorDescription: String? {
         switch self {
-        case .invalidClip: return "A clip has invalid trim settings or a media path."
+        case .invalidClip: return "A clip has invalid trim, motion, colour or media settings."
         case .invalidProject: return "This is not a supported NetVista mobile project."
+        case .invalidAnimation: return "A keyframe has an invalid property, time, value or ordering. Your previous animation is unchanged."
+        case .animationLimit: return "Animation keyframe limit reached: 2,000 per property, 10,000 per clip or 100,000 per project. Remove unused keyframes before adding more. Your previous animation is unchanged."
         case .missingMedia(let file): return "The project is missing media: \(file)"
         case .noVideo: return "This file does not contain a playable video track."
         }
@@ -228,7 +231,7 @@ struct MobileProject: Codable, Equatable {
         try clips.forEach { try $0.validate() }
         try library.forEach { try $0.validate() }
         guard (clips + library).reduce(0, { count, clip in count + clip.effects.keyframes.values.reduce(0, { $0 + $1.count }) }) <= 100_000 else {
-            throw MobileProjectError.invalidProject
+            throw MobileProjectError.animationLimit
         }
     }
 

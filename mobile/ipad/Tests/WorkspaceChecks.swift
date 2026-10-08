@@ -6,10 +6,16 @@ import CoreVideo
 
 @MainActor
 final class WorkspaceCheckEditor: EditorViewController {
+    var captureExpectedEditError = false
+    var capturedEditErrors: [String] = []
     override var canEdit: Bool { !exporting && !importing }
     override func refreshAccount() {
         accountOverlay.isHidden = true
         refresh()
+    }
+    override func error(_ error: Error) {
+        if captureExpectedEditError { capturedEditErrors.append(error.localizedDescription) }
+        else { super.error(error) }
     }
 }
 
@@ -233,6 +239,38 @@ final class WorkspaceCheckDelegate: UIResponder, UIApplicationDelegate {
         editor.saveWorking(); require((try! MobileProject.read(editor.autosave)).clips[0].effects.keyframes == editor.project.clips[0].effects.keyframes,
             "Animation keys persist in native draft")
         editor.change { $0 = beforeAnimation }
+        // A valid3-second clip can reach the total10k-key cap without exceeding
+        // source time or minimum key spacing. Rejection must finish its gesture
+        // without leaving a stale source time for the next numeric commit.
+        var capped = MobileClipEffects()
+        for property in MobileEffectProperty.allCases {
+            capped.keyframes[property.rawValue] = (0..<1_250).map {
+                MobileEffectKeyframe(sourceSeconds: Double($0) * 0.002, value: capped.value(for: property))
+            }
+        }
+        try! capped.validate(duration: 3)
+        editor.project.clips[0].effects = capped; editor.refresh()
+        editor.seek.value = 2.7; editor.scrub()
+        let beforeFailedEdit = editor.project, undoCount = editor.history.undo.count
+        editor.captureExpectedEditError = true; slider("opacity", value: 0.4)
+        require(editor.project == beforeFailedEdit && editor.history.undo.count == undoCount,
+                "Rejected capped slider must not change project or add Undo history")
+        require(editor.capturedEditErrors.count == 1, "Capped gesture should report exactly one error, not repeat on touch-up")
+        require(editor.capturedEditErrors[0].contains("keyframe limit") && editor.capturedEditErrors[0].contains("Remove unused"),
+                "Cap failure should explain animation limits and recovery, not report a media/trim problem")
+        editor.seek.value = 0.7; editor.scrub()
+        let opacityRow = views(editor.view).compactMap { $0 as? MobilePropertyRow }.first { $0.key == "opacity" }!
+        opacityRow.onChange?("opacity", 0.25, true) // The same commit callback used by numeric properties, without touchDown.
+        require(editor.capturedEditErrors.count == 1 && editor.history.undo.count == undoCount + 1 &&
+                abs(editor.project.clips[0].effects.value(for: .opacity, at: 0.7) - 0.25) < 0.0001,
+                "A numeric commit after rejection must use the new source time and create one valid Undo")
+        editor.captureExpectedEditError = false
+        // Simulate a second-finger selection during an unfinished slider drag.
+        editor.selected = 0; editor.refresh()
+        opacityRow.onBegin?(); let otherClipBefore = editor.project.clips[1]
+        editor.selected = 1; editor.refresh(); opacityRow.onChange?("opacity", 0.1, true)
+        require(editor.project.clips[1] == otherClipBefore, "Old slider gesture must not edit a newly selected clip")
+        editor.selected = 0; editor.change { $0 = beforeAnimation }
         editor.selectPage("Edit"); await settle()
         let timeline = views(editor.view).compactMap { $0 as? MobileTimelineView }.first!
         timeline.onSplit?(0, 1)
