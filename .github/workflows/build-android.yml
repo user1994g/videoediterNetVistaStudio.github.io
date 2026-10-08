@@ -45,8 +45,10 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: |
-            gradle --no-daemon -p mobile/android :app:connectedDebugAndroidTest
-            adb pull /sdcard/Android/data/com.netvistastudio.editor.android/files/ui-screenshots mobile/android/app/build/ui-screenshots
+            check_status=0
+            gradle --no-daemon -p mobile/android :app:connectedDebugAndroidTest || check_status=$?
+            adb pull /sdcard/Android/data/com.netvistastudio.editor.android/files/ui-screenshots mobile/android/app/build/ui-screenshots || true
+            exit "$check_status"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

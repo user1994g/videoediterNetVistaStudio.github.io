@@ -346,7 +346,10 @@ public final class NativeWorkspaceUiTest {
                 assertEquals("Only operate the instrumented app's native window", context.getPackageName(), String.valueOf(root.getPackageName()));
                 List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(text);
                 for (AccessibilityNodeInfo node : nodes) {
-                    if (!text.contentEquals(node.getText() == null ? "" : node.getText())) continue;
+                    // Framework Material dialog buttons render their action titles
+                    // in all caps; accessibility may therefore report CLOSE.
+                    // Still require the exact action label and our app's window.
+                    if (!text.equalsIgnoreCase(node.getText() == null ? "" : node.getText().toString())) continue;
                     AccessibilityNodeInfo clickable = node;
                     while (clickable != null && !clickable.isClickable()) clickable = clickable.getParent();
                     if (clickable != null && clickable.isEnabled() && clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
@@ -376,7 +379,20 @@ public final class NativeWorkspaceUiTest {
             boolean showing = main(() -> {
                 Object value = field(activity, "compactDialog"); return value instanceof android.app.Dialog && ((android.app.Dialog) value).isShowing();
             });
-            if (showing) { clickAccessibleText("Close"); instrumentation.waitForIdleSync(); }
+            if (showing) {
+                main(() -> {
+                    android.app.AlertDialog dialog = (android.app.AlertDialog) field(activity, "compactDialog");
+                    Button close = dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE);
+                    assertNotNull("Compact panel has a real native Close button", close);
+                    Rect visible = new Rect();
+                    assertTrue("Compact panel Close is visibly reachable in the available window", close.getGlobalVisibleRect(visible));
+                    assertTrue("Compact panel Close retains a usable native touch target", visible.width() >= close.getWidth() - 1 && visible.height() >= close.getHeight() - 1);
+                    return null;
+                });
+                try { clickAccessibleText("Close"); }
+                catch (AssertionError failure) { capture("close-dialog-failure"); throw failure; }
+                instrumentation.waitForIdleSync();
+            }
         }
         void assertPanelShown(String name) throws Exception {
             main(() -> { View panel = (View) field(activity, name); assertTrue(name + " is a real attached native panel", panel.isShown());

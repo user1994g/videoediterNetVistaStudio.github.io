@@ -7,6 +7,7 @@ import android.graphics.Color;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Looper;
+import android.util.Log;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.transformer.Composition;
 import androidx.media3.transformer.EditedMediaItem;
@@ -18,6 +19,7 @@ import androidx.test.platform.app.InstrumentationRegistry;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -140,6 +142,7 @@ public final class ClipEffectsIntegrationTest {
             MediaMetadataRetriever retriever = new MediaMetadataRetriever();
             try {
                 retriever.setDataSource(movie.getAbsolutePath());
+                retainDecodedEvidence(context, retriever, variants.length);
                 int baseline = pixel(retriever, 0, 0.5f, 0.5f);
                 assertRed("Baseline red fixture is actually visible", baseline);
                 assertRed("Baseline source fills the chosen aspect-fit canvas", pixel(retriever, 0, 0.1f, 0.5f));
@@ -150,7 +153,8 @@ public final class ClipEffectsIntegrationTest {
                 assertTrue("Lower contrast raises dark channels and reduces decoded channel separation",
                         Color.green(lowContrast) > Color.green(baseline) + 60 && spread(lowContrast) < spread(baseline) - 60);
                 int gray = pixel(retriever, 3, 0.5f, 0.5f);
-                assertTrue("Saturation zero creates a visibly grayscale, nonblack frame", spread(gray) < 25 && Color.red(gray) > 60);
+                assertTrue("Saturation zero creates a visibly grayscale, nonblack frame; decoded=" + rgb(gray)
+                                + "; baseline=" + rgb(baseline), spread(gray) < 25 && Color.red(gray) > 60);
                 assertBlack("Opacity zero must show background in opaque H264", pixel(retriever, 4, 0.5f, 0.5f));
                 assertRed("Half scale keeps the source center", pixel(retriever, 5, 0.5f, 0.5f));
                 assertBlack("Half scale reveals canvas at the edge instead of changing export dimensions", pixel(retriever, 5, 0.1f, 0.5f));
@@ -182,6 +186,32 @@ public final class ClipEffectsIntegrationTest {
             assertEquals("Export canvas height remains fixed", 720, frame.getHeight());
             return frame.getPixel(Math.round((frame.getWidth() - 1) * x), Math.round((frame.getHeight() - 1) * y));
         } finally { frame.recycle(); }
+    }
+
+    private static void retainDecodedEvidence(Context context, MediaMetadataRetriever retriever, int count) throws Exception {
+        File external = context.getExternalFilesDir(null); assertNotNull(external);
+        File directory = new File(external, "ui-screenshots");
+        assertTrue(directory.isDirectory() || directory.mkdirs());
+        StringBuilder values = new StringBuilder("Decoded centres from actual H.264 exports (R,G,B)\n");
+        for (int index = 0; index < count; index++) {
+            long positionUs = (index * EDIT_LENGTH_MS + EDIT_LENGTH_MS / 2) * 1000;
+            Bitmap frame = retriever.getFrameAtTime(positionUs, MediaMetadataRetriever.OPTION_CLOSEST);
+            assertNotNull("Decode retained effect evidence " + index, frame);
+            try {
+                String value = "Effect " + index + ": " + rgb(frame.getPixel(frame.getWidth() / 2, frame.getHeight() / 2));
+                values.append(value).append('\n'); Log.i("NetVistaNativeEffectChecks", value);
+                try (FileOutputStream output = new FileOutputStream(new File(directory, "effect-export-" + index + ".png"))) {
+                    assertTrue(frame.compress(Bitmap.CompressFormat.PNG, 100, output));
+                }
+            } finally { frame.recycle(); }
+        }
+        try (FileOutputStream output = new FileOutputStream(new File(directory, "effect-export-rgb.txt"))) {
+            output.write(values.toString().getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private static String rgb(int pixel) {
+        return "(" + Color.red(pixel) + "," + Color.green(pixel) + "," + Color.blue(pixel) + ")";
     }
 
     private static int spread(int pixel) {
