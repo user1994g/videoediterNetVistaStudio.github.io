@@ -1,6 +1,16 @@
 name: Package verified Android workspace preview
 
 on:
+  workflow_call:
+    inputs:
+      checked_run_id:
+        required: true
+        type: string
+    secrets:
+      ANDROID_SIGNING_KEY_BASE64:
+        required: true
+      ANDROID_SIGNING_CERT_BASE64:
+        required: true
   workflow_dispatch:
     inputs:
       checked_run_id:
@@ -27,9 +37,12 @@ jobs:
           set -euo pipefail
           [[ "$CHECKED_RUN_ID" =~ ^[0-9]+$ ]]
           CHECKED_RUN="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CHECKED_RUN_ID")"
-          [[ "$(jq -r .conclusion <<< "$CHECKED_RUN")" == success ]]
           [[ "$(jq -r .path <<< "$CHECKED_RUN")" == .github/workflows/build-android.yml ]]
           [[ "$(jq -r .head_branch <<< "$CHECKED_RUN")" == codex/native-workspace-test ]]
+          # A reusable call runs before its parent workflow is marked complete.
+          # Both immutable phone/tablet jobs must already have passed.
+          CHECKED_JOBS="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CHECKED_RUN_ID/jobs?per_page=100")"
+          jq -e '[.jobs[] | select(.name == "android (pixel_2)" or .name == "android (pixel_c)")] | length == 2 and all(.conclusion == "success")' <<< "$CHECKED_JOBS" >/dev/null
           CHECKED_SHA="$(jq -r .head_sha <<< "$CHECKED_RUN")"
           [[ "$CHECKED_SHA" =~ ^[0-9a-f]{40}$ ]]
           git fetch --no-tags --depth=1 origin "$CHECKED_SHA"

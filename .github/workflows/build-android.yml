@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   android:
@@ -56,3 +57,11 @@ jobs:
             mobile/android/app/build/ui-screenshots/
             mobile/android/app/build/ui-screenshots-public/
           retention-days: 7
+
+  signed-preview:
+    needs: android
+    if: github.ref == 'refs/heads/codex/native-workspace-test' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/package-android-preview.yml
+    with:
+      checked_run_id: ${{ github.run_id }}
+    secrets: inherit
