@@ -33,6 +33,10 @@ the Mac LAN companion, or the full desktop editor. Package identifier:
   Contrast is a true 0–400% factor control with 100% neutral, matching the other
   editions. Older Android projects keep their existing rendered appearance;
   out-of-display-range legacy values are retained until contrast is edited.
+  While the current player is healthy and prepared, parameter-only edits redraw
+  the native cached source frame using live matrices, including while a slider
+  gesture continues, without rebuilding its decoder.
+  Clip order, source, trim or canvas changes still prepare a new composition.
 - Private atomic draft autosave. Save/Open `.netvistamobile` files through Files.
   These are ZIP archives containing `project.json` and each original source once,
   including unused Media Pool sources. Schema 2 preserves per-instance effects;
@@ -153,8 +157,24 @@ a user-owned account; no test account is created by this project or its CI.
 - [Supabase user validation](https://supabase.com/docs/reference/javascript/auth-getuser)
 - [Supabase sessions/refresh rotation](https://supabase.com/docs/guides/auth/sessions)
 
-The local development Mac has no Android SDK/JDK. The earlier Beta 7 cut-list build
-passed remote compilation/unit/export checks, but those results do not verify this
-new workspace/effects implementation. Its compilation, installed UI/screenshots
-and effect exports must pass new CI/device runs before release. Real account login
-requires separate user-owned acceptance testing. Source tests are not an APK build.
+The local development Mac has no Android SDK/JDK. The new native workspace passes
+remote compilation/unit/lint checks and all twelve device methods on both phone
+and tablet in [run 37772381515](https://github.com/user1994g/videoediterNetVistaStudio.github.io/actions/runs/37772381515)
+at source `1a00ca8`. An earlier nine-method suite missed a late effects-preview
+failure; stricter actual monitor/export pixel checks found and corrected it.
+The final suite also verifies live matrices, archives, instance isolation,
+uncommitted input/history, stopped-player recovery and actual system touch routing.
+The stopped-player test exercises the SDK transition used by export, not a full
+Files-picker/export UI flow. CI uses clean API 35 AOSP devices; it does not suppress
+application errors or substitute painted mock previews for native playback.
+
+The signed development package is saved locally at
+`dist/NetVista-Studio-Android-Workspace-Preview.apk`. Signing runs only after both
+exact-source device jobs pass, and verifies the existing update certificate and
+APK v2/v3 signatures. Its SHA-256 is
+`2951ca1c907ee12bcf92d5b8b40a8b96092171ccc673f971e0458285e313ed09`.
+This does not replace the public Beta 7 APK. Real account login, Samsung hardware
+and physical codec/touch coverage require separate user-owned acceptance testing.
+Source tests alone are not an APK, and simulator timings are not a physical-device
+responsiveness benchmark. See `NATIVE_WORKSPACE_STATUS.md` for package provenance
+and remaining feature-parity boundaries.

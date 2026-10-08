@@ -51,15 +51,60 @@ on the installed iOS 27 simulator. It preserves effects and seek intent, cancels
 stale work and never silently substitutes the unedited source. It requires
 rendering after edits and is not equivalent to instant live grading.
 
-Android phone and tablet CI pass nine instrumentation methods, including actual
-edited export pixels, archives, empty-monitor pixels, and uncommitted numeric
-input across duplicate/undo/redo. Source coalesces graph updates, preserves
-paused seek intent and fixes the forward-drag insertion marker. Review of the
-final tablet screenshots exposed a later effects-preview timeout beyond the
-earlier ready check. Stronger final-grade checks, serialized preparations and
-real error recovery are in progress; the APK is not claimed final until those
-checks pass. Preview signing requires successful checks of the exact source and
-uses the maintained update certificate, without replacing public beta assets.
+An earlier Android phone/tablet run passed nine instrumentation methods. Stronger
+checks exposed a later effects-preview timeout that the first READY event alone
+did not catch. While the current player is healthy and prepared, parameter-only
+edits update live motion/colour matrices and redraw the native source-frame cache
+without rebuilding the decoder. Continuous
+slider updates retain a 50 ms deadline instead of waiting until a gesture stops.
+Clip/source/trim/canvas changes still rebuild their composition; real engine errors
+can be retried explicitly without restarting the requested seek or changing media.
+
+The expanded suite passes all twelve instrumentation methods on both phone and
+tablet in run 37772381515 at source 1a00ca8. It verifies actual combined-grade
+pixels, opacity zero/undo, live-player identity, matrix agreement with export,
+independent shared-source instances, archives, draft input/history and the
+SDK-stop transition used by export. This is not a full Files-picker/export UI
+acceptance test. A system Pixel Launcher ANR obstructed an earlier Google-image
+check; CI now uses a clean API 35 AOSP image without suppressing app/system errors.
+Final evidence contains only the intentionally injected recovery-test timeout,
+with successful recovery afterward, not an unhandled preview failure.
+
+The signed development APK is saved locally after both exact-source device jobs
+pass. CI verifies APK v2/v3 signatures, the package identifier and the maintained
+update certificate; its recorded package hash matches the local download.
+Public beta assets remain unchanged. Physical-device acceptance remains separate.
+
+## Verified development packages — 8 October 2026
+
+These local `dist/` files are previews, not new public release assets. Apple and
+Qt runtime sources are unchanged since their successful build commits (only the
+Qt README changed); Android is built from the final checked commit below.
+
+| Native edition | Saved package | Verified source | Successful CI run |
+| --- | --- | --- | --- |
+| iPhone / iPad | `NetVista-Studio-iOS-Workspace-Preview.ipa` | `04c7cf1` | [37715025084](https://github.com/user1994g/videoediterNetVistaStudio.github.io/actions/runs/37715025084) |
+| Android phone / tablet | `NetVista-Studio-Android-Workspace-Preview.apk` | `1a00ca8` | [37772381515](https://github.com/user1994g/videoediterNetVistaStudio.github.io/actions/runs/37772381515) |
+| Windows | `NetVista-Studio-Windows-Workspace-Preview.zip` | `74b3cc7` | [37759238246](https://github.com/user1994g/videoediterNetVistaStudio.github.io/actions/runs/37759238246) |
+| Linux | `NetVista-Studio-Linux-Workspace-Preview.tar.gz` | `74b3cc7` | [37759238246](https://github.com/user1994g/videoediterNetVistaStudio.github.io/actions/runs/37759238246) |
+
+- Apple: use AltStore Classic to re-sign the universal IPA. The ad-hoc signature
+  alone is not an App Store/TestFlight or directly distributable Apple signature.
+- Android: the APK has the existing package/update signing identity. Back up
+  projects before trying development builds; no production account is bundled.
+- Windows: extract the complete ZIP and keep the executable with its bundled
+  runtime folder. Do not move only the executable.
+- Linux: extract the complete TAR.GZ, retaining its executable permissions and
+  runtime folder. Built on Ubuntu 24.04; older Linux compatibility is not certified.
+
+SHA-256 of each saved file, in the same order as the table:
+
+```text
+4ad1af736db3607fec89bbe6e0fd59189d29e7a7f78c266512c6b6fa9ee640bc  NetVista-Studio-iOS-Workspace-Preview.ipa
+2951ca1c907ee12bcf92d5b8b40a8b96092171ccc673f971e0458285e313ed09  NetVista-Studio-Android-Workspace-Preview.apk
+8f1ffec6412eb98f60a125db71abf6a8dc1ef9e6bd851c95e1a9705ebcb2139e  NetVista-Studio-Windows-Workspace-Preview.zip
+e68043a0997f24130bd8e29dc587433b1db76698f2055f672d1ee20352143682  NetVista-Studio-Linux-Workspace-Preview.tar.gz
+```
 
 ## Remaining parity boundaries
 
