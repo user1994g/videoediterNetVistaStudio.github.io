@@ -24,6 +24,7 @@ import android.view.inputmethod.EditorInfo;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -857,7 +858,7 @@ public final class MainActivity extends Activity {
     private void clearEmptyPreview() {
         main.removeCallbacks(effectsPreview);
         boolean obsoleteOutput = previewGraph != null || playerView.getPlayer() != null;
-        previewPending = false; previewPlayWhenReady = false; previewGraph = null;
+        previewPending = true; previewPlayWhenReady = false; previewGraph = null;
         PlayerView obsoleteView = playerView;
         obsoleteView.setKeepContentOnPlayerReset(false); obsoleteView.setPlayer(null);
         try { player.pause(); player.stop(); }
@@ -869,6 +870,39 @@ public final class MainActivity extends Activity {
             playerView = programMonitorView(null); parent.addView(playerView, index, layout);
         }
         updatePlayhead(false);
+        completeEmptyPreviewAfterFrame(playerView);
+    }
+
+    /** Detaching a native surface and drawing the newly empty monitor are
+     * separate asynchronous operations. Do not report a completed preview
+     * before the replacement view has submitted its real display frame.
+     */
+    private void completeEmptyPreviewAfterFrame(PlayerView monitor) {
+        Runnable complete = () -> {
+            if (liveUi() && editorVisible && foreground && playerView == monitor
+                    && project.clips.isEmpty() && previewGraph == null && monitor.getPlayer() == null) {
+                previewPending = false;
+            }
+        };
+        ViewTreeObserver observer = monitor.getViewTreeObserver();
+        if (android.os.Build.VERSION.SDK_INT >= 29 && monitor.isHardwareAccelerated()) {
+            observer.registerFrameCommitCallback(() -> main.post(complete));
+        } else {
+            // Older/software-rendered windows have no frame-commit API. Observe
+            // an actual draw, then complete on its following animation frame.
+            ViewTreeObserver.OnDrawListener draw = new ViewTreeObserver.OnDrawListener() {
+                private boolean submitted;
+                @Override public void onDraw() {
+                    if (submitted) return; submitted = true;
+                    monitor.post(() -> {
+                        if (observer.isAlive()) observer.removeOnDrawListener(this);
+                        monitor.postOnAnimation(complete);
+                    });
+                }
+            };
+            observer.addOnDrawListener(draw);
+        }
+        monitor.invalidate();
     }
     private void togglePlay() {
         if (operationBusy || project.clips.isEmpty() || player == null) { message("Add a source to the timeline first."); return; }

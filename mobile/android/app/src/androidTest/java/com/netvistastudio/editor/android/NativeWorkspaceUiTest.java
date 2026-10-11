@@ -1262,6 +1262,16 @@ public final class NativeWorkspaceUiTest {
                                     + Color.green(pixel) + "," + Color.blue(pixel) + ")",
                             Color.red(pixel) < 20 && Color.green(pixel) < 20 && Color.blue(pixel) < 20);
                 }
+            } catch (AssertionError failure) {
+                capture("empty-monitor-failure");
+                String diagnostic = main(() -> {
+                    androidx.media3.ui.PlayerView monitor = (androidx.media3.ui.PlayerView) field(activity, "playerView");
+                    View surface = monitor.getVideoSurfaceView();
+                    return "pending=" + field(activity, "previewPending") + "; player=" + monitor.getPlayer()
+                            + "; monitorAttached=" + monitor.isAttachedToWindow()
+                            + "; nativeSurface=" + (surface == null ? "none" : surface.getClass().getName() + ", attached=" + surface.isAttachedToWindow());
+                });
+                throw new AssertionError(failure.getMessage() + "; " + diagnostic, failure);
             } finally { screenshot.recycle(); }
             capture("empty-timeline-monitor");
         }
