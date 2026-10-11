@@ -25,13 +25,19 @@ final class StudioKeyframeView extends View {
     }
     void setListener(Listener listener) { this.listener = listener; }
     void setClip(StudioProject.Clip clip, ClipAnimation.Property property, long sourceMs) {
+        if (this.clip == clip && this.property == property && this.sourceMs == sourceMs
+                && drawnAnimation == (clip == null ? null : clip.animation)
+                && drawnInMs == (clip == null ? 0 : clip.inMs) && drawnOutMs == (clip == null ? 0 : clip.outMs)) return;
         this.clip = clip; this.property = property; this.sourceMs = sourceMs; invalidate();
     }
-    void setSourcePosition(long sourceMs) { this.sourceMs = sourceMs; invalidate(); }
+    private ClipAnimation drawnAnimation;
+    private long drawnInMs, drawnOutMs;
+    void setSourcePosition(long sourceMs) { if (this.sourceMs != sourceMs) { this.sourceMs = sourceMs; invalidate(); } }
     private int dp(float value) { return Math.round(value * density); }
     private float x(long time) { return dp(14) + (getWidth() - dp(28)) * (float) (time - clip.inMs) / Math.max(1, clip.lengthMs()); }
     @Override protected void onDraw(Canvas canvas) {
         super.onDraw(canvas); canvas.drawColor(Color.rgb(24, 27, 33)); if (clip == null) return;
+        drawnAnimation = clip.animation; drawnInMs = clip.inMs; drawnOutMs = clip.outMs;
         paint.setTextSize(dp(10)); paint.setColor(Color.rgb(157, 166, 181));
         canvas.drawText("0:00", dp(12), dp(16), paint);
         String end = String.format(java.util.Locale.US, "%.2fs", clip.lengthMs() / 1000.0);

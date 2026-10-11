@@ -75,14 +75,16 @@ public final class StudioTimelineView extends View {
     }
     public void setInteractive(boolean value) { interactive = value; if (!value) { dragged = -1; scrubbing = false; } }
     public void setPlayhead(long value, boolean follow) {
-        playhead = Math.max(0, Math.min(value, project.durationMs()));
+        long next = Math.max(0, Math.min(value, project.durationMs()));
+        long previous = playhead; double previousScroll = scroll;
+        playhead = next;
         if (follow) {
             double x = playhead * pixelsPerSecond / 1000.0 - scroll;
             double visible = Math.max(1, getWidth() - laneHeader());
             if (x > visible - dp(24)) scroll = Math.min(maxScroll(), Math.max(0, x - visible * 0.65 + scroll));
             else if (x < dp(8)) scroll = Math.max(0, playhead * pixelsPerSecond / 1000.0 - dp(16));
         }
-        invalidate();
+        if (previous != playhead || previousScroll != scroll) invalidate();
     }
     public void zoomIn() { zoom(1.4, laneHeader() + (getWidth() - laneHeader()) / 2f); }
     public void zoomOut() { zoom(1 / 1.4, laneHeader() + (getWidth() - laneHeader()) / 2f); }
@@ -181,7 +183,9 @@ public final class StudioTimelineView extends View {
     }
     private String shortText(String text, float width) {
         if (paint.measureText(text) <= width) return text;
-        int end = text.length(); while (end > 0 && paint.measureText(text, 0, end) + paint.measureText("…") > width) end--;
+        int end = paint.breakText(text, true, Math.max(0, width - paint.measureText("…")), null);
+        // Do not cut the first half of a Unicode surrogate pair.
+        if (end > 0 && end < text.length() && Character.isHighSurrogate(text.charAt(end - 1))) end--;
         return text.substring(0, end) + "…";
     }
     @Override public boolean onTouchEvent(MotionEvent event) {

@@ -567,8 +567,10 @@ public final class MainActivity extends Activity {
         keyframeTimeline.setClip(clip, animationProperty, source);
         long key = nearestKeyTime(clip, source);
         if (key >= 0) for (ClipAnimation.Keyframe point : clip.animation.points(animationProperty)) if (point.sourceMs == key) animationCurve = point.curve;
-        if (animationCurveButton != null) animationCurveButton.setText("Curve: " + curveName(animationCurve) + " ▾");
-        if (animationTime != null) animationTime.setText("Clip " + seconds(source - clip.inMs) + "s · Source " + seconds(source) + "s · " + clip.animation.points(animationProperty).size() + " keys");
+        String curve = "Curve: " + curveName(animationCurve) + " ▾";
+        if (animationCurveButton != null && !curve.contentEquals(animationCurveButton.getText())) animationCurveButton.setText(curve);
+        String time = "Clip " + seconds(source - clip.inMs) + "s · Source " + seconds(source) + "s · " + clip.animation.points(animationProperty).size() + " keys";
+        if (animationTime != null && !time.contentEquals(animationTime.getText())) animationTime.setText(time);
     }
     private void effectControl(StudioProject.Clip clip, String name, int parameter, float min, float max, float multiplier) {
         LinearLayout row = row(); row.setGravity(Gravity.CENTER_VERTICAL);
@@ -880,7 +882,8 @@ public final class MainActivity extends Activity {
         updatePlayhead(false);
     }
     private void updatePlayhead(boolean follow) {
-        if (timecode != null) timecode.setText(frameTime(playheadMs));
+        String frame = frameTime(playheadMs);
+        if (timecode != null && !frame.contentEquals(timecode.getText())) timecode.setText(frame);
         if (timeline != null) timeline.setPlayhead(playheadMs, follow);
         updateAnimationRuler();
         if (selected >= 0 && selected < project.clips.size()) {

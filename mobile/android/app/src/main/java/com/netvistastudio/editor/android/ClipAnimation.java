@@ -62,10 +62,14 @@ public final class ClipAnimation {
     }
     public boolean isEmpty() { return tracks.isEmpty(); }
     public List<Keyframe> points(Property property) { return tracks.getOrDefault(property, Collections.emptyList()); }
-    public ClipAnimation copy() { return new ClipAnimation(tracks); }
+    // Keys and lists are immutable and the constructor owns the input map.
+    // History, preview and export snapshots can therefore share them safely.
+    // Copying every key here made a seek allocate tens of thousands of objects.
+    public ClipAnimation copy() { return this; }
     public void validateDuration(long durationMs) {
-        for (List<Keyframe> points : tracks.values()) for (Keyframe point : points) {
-            if (point.sourceMs > durationMs) throw new IllegalArgumentException("Keyframe is outside its source video.");
+        // Constructor validation guarantees each nonempty track is ordered.
+        for (List<Keyframe> points : tracks.values()) {
+            if (points.get(points.size() - 1).sourceMs > durationMs) throw new IllegalArgumentException("Keyframe is outside its source video.");
         }
     }
     public ClipAnimation withKeyframe(Property property, long sourceMs, float value, Curve curve) {

@@ -911,10 +911,23 @@ public final class NativeWorkspaceUiTest {
             // The source is solid red. Its centered interior is still covered
             // after the tested scale/rotation/offset; 80% opacity must change its
             // actual output RGB, not only the stored control value.
-            waitUntil("Latest native motion preview displays actual 80-percent source opacity", 3000, () -> {
-                int pixel = monitorCenterPixel();
-                return Color.red(pixel) >= 190 && Color.red(pixel) <= 215 && Color.green(pixel) < 15 && Color.blue(pixel) < 15;
-            });
+            final int[] last = new int[1];
+            try {
+                waitUntil("Latest native motion preview displays actual 80-percent source opacity", 3000, () -> {
+                    last[0] = monitorCenterPixel();
+                    return Color.red(last[0]) >= 190 && Color.red(last[0]) <= 215 && Color.green(last[0]) < 15 && Color.blue(last[0]) < 15;
+                });
+            } catch (AssertionError failure) {
+                String state = main(() -> {
+                    CompositionPlayer player = (CompositionPlayer) field(activity, "player");
+                    return "requested=" + field(activity, "playheadMs") + "; pending=" + field(activity, "previewPending")
+                            + "; playerState=" + player.getPlaybackState() + "; playerPosition=" + player.getCurrentPosition()
+                            + "; error=" + describePlaybackError(player.getPlayerError());
+                });
+                capture("motion-preview-failure");
+                throw new AssertionError(failure.getMessage() + "; actualRGB=(" + Color.red(last[0]) + ","
+                        + Color.green(last[0]) + "," + Color.blue(last[0]) + "); " + state, failure);
+            }
         }
         void assertOpacityZeroPreview() throws Exception {
             waitUntil("Paused native redraw applies zero opacity to actual source pixels", 3000, () -> {
