@@ -56,15 +56,15 @@ final class StudioKeyframeView extends View {
             getParent().requestDisallowInterceptTouchEvent(event.getActionMasked() != MotionEvent.ACTION_UP);
             double fraction = Math.max(0, Math.min(1, (event.getX() - dp(14)) / Math.max(1, getWidth() - dp(28))));
             long source = clip.inMs + Math.round(fraction * clip.lengthMs());
-            if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+            if (event.getActionMasked() == MotionEvent.ACTION_UP && Math.abs(event.getY() - dp(48)) <= dp(22)) {
                 float nearest = dp(22); // 44dp target width around each visible diamond.
                 for (ClipAnimation.Keyframe point : clip.animation.points(property)) {
                     if (point.sourceMs < clip.inMs || point.sourceMs > clip.outMs) continue;
                     float distance = Math.abs(event.getX() - x(point.sourceMs));
                     if (distance < nearest) { nearest = distance; source = point.sourceMs; }
                 }
-                performClick();
             }
+            if (event.getActionMasked() == MotionEvent.ACTION_UP) performClick();
             listener.seekSource(source); return true;
         }
         if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) { getParent().requestDisallowInterceptTouchEvent(false); return true; }

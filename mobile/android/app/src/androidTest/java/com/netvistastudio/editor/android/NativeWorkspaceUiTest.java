@@ -406,7 +406,7 @@ public final class NativeWorkspaceUiTest {
             ui.openWorkspace("Effects", "Motion/Effects"); ui.click("◆ Animation / keyframes");
             // Native clip-local ruler remains accurate even on a very long edit.
             // 2350 lies after all existing diamonds and before exclusive Out2400.
-            ui.tapAnimationDiamond(2350);
+            ui.tapAnimationRuler(2350);
             ui.closeCompactDialog(); ui.waitPreview(); ui.assertMotionPreview();
             ui.openWorkspace("Effects", "Motion/Effects"); ui.click("◆ Animation / keyframes");
             ui.click("◆ Add / update keyframe"); ui.assertRejectedBudget(before);
@@ -1016,13 +1016,19 @@ public final class NativeWorkspaceUiTest {
             instrumentation.waitForIdleSync();
         }
         void tapAnimationDiamond(long sourceMs) throws Exception {
+            tapAnimationLane(sourceMs, true);
+        }
+        void tapAnimationRuler(long sourceMs) throws Exception {
+            tapAnimationLane(sourceMs, false);
+        }
+        private void tapAnimationLane(long sourceMs, boolean diamondRow) throws Exception {
             View keys = panel("keyframeTimeline"); assertNotNull(keys); reveal(keys);
             float[] point = main(() -> {
                 Rect bounds = new Rect(); assertTrue(keys.getGlobalVisibleRect(bounds));
                 StudioProject.Clip clip = ((StudioProject) field(activity, "project")).clips.get((Integer) field(activity, "selected"));
                 float density = activity.getResources().getDisplayMetrics().density;
                 float x = bounds.left + 14 * density + (keys.getWidth() - 28 * density) * (sourceMs - clip.inMs) / clip.lengthMs();
-                return new float[]{x, bounds.top + 48 * density};
+                return new float[]{x, bounds.top + (diamondRow ? 48 : 16) * density};
             });
             long downTime = SystemClock.uptimeMillis();
             MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, point[0], point[1], 0);
@@ -1037,7 +1043,9 @@ public final class NativeWorkspaceUiTest {
                 long start = 0; for (int index = 0; index < selected; index++) start += project.clips.get(index).lengthMs();
                 long expected = start + sourceMs - project.clips.get(selected).inMs;
                 CompositionPlayer player = (CompositionPlayer) field(activity, "player");
-                return (Long) field(activity, "playheadMs") == expected && player.getPlayerError() == null
+                long tolerance = diamondRow ? 0 : (long) Math.ceil(project.clips.get(selected).lengthMs()
+                        / Math.max(1.0, keys.getWidth() - 28 * activity.getResources().getDisplayMetrics().density));
+                return Math.abs((Long) field(activity, "playheadMs") - expected) <= tolerance && player.getPlayerError() == null
                         && Math.abs(player.getCurrentPosition() - expected) < 150;
             }));
         }
