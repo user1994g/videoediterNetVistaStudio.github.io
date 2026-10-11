@@ -143,11 +143,19 @@ public final class NativeWorkspaceUiTest {
             ui.click("Undo"); assertEquals(4, ui.project().clips.size());
             ui.click("Redo"); assertEquals(3, ui.project().clips.size());
 
+            View obsoleteSurface = ui.main(() -> ((androidx.media3.ui.PlayerView) field(activity, "playerView")).getVideoSurfaceView());
+            assertNotNull("Source playback owns an actual native video surface", obsoleteSurface);
             while (!ui.project().clips.isEmpty()) ui.click("Delete");
             assertEquals("Deleting every timeline instance does not delete the source pool", 2, ui.project().assets.size());
             assertEquals(2, ui.project().sources().size());
             for (File media : ownedMedia) assertTrue("Source file is retained after timeline deletion", media.isFile());
             ui.assertEmptyMonitor();
+            ui.main(() -> {
+                assertFalse("Last-clip deletion detaches the obsolete native surface, including queued source buffers", obsoleteSurface.isAttachedToWindow());
+                assertNotSame("Later edits cannot reuse the deleted source's video surface", obsoleteSurface,
+                        ((androidx.media3.ui.PlayerView) field(activity, "playerView")).getVideoSurfaceView());
+                return null;
+            });
             ui.openPanel("mediaPanel", "Media", "Media Pool");
             ui.assertPanelShown("mediaPanel");
             ui.capture("media-pool-retained");

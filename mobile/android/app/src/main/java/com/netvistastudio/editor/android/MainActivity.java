@@ -310,9 +310,7 @@ public final class MainActivity extends Activity {
         ScrollView settingsScroll = new ScrollView(this); inspector = column(); settingsScroll.addView(inspector); inspectorPanel.addView(settingsScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         monitorPanel = panel("PROGRAM MONITOR");
         player = createPreviewPlayer();
-        playerView = new PlayerView(this); playerView.setPlayer(player); playerView.setUseController(false);
-        playerView.setShutterBackgroundColor(Color.BLACK);
-        playerView.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT); playerView.setBackgroundColor(Color.BLACK); playerView.setKeepContentOnPlayerReset(true);
+        playerView = programMonitorView(project.clips.isEmpty() ? null : player);
         monitorPanel.addView(playerView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         LinearLayout transport = row(); transport.setGravity(Gravity.CENTER_VERTICAL);
         Button previous = button("|◀", () -> seekTimeline(startOf(Math.max(0, clipAt(playheadMs) - 1)), false), true); previous.setContentDescription("Previous clip"); transport.addView(previous);
@@ -748,6 +746,7 @@ public final class MainActivity extends Activity {
 
     private void previewReady(CompositionPlayer current) {
         if (liveUi() && player == current && !previewPending
+                && previewGraph != null && !project.clips.isEmpty()
                 && current.getPlaybackState() == Player.STATE_READY && current.getPlayerError() == null) {
             message("Program monitor ready — current edit.");
         }
@@ -772,18 +771,13 @@ public final class MainActivity extends Activity {
     }
     private void preview(boolean play, boolean liveSettings) {
         if (!liveUi() || !editorVisible || operationBusy || player == null) return;
+        if (project.clips.isEmpty()) { clearEmptyPreview(); return; }
         // One latest project snapshot per burst of edits. Rebuilding compositions
         // for each rapid Delete/Add/Undo/Redo can flood native codec reconfiguration
         // and time out, especially on slower tablets. Paused edit intent stays
         // authoritative until the coalesced composition has actually prepared.
         boolean alreadyPending = previewPending;
         player.pause(); previewPending = true; previewPlayWhenReady = play;
-        if (project.clips.isEmpty()) {
-            // Retaining a frame is useful during edits, but an empty timeline
-            // must never display the deleted clip as if it still exists.
-            playerView.setKeepContentOnPlayerReset(false);
-            playerView.setPlayer(null);
-        }
         main.removeCallbacks(effectsPreview);
         if (liveSettings && previewGraph != null && player.getPlayerError() == null) {
             // Throttle hot sliders instead of debouncing until the finger stops:
@@ -799,19 +793,7 @@ public final class MainActivity extends Activity {
     }
     private void applyPreview(boolean play) {
         if (!liveUi() || !editorVisible || !foreground || operationBusy || player == null) { previewPending = false; return; }
-        if (project.clips.isEmpty()) {
-            // Deletion already removes the video surface immediately. Do not
-            // wait for that obsolete graph to render its first frame/READY:
-            // it no longer has a surface, and no decoder is needed at all.
-            previewPending = false;
-            previewGraph = null;
-            try {
-                playerView.setKeepContentOnPlayerReset(false); player.stop(); playerView.setPlayer(null); updatePlayhead(false);
-            } catch (RuntimeException error) {
-                Log.w("NetVistaPreview", "Could not stop deleted native preview", error);
-            }
-            return;
-        }
+        if (project.clips.isEmpty()) { clearEmptyPreview(); return; }
         if (player.getPlayerError() == null && player.getPlaybackState() == Player.STATE_BUFFERING) {
             // Do not tear down a native graph while its codecs/surfaces are
             // still preparing. Keep one explicit latest edit pending; once the
@@ -858,6 +840,35 @@ public final class MainActivity extends Activity {
             previewGraph = nextGraph;
             player.prepare(); player.setPlayWhenReady(play); updatePlayhead(false);
         } catch (Exception e) { Log.w("NetVistaPreview", "Native composition update failed", e); message("Preview unavailable: " + e.getMessage()); }
+    }
+
+    private PlayerView programMonitorView(CompositionPlayer current) {
+        PlayerView view = new PlayerView(this); view.setUseController(false);
+        view.setShutterBackgroundColor(Color.BLACK); view.setBackgroundColor(Color.BLACK);
+        view.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT); view.setKeepContentOnPlayerReset(true);
+        view.setPlayer(current); return view;
+    }
+
+    /** Last-clip deletion ends the old output immediately, including its Surface.
+     * Detaching only the Player leaves SurfaceView's last queued buffer alive in
+     * the compositor. A fresh unbound native monitor prevents a late old frame
+     * from remaining visible or becoming the surface used by a later Undo/Add.
+     */
+    private void clearEmptyPreview() {
+        main.removeCallbacks(effectsPreview);
+        boolean obsoleteOutput = previewGraph != null || playerView.getPlayer() != null;
+        previewPending = false; previewPlayWhenReady = false; previewGraph = null;
+        PlayerView obsoleteView = playerView;
+        obsoleteView.setKeepContentOnPlayerReset(false); obsoleteView.setPlayer(null);
+        try { player.pause(); player.stop(); }
+        catch (RuntimeException error) { Log.w("NetVistaPreview", "Could not stop deleted native preview", error); }
+        if (obsoleteOutput && obsoleteView.getParent() instanceof ViewGroup) {
+            ViewGroup parent = (ViewGroup) obsoleteView.getParent();
+            int index = parent.indexOfChild(obsoleteView); ViewGroup.LayoutParams layout = obsoleteView.getLayoutParams();
+            parent.removeView(obsoleteView); // Releases the obsolete native video Surface.
+            playerView = programMonitorView(null); parent.addView(playerView, index, layout);
+        }
+        updatePlayhead(false);
     }
     private void togglePlay() {
         if (operationBusy || project.clips.isEmpty() || player == null) { message("Add a source to the timeline first."); return; }
