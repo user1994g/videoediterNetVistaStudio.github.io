@@ -26,7 +26,9 @@ public final class ProjectCodec {
             value.put("assets", encodeClips(project.sources()));
             value.put("clips", encodeClips(project.clips));
         } catch (IllegalArgumentException e) { throw new JSONException(e.getMessage()); }
-        String text = value.toString(2);
+        // Whitespace is not document data. Compact canonical output leaves the
+        // bounded manifest budget for clips/curves, not repeated indentation.
+        String text = value.toString();
         if (text.length() > MAX_BYTES || text.getBytes(StandardCharsets.UTF_8).length > MAX_BYTES) throw new JSONException("Project file is too large (maximum 2 MiB UTF-8).");
         return text;
     }
@@ -87,6 +89,9 @@ public final class ProjectCodec {
             // become full-range, default-settings sources so deleting edits does not lose media.
             result.assets.clear(); result.assets.addAll(sources);
         } catch (IllegalArgumentException e) { throw new JSONException(e.getMessage()); }
+        // Compact input can be small while additive migration restores a full
+        // media pool/settings. Never accept a model that cannot be saved again.
+        encode(result);
         return result;
     }
 

@@ -385,6 +385,121 @@ public final class NativeWorkspaceUiTest {
         }
     }
 
+    @Test(timeout = 300000)
+    public void nativeBudgetRejectionsKeepTheLastSavableProjectAndHistoryIntact() throws Exception {
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation(); Context context = instrumentation.getTargetContext();
+        assumeTrue(!context.getSharedPreferences("encrypted_account", Context.MODE_PRIVATE).contains("ciphertext"));
+        ProjectFiles files = new ProjectFiles(context); AtomicFile draft = new AtomicFile(new File(context.getFilesDir(), "mobile-draft.json"));
+        byte[] originalDraft = readExistingDraft(draft); File scratch = new File(context.getCacheDir(), "native-budget-" + UUID.randomUUID());
+        assertTrue(scratch.mkdir()); List<File> ownedMedia = new ArrayList<>(); Harness ui = null;
+        try {
+            StudioProject boundary = ProjectBudgetFixtures.nearLimit(fixtureProject(instrumentation, files, scratch, ownedMedia));
+            files.saveDraft(boundary); String before = ProjectCodec.encode(boundary);
+            MainActivity activity = (MainActivity) instrumentation.startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            ui = new Harness(instrumentation, context, activity); Harness current = ui;
+            waitUntil("Near-budget private project restores safely", 15000, () -> current.main(() -> (Boolean) field(activity, "draftReady")));
+            StudioAccount account = current.main(() -> (StudioAccount) field(activity, "account"));
+            ((ExecutorService) field(account, "worker")).submit(() -> {}).get(15, TimeUnit.SECONDS); instrumentation.waitForIdleSync();
+            ui.installInMemoryTestSnapshot(account); ui.click("Continue edit"); ui.waitPreview();
+            CompositionPlayer unchangedPlayer = ui.main(() -> (CompositionPlayer) field(activity, "player"));
+            Object unchangedClip = ui.main(() -> ((StudioProject) field(activity, "project")).clips.get(0));
+            ui.openWorkspace("Effects", "Motion/Effects"); ui.click("◆ Animation / keyframes");
+            // Native clip-local ruler remains accurate even on a very long edit.
+            // 2350 lies after all existing diamonds and before exclusive Out2400.
+            ui.tapAnimationDiamond(2350);
+            ui.closeCompactDialog(); ui.waitPreview(); ui.assertMotionPreview();
+            ui.openWorkspace("Effects", "Motion/Effects"); ui.click("◆ Animation / keyframes");
+            ui.click("◆ Add / update keyframe"); ui.assertRejectedBudget(before);
+            ui.edit("Opacity %", "90.0", true); ui.assertGradeDisplay("Opacity %", 80); ui.assertRejectedBudget(before);
+            ui.tapEffectSlider("Opacity % slider", .25f); ui.assertGradeDisplay("Opacity %", 80);
+            ui.assertSliderProgress("Opacity % slider", 800); ui.assertRejectedBudget(before);
+            assertSame("Rejected parameter edit retains the live clip captured by controls", unchangedClip,
+                    ui.main(() -> ((StudioProject) field(activity, "project")).clips.get(0)));
+            assertSame("Rejected parameter edit retains native decoder/cache", unchangedPlayer,
+                    ui.main(() -> (CompositionPlayer) field(activity, "player")));
+            ui.closeCompactDialog(); ui.click("Duplicate"); ui.assertRejectedBudget(before);
+            ui.click("Split"); ui.assertRejectedBudget(before);
+            ui.openPanel("mediaPanel", "Media", "Media Pool"); ui.clickWithin(ui.panel("mediaPanel"), "Add"); ui.assertRejectedBudget(before);
+            ui.clickWithin(ui.panel("mediaPanel"), "Add all"); ui.assertRejectedBudget(before); ui.closeCompactDialog();
+            ui.openWorkspace("Effects", "Motion/Effects"); ui.click("◆ Animation / keyframes"); ui.click("◀ Previous ◆");
+            assertEquals(1998L, (long) ui.main(() -> (Long) field(activity, "playheadMs")));
+            ui.closeCompactDialog(); ui.waitPreview(); ui.assertMotionPreview();
+            ui.openWorkspace("Effects", "Motion/Effects"); ui.click("◆ Animation / keyframes");
+            ui.click("◆ Add / update keyframe"); // Identical value/curve: no-op, no budget/history change.
+            assertEquals(before, ProjectCodec.encode(ui.project()));
+            assertEquals(0, ui.main(() -> ((java.util.ArrayDeque<?>) field(activity, "undo")).size()).intValue());
+            ui.click("Curve: Linear ▾"); ui.clickAccessibleText("Ease In / Out"); ui.assertRejectedBudget(before);
+            ui.closeCompactDialog(); ui.drainActivityIo(); assertEquals(before, ProjectCodec.encode(files.loadDraft()));
+        } finally {
+            try { if (ui != null) ui.close(); }
+            finally { restoreDraft(draft, originalDraft); for (File file : ownedMedia) file.delete();
+                File[] temporary = scratch.listFiles(); if (temporary != null) for (File file : temporary) file.delete(); scratch.delete(); }
+        }
+    }
+
+    @Test(timeout = 180000)
+    public void pendingAnimatedControlsStayBoundToTheirOriginalClipAndSourceTime() throws Exception {
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation(); Context context = instrumentation.getTargetContext();
+        assumeTrue(!context.getSharedPreferences("encrypted_account", Context.MODE_PRIVATE).contains("ciphertext"));
+        ProjectFiles files = new ProjectFiles(context); AtomicFile draft = new AtomicFile(new File(context.getFilesDir(), "mobile-draft.json"));
+        byte[] originalDraft = readExistingDraft(draft); File scratch = new File(context.getCacheDir(), "native-selection-" + UUID.randomUUID());
+        assertTrue(scratch.mkdir()); List<File> ownedMedia = new ArrayList<>(); Harness ui = null;
+        try {
+            StudioProject initial = fixtureProject(instrumentation, files, scratch, ownedMedia);
+            initial.clips.get(0).animation = new ClipAnimation().withKeyframe(ClipAnimation.Property.OPACITY, 0, 1, ClipAnimation.Curve.LINEAR);
+            files.saveDraft(initial);
+            MainActivity activity = (MainActivity) instrumentation.startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            ui = new Harness(instrumentation, context, activity); Harness current = ui;
+            waitUntil("Selection fixture restores before account injection", 15000, () -> current.main(() -> (Boolean) field(activity, "draftReady")));
+            StudioAccount account = current.main(() -> (StudioAccount) field(activity, "account"));
+            ((ExecutorService) field(account, "worker")).submit(() -> {}).get(15, TimeUnit.SECONDS); instrumentation.waitForIdleSync();
+            ui.installInMemoryTestSnapshot(account); ui.click("Continue edit"); ui.waitPreview();
+            ui.dispatchTimelineSelection(600); ui.openWorkspace("Effects", "Motion/Effects");
+            long numericSource = ui.main(() -> (Long) field(activity, "playheadMs"));
+            ui.edit("Opacity %", "40.0", false);
+            // Deliver native View events without pressing a toolbar button first:
+            // that button's own blur handler would conceal the selection race.
+            // Direct dispatch also exercises the identical callback on a phone
+            // whose adaptive inspector is in its own native dialog window.
+            ui.dispatchTimelineSelection(3000);
+            StudioProject afterNumeric = ui.project();
+            assertEquals(1, ui.main(() -> (Integer) field(activity, "selected")).intValue());
+            assertEquals(2, afterNumeric.clips.get(0).animation.points(ClipAnimation.Property.OPACITY).size());
+            assertEquals(numericSource, afterNumeric.clips.get(0).animation.points(ClipAnimation.Property.OPACITY).get(1).sourceMs);
+            assertEquals(.4f, afterNumeric.clips.get(0).settingsAtSourceMs(numericSource).opacity, .00001f);
+            assertTrue("Selecting another clip must not animate it", afterNumeric.clips.get(1).animation.points(ClipAnimation.Property.OPACITY).isEmpty());
+            assertEquals(1, ui.main(() -> ((java.util.ArrayDeque<?>) field(activity, "undo")).size()).intValue());
+
+            ui.closeCompactDialog(); ui.dispatchTimelineSelection(1200); ui.openWorkspace("Effects", "Motion/Effects");
+            long sliderSource = ui.main(() -> (Long) field(activity, "playheadMs"));
+            View oldSlider = ui.main(() -> findDescription((View) field(activity, "inspectorPanel"), "Opacity % slider"));
+            assertNotNull(oldSlider); ui.reveal(oldSlider);
+            long down = SystemClock.uptimeMillis();
+            ui.dispatchSliderEvent(oldSlider, down, MotionEvent.ACTION_DOWN, .2f);
+            ui.dispatchSliderEvent(oldSlider, down, MotionEvent.ACTION_MOVE, .6f);
+            StudioProject duringGesture = ui.project();
+            assertEquals("Native slider starts exactly one new key", 3, duringGesture.clips.get(0).animation.points(ClipAnimation.Property.OPACITY).size());
+            assertEquals(sliderSource, duringGesture.clips.get(0).animation.points(ClipAnimation.Property.OPACITY).get(2).sourceMs);
+            assertEquals(2, ui.main(() -> ((java.util.ArrayDeque<?>) field(activity, "undo")).size()).intValue());
+            ui.dispatchTimelineSelection(3000);
+            String beforeLateEvents = ProjectCodec.encode(ui.project());
+            ui.dispatchSliderEvent(oldSlider, down, MotionEvent.ACTION_MOVE, .95f);
+            ui.dispatchSliderEvent(oldSlider, down, MotionEvent.ACTION_UP, .95f);
+            assertEquals("Late native events from a detached slider cannot modify either clip", beforeLateEvents, ProjectCodec.encode(ui.project()));
+            assertEquals("Ending the interrupted gesture does not add a second undo step", 2,
+                    ui.main(() -> ((java.util.ArrayDeque<?>) field(activity, "undo")).size()).intValue());
+            ui.closeCompactDialog(); ui.waitPreview(); ui.drainActivityIo();
+            assertEquals("Selection interruption persists the successful earlier values", beforeLateEvents, ProjectCodec.encode(files.loadDraft()));
+            ui.click("Undo");
+            assertEquals("One Undo removes the interrupted slider transaction only", ProjectCodec.encode(afterNumeric), ProjectCodec.encode(ui.project()));
+            ui.click("Undo"); assertEquals(ProjectCodec.encode(initial), ProjectCodec.encode(ui.project()));
+        } finally {
+            try { if (ui != null) ui.close(); }
+            finally { restoreDraft(draft, originalDraft); for (File file : ownedMedia) file.delete();
+                File[] temporary = scratch.listFiles(); if (temporary != null) for (File file : temporary) file.delete(); scratch.delete(); }
+        }
+    }
+
     private static StudioProject fixtureProject(Instrumentation instrumentation, ProjectFiles files,
                                                File scratch, List<File> owned) throws Exception {
         StudioProject project = new StudioProject(); project.title = "Native workspace QA";
@@ -941,9 +1056,46 @@ public final class NativeWorkspaceUiTest {
             try { assertTrue(instrumentation.getUiAutomation().injectInputEvent(up, false)); } finally { up.recycle(); }
             instrumentation.waitForIdleSync();
         }
+        void dispatchTimelineSelection(long positionMs) throws Exception {
+            main(() -> {
+                StudioTimelineView timeline = (StudioTimelineView) field(activity, "timeline"); timeline.fit();
+                assertTrue("Real timeline is measured", timeline.getWidth() > 100 && timeline.getHeight() > 0);
+                float density = activity.getResources().getDisplayMetrics().density;
+                long duration = ((StudioProject) field(activity, "project")).durationMs();
+                float x = 66 * density + (timeline.getWidth() - 78 * density) * positionMs / duration;
+                float y = Math.min(timeline.getHeight() - 2, 48 * density); long now = SystemClock.uptimeMillis();
+                MotionEvent down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0);
+                MotionEvent up = MotionEvent.obtain(now, now + 24, MotionEvent.ACTION_UP, x, y, 0);
+                down.setSource(InputDevice.SOURCE_TOUCHSCREEN); up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+                try { assertTrue(timeline.dispatchTouchEvent(down)); assertTrue(timeline.dispatchTouchEvent(up)); }
+                finally { down.recycle(); up.recycle(); }
+                return null;
+            });
+            instrumentation.waitForIdleSync();
+        }
+        void dispatchSliderEvent(View slider, long downTime, int action, float fraction) throws Exception {
+            main(() -> {
+                assertTrue("Real native slider is measured", slider.getWidth() > 0 && slider.getHeight() > 0);
+                MotionEvent event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action,
+                        slider.getWidth() * fraction, slider.getHeight() / 2f, 0);
+                event.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+                try { assertTrue(slider.dispatchTouchEvent(event)); } finally { event.recycle(); }
+                return null;
+            });
+            instrumentation.waitForIdleSync();
+        }
         void assertSliderProgress(String description, int expected) throws Exception {
             android.widget.SeekBar slider = main(() -> (android.widget.SeekBar) findDescription((View) field(activity, "inspectorPanel"), description));
             assertNotNull(slider); assertEquals("Rejected input restores the native thumb", expected, main(slider::getProgress).intValue());
+        }
+        void assertRejectedBudget(String original) throws Exception {
+            waitUntil("Budget error is explicit instead of recommending an impossible Save", 3000,
+                    () -> main(() -> ((TextView) field(activity, "status")).getText().toString().contains("maximum 2 MiB UTF-8")));
+            assertEquals("Budget failure leaves exact model bytes intact", original, ProjectCodec.encode(project()));
+            assertEquals("Budget failure leaves Undo intact", 0, main(() -> ((java.util.ArrayDeque<?>) field(activity, "undo")).size()).intValue());
+            assertEquals("Budget failure leaves Redo intact", 0, main(() -> ((java.util.ArrayDeque<?>) field(activity, "redo")).size()).intValue());
+            main(() -> { assertFalse(activity.isFinishing()); assertFalse(activity.isDestroyed());
+                assertNull(((CompositionPlayer) field(activity, "player")).getPlayerError()); return null; });
         }
         void assertGradeDisplay(String description, float expected) throws Exception {
             EditText value = main(() -> (EditText) findDescription((View) field(activity, "inspectorPanel"), description));

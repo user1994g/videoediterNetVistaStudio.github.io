@@ -95,7 +95,8 @@ public final class MainActivity extends Activity {
     private static final class EffectControlBinding {
         final String clipId; final EditText value; final SeekBar slider;
         final int parameter; final float minimum, maximum, multiplier;
-        boolean tracking, gestureEdited; String displayed;
+        boolean tracking, gestureEdited, gestureCancelled; String displayed;
+        long gestureSourceMs, numericSourceMs;
         EffectControlBinding(StudioProject.Clip clip, EditText value, SeekBar slider, int parameter,
                              float minimum, float maximum, float multiplier) {
             clipId = clip.id; this.value = value; this.slider = slider; this.parameter = parameter;
@@ -343,9 +344,16 @@ public final class MainActivity extends Activity {
         timelineTools.addView(toolScroll, new LinearLayout.LayoutParams(0, dp(44), 1));
         timelineTools.addView(button("−", () -> timeline.zoomOut(), true)); timelineTools.addView(button("+", () -> timeline.zoomIn(), true)); timelineTools.addView(button("Fit", () -> timeline.fit(), true)); timelinePanel.addView(timelineTools);
         timeline = new StudioTimelineView(this); timeline.setListener(new StudioTimelineView.Listener() {
-            @Override public void selected(int index, long position) { selected = index; seekTimeline(position, false); refreshTimeline(false); }
+            @Override public void selected(int index, long position) {
+                // Commit the previous clip's field/gesture before changing either
+                // selection or source time. seekTimeline chooses the tapped clip.
+                flushFocusedEditor(); seekTimeline(position, false); refreshTimeline(false);
+            }
             @Override public void scrubbed(long position) { seekTimeline(position, false); }
-            @Override public void reordered(int from, int to) { if (!operationBusy) { flushFocusedEditor(); recordEdit(); project.move(from, to); selected = to; changedEdit(); } }
+            @Override public void reordered(int from, int to) { if (!operationBusy && from != to) {
+                flushFocusedEditor(); try { StudioProject next = project.copy(); next.move(from, to); commitProposal(next, to, playheadMs); }
+                catch (IllegalArgumentException error) { message(error.getMessage()); }
+            } }
         });
         timelinePanel.addView(timeline, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         container.addView(timelinePanel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, timelineHeight()));
@@ -458,6 +466,9 @@ public final class MainActivity extends Activity {
         StudioProject.Clip clip = project.clips.get(selected);
         return Math.max(clip.inMs, Math.min(clip.outMs, clip.inMs + playheadMs - startOf(selected)));
     }
+    private boolean isSelectedClip(StudioProject.Clip clip) {
+        return selected >= 0 && selected < project.clips.size() && project.clips.get(selected) == clip;
+    }
     private void animationInspector(StudioProject.Clip clip) {
         inspector.addView(label("ANIMATION · CLIP LOCAL", 10, MUTED, true));
         inspector.addView(button(animationProperty.label + " ▾", () -> {
@@ -475,7 +486,7 @@ public final class MainActivity extends Activity {
         animationTime = label("", 11, MUTED, false); inspector.addView(animationTime);
         keyframeTimeline = new StudioKeyframeView(this);
         keyframeTimeline.setListener(source -> {
-            if (operationBusy || !project.clips.contains(clip)) return;
+            if (operationBusy || !isSelectedClip(clip)) return;
             // Out is exclusive on the sequence. Keep end diamonds in this clip's
             // final presentation frame rather than selecting the next clip.
             seekTimeline(startOf(selected) + Math.min(clip.lengthMs() - 1, source - clip.inMs), false);
@@ -488,6 +499,8 @@ public final class MainActivity extends Activity {
             StudioProject.Clip current = project.clips.get(selected); long source = selectedSourceTime();
             float value = animationProperty.value(current.settingsAtSourceMs(source));
             try { ClipAnimation next = current.animation.withKeyframe(animationProperty, source, value, animationCurve);
+                if (sameKeyframe(current.animation, animationProperty, source, value, animationCurve)) return;
+                validateClipProposal(current, current.settings, next);
                 recordEdit(); current.animation = next; changedEdit(); message("Keyframe saved at " + seconds(source - current.inMs) + "s in this clip.");
             } catch (IllegalArgumentException error) { message(error.getMessage()); }
         }, false));
@@ -495,7 +508,9 @@ public final class MainActivity extends Activity {
             if (operationBusy || selected < 0) return; flushFocusedEditor(); StudioProject.Clip current = project.clips.get(selected);
             long source = selectedSourceTime(); long key = nearestKeyTime(current, source);
             if (key < 0) { message("Seek to a diamond to remove its keyframe."); return; }
-            recordEdit(); current.animation = current.animation.withoutKeyframe(animationProperty, key); changedEdit();
+            try { ClipAnimation next = current.animation.withoutKeyframe(animationProperty, key); validateClipProposal(current, current.settings, next);
+                recordEdit(); current.animation = next; changedEdit(); }
+            catch (IllegalArgumentException error) { message(error.getMessage()); }
         }, false));
         animationCurveButton = button("Curve: " + curveName(animationCurve) + " ▾", () -> {
             flushFocusedEditor(); String[] curves = new String[ClipAnimation.Curve.values().length];
@@ -504,14 +519,21 @@ public final class MainActivity extends Activity {
                 animationCurve = ClipAnimation.Curve.values()[index]; dialog.dismiss(); StudioProject.Clip current = project.clips.get(selected);
                 long key = nearestKeyTime(current, selectedSourceTime());
                 if (key >= 0) for (ClipAnimation.Keyframe point : current.animation.points(animationProperty)) if (point.sourceMs == key) {
-                    recordEdit(); current.animation = current.animation.withKeyframe(animationProperty, key, point.value, animationCurve); changedEdit(); return;
+                    if (point.curve == animationCurve) { refreshInspector(); return; }
+                    try { ClipAnimation next = current.animation.withKeyframe(animationProperty, key, point.value, animationCurve);
+                        validateClipProposal(current, current.settings, next); recordEdit(); current.animation = next; changedEdit(); }
+                    catch (IllegalArgumentException error) { animationCurve = point.curve; refreshInspector(); message(error.getMessage()); }
+                    return;
                 }
                 refreshInspector();
             }).setNegativeButton("Cancel", null).show();
         }, false); inspector.addView(animationCurveButton);
         inspector.addView(button("Clear this property's keys", () -> {
             if (operationBusy || selected < 0) return; flushFocusedEditor(); StudioProject.Clip current = project.clips.get(selected);
-            if (current.animation.points(animationProperty).isEmpty()) return; recordEdit(); current.animation = current.animation.withoutProperty(animationProperty); changedEdit();
+            if (current.animation.points(animationProperty).isEmpty()) return;
+            try { ClipAnimation next = current.animation.withoutProperty(animationProperty); validateClipProposal(current, current.settings, next);
+                recordEdit(); current.animation = next; changedEdit(); }
+            catch (IllegalArgumentException error) { message(error.getMessage()); }
         }, false));
         inspector.addView(label("Add diamonds at different times to animate. With keys enabled, changing a value updates/adds a key at the playhead. Curves belong to the left diamond. Trimming, splitting and moving retain source-time animation.", 11, MUTED, false));
         inspector.addView(button("Back to Motion / Effects", () -> selectWorkspace(1), false));
@@ -559,20 +581,25 @@ public final class MainActivity extends Activity {
         SeekBar slider = new SeekBar(this); slider.setMax(1000); slider.setMinimumHeight(dp(44)); slider.setContentDescription(name + " slider");
         slider.setProgress(Math.round((displayedSetting(clip.settingsAtSourceMs(selectedSourceTime()), parameter, multiplier) - min) / (max - min) * 1000));
         EffectControlBinding binding = new EffectControlBinding(clip, value, slider, parameter, min, max, multiplier);
+        binding.numericSourceMs = binding.gestureSourceMs = selectedSourceTime();
         binding.displayed = value.getText().toString(); effectBindings.add(binding);
         row.addView(slider, new LinearLayout.LayoutParams(0, dp(44), 1)); row.addView(value, new LinearLayout.LayoutParams(dp(Math.round(58 * fontScale)), dp(44))); inspector.addView(row);
         slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onStartTrackingTouch(SeekBar bar) {
+                flushFocusedEditor();
+                if (operationBusy || !isSelectedClip(clip) || !effectBindings.contains(binding)) { binding.gestureCancelled = true; return; }
+                binding.gestureCancelled = false; binding.gestureSourceMs = selectedSourceTime();
                 binding.tracking = true; binding.gestureEdited = false;
                 if (!operationBusy && player != null) player.pause();
             }
             @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
-                if (!fromUser || operationBusy || !project.clips.contains(clip)) return;
+                if (!fromUser || operationBusy || binding.gestureCancelled || !isSelectedClip(clip) || !effectBindings.contains(binding)) return;
                 float amount = min + (max - min) * progress / 1000f;
                 try {
                     // Validate the immutable proposal before changing controls,
                     // model or history. A loaded curve may already be at its cap.
-                    Runnable apply = prepareSetting(clip, parameter, nativeSetting(parameter, amount, multiplier));
+                    long source = binding.tracking ? binding.gestureSourceMs : selectedSourceTime();
+                    Runnable apply = prepareSetting(clip, parameter, nativeSetting(parameter, amount, multiplier), source);
                     if (apply != null) {
                         if (!binding.tracking || !binding.gestureEdited) { recordEdit(); binding.gestureEdited = true; }
                         apply.run(); scheduleEffectsPreview(); updateAnimationRuler();
@@ -587,11 +614,14 @@ public final class MainActivity extends Activity {
             }
             @Override public void onStopTrackingTouch(SeekBar bar) {
                 binding.tracking = false;
-                if (binding.gestureEdited) { autosave(); preview(false); updateEnabled(); }
+                if (binding.gestureEdited && !binding.gestureCancelled && isSelectedClip(clip) && effectBindings.contains(binding)) {
+                    autosave(); preview(false); updateEnabled();
+                }
+                binding.gestureEdited = false; binding.gestureCancelled = false;
             }
         });
         Runnable commit = () -> {
-            if (operationBusy || !project.clips.contains(clip)) return;
+            if (operationBusy || !isSelectedClip(clip) || !effectBindings.contains(binding)) return;
             try {
                 float amount = Float.parseFloat(value.getText().toString()); if (!Float.isFinite(amount) || amount < min || amount > max) throw new IllegalArgumentException();
                 // Controls display one decimal. A blur without an edit must not
@@ -599,7 +629,7 @@ public final class MainActivity extends Activity {
                 // A legacy saved contrast can exceed the visible factor range.
                 // Blurring its clamped display must preserve the exact saved value.
                 if (!value.getText().toString().equals(binding.displayed)) {
-                    Runnable apply = prepareSetting(clip, parameter, nativeSetting(parameter, amount, multiplier));
+                    Runnable apply = prepareSetting(clip, parameter, nativeSetting(parameter, amount, multiplier), binding.numericSourceMs);
                     if (apply != null) { if (player != null) player.pause(); recordEdit(); apply.run(); }
                     binding.displayed = number(amount); value.setText(binding.displayed);
                     slider.setProgress(Math.round((amount - min) / (max - min) * 1000));
@@ -608,17 +638,24 @@ public final class MainActivity extends Activity {
             } catch (Exception e) {
                 restoreEffectControl(binding, clip);
                 String problem = e.getMessage();
-                message(problem != null && problem.contains("keyframes") ? problem : name + " must be between " + number(min) + " and " + number(max) + ".");
+                message(problem != null && (problem.contains("keyframes") || problem.startsWith("Edit rejected:")) ? problem : name + " must be between " + number(min) + " and " + number(max) + ".");
             }
         };
-        value.setOnFocusChangeListener((field, focused) -> { if (!focused) commit.run(); });
+        value.setOnFocusChangeListener((field, focused) -> {
+            if (!focused) commit.run();
+            else if (isSelectedClip(clip)) {
+                if (player != null) player.pause();
+                binding.numericSourceMs = selectedSourceTime();
+            }
+        });
         value.setOnEditorActionListener((field, action, event) -> {
             if (action != EditorInfo.IME_ACTION_DONE) return false;
             commit.run(); value.clearFocus(); return true;
         });
     }
     private void restoreEffectControl(EffectControlBinding binding, StudioProject.Clip clip) {
-        float restored = displayedSetting(clip.settingsAtSourceMs(selectedSourceTime()), binding.parameter, binding.multiplier);
+        long source = binding.tracking ? binding.gestureSourceMs : binding.value.hasFocus() ? binding.numericSourceMs : selectedSourceTime();
+        float restored = displayedSetting(clip.settingsAtSourceMs(source), binding.parameter, binding.multiplier);
         binding.displayed = number(restored); binding.value.setText(binding.displayed);
         binding.slider.setProgress(Math.round((restored - binding.minimum) / (binding.maximum - binding.minimum) * 1000));
     }
@@ -632,27 +669,53 @@ public final class MainActivity extends Activity {
         return parameter == 6 ? GradeControlValues.nativeContrast(displayedValue) : displayedValue / multiplier;
     }
     /** Validate first; applying the returned operation cannot fail due to a keyframe cap. */
-    private Runnable prepareSetting(StudioProject.Clip clip, int parameter, float value) {
-        if (Float.compare(setting(clip.settingsAtSourceMs(selectedSourceTime()), parameter), value) == 0) return null;
+    private Runnable prepareSetting(StudioProject.Clip clip, int parameter, float value, long sourceMs) {
+        if (!isSelectedClip(clip)) throw new IllegalArgumentException("This control belongs to a previous clip selection.");
+        if (Float.compare(setting(clip.settingsAtSourceMs(sourceMs), parameter), value) == 0) return null;
         ClipAnimation.Property property = ClipAnimation.Property.values()[parameter];
         if (!clip.animation.points(property).isEmpty()) {
-            long time = selectedSourceTime(); ClipAnimation.Curve curve = animationCurve;
+            long time = sourceMs; ClipAnimation.Curve curve = animationCurve;
             for (ClipAnimation.Keyframe point : clip.animation.points(property)) if (point.sourceMs == time) curve = point.curve;
             ClipAnimation next = clip.animation.withKeyframe(property, time, value, curve);
-            next.validateDuration(clip.durationMs); return () -> clip.animation = next;
+            validateClipProposal(clip, clip.settings, next); return () -> clip.animation = next;
         }
         StudioProject.ClipSettings s = clip.settings;
         StudioProject.ClipSettings next = new StudioProject.ClipSettings(parameter == 0 ? value : s.scale, parameter == 1 ? value : s.rotationDegrees,
                 parameter == 2 ? value : s.positionX, parameter == 3 ? value : s.positionY, parameter == 4 ? value : s.opacity,
                 parameter == 5 ? value : s.brightness, parameter == 6 ? value : s.contrast, parameter == 7 ? value : s.saturation);
+        validateClipProposal(clip, next, clip.animation);
         return () -> clip.settings = next;
     }
+    private static boolean sameKeyframe(ClipAnimation animation, ClipAnimation.Property property, long source,
+                                        float value, ClipAnimation.Curve curve) {
+        for (ClipAnimation.Keyframe point : animation.points(property)) if (point.sourceMs == source) return point.value == value && point.curve == curve;
+        return false;
+    }
+    private static void validateProposal(StudioProject proposed) {
+        try { ProjectCodec.encode(proposed); }
+        catch (Exception error) { throw new IllegalArgumentException("Edit rejected: " + error.getMessage() + " Your project and history are unchanged.", error); }
+    }
+    private void commitProposal(StudioProject proposed, int selection, long playhead) {
+        validateProposal(proposed); recordEdit(); project = proposed; selected = selection; playheadMs = playhead; changedEdit();
+    }
+    private void validateClipProposal(StudioProject.Clip clip, StudioProject.ClipSettings settings, ClipAnimation animation) {
+        int index = project.clips.indexOf(clip); if (index < 0) throw new IllegalArgumentException("The selected clip is no longer in this project.");
+        StudioProject proposed = project.copy();
+        proposed.clips.set(index, new StudioProject.Clip(clip.id, clip.uri, clip.name, clip.durationMs, clip.inMs, clip.outMs, settings, animation));
+        validateProposal(proposed);
+    }
     private void resetSettings(boolean colour) {
-        if (operationBusy || selected < 0) return; flushFocusedEditor(); recordEdit(); StudioProject.Clip clip = project.clips.get(selected); StudioProject.ClipSettings s = clip.settings;
-        clip.settings = colour ? new StudioProject.ClipSettings(s.scale, s.rotationDegrees, s.positionX, s.positionY, s.opacity, 0, 0, 1)
+        if (operationBusy || selected < 0) return; flushFocusedEditor(); StudioProject.Clip clip = project.clips.get(selected); StudioProject.ClipSettings s = clip.settings;
+        StudioProject.ClipSettings next = colour ? new StudioProject.ClipSettings(s.scale, s.rotationDegrees, s.positionX, s.positionY, s.opacity, 0, 0, 1)
                 : new StudioProject.ClipSettings(1, 0, 0, 0, 1, s.brightness, s.contrast, s.saturation);
-        for (ClipAnimation.Property property : ClipAnimation.Property.values()) if ((property.ordinal() >= 5) == colour) clip.animation = clip.animation.withoutProperty(property);
-        changedEdit();
+        ClipAnimation animation = clip.animation;
+        for (ClipAnimation.Property property : ClipAnimation.Property.values()) if ((property.ordinal() >= 5) == colour) animation = animation.withoutProperty(property);
+        boolean same = true; for (int parameter = 0; parameter < 8; parameter++) if (setting(next, parameter) != setting(s, parameter)) same = false;
+        boolean removedKeys = false;
+        for (ClipAnimation.Property property : ClipAnimation.Property.values()) if ((property.ordinal() >= 5) == colour && !clip.animation.points(property).isEmpty()) removedKeys = true;
+        if (same && !removedKeys) return;
+        try { validateClipProposal(clip, next, animation); recordEdit(); clip.settings = next; clip.animation = animation; changedEdit(); }
+        catch (IllegalArgumentException error) { message(error.getMessage()); }
     }
     private void scheduleEffectsPreview() { preview(false, true); }
 
@@ -836,7 +899,9 @@ public final class MainActivity extends Activity {
     private void move(int index, int direction) {
         int target = index + direction; if (operationBusy || index < 0 || target < 0 || target >= project.clips.size()) return;
         flushFocusedEditor();
-        recordEdit(); project.move(index, target); selected = target; playheadMs = startOf(selected); changedEdit();
+        try { StudioProject next = project.copy(); next.move(index, target); long start = 0;
+            for (int previous = 0; previous < target; previous++) start += next.clips.get(previous).lengthMs(); commitProposal(next, target, start); }
+        catch (IllegalArgumentException error) { message(error.getMessage()); }
     }
     private void mark(boolean in) {
         if (operationBusy || selected < 0 || clipAt(playheadMs) != selected) return;
@@ -848,29 +913,37 @@ public final class MainActivity extends Activity {
         try {
             double in = Double.parseDouble(inField.getText().toString()), out = Double.parseDouble(outField.getText().toString());
             if (!Double.isFinite(in) || !Double.isFinite(out) || in < 0 || out > project.clips.get(selected).durationMs / 1000.0 || out <= in) throw new IllegalArgumentException();
-            recordEdit(); project.clips.get(selected).trim(Math.round(in * 1000), Math.round(out * 1000)); playheadMs = startOf(selected); changedEdit(); message("Trim applied to monitor and export.");
-        } catch (Exception e) { message("Out must be after In, inside the source video."); }
+            StudioProject next = project.copy(); next.clips.get(selected).trim(Math.round(in * 1000), Math.round(out * 1000));
+            if (next.clips.get(selected).inMs == project.clips.get(selected).inMs && next.clips.get(selected).outMs == project.clips.get(selected).outMs) return;
+            commitProposal(next, selected, startOf(selected)); message("Trim applied to monitor and export.");
+        } catch (Exception e) { message(e.getMessage() != null && e.getMessage().startsWith("Edit rejected:") ? e.getMessage() : "Out must be after In, inside the source video."); }
     }
     private void addSources(boolean all) {
         if (operationBusy || !draftReady) return; flushFocusedEditor(); List<StudioProject.Clip> sources = project.sources();
         if (sources.isEmpty()) { message("Import sources first."); return; }
-        recordEdit(); int first = project.clips.size();
-        for (StudioProject.Clip source : sources) if (all || source.uri.equals(selectedSource)) {
-            if (project.clips.size() >= StudioProject.MAX_CLIPS) { message("Timeline limit: 500 clips."); break; }
-            project.clips.add(new StudioProject.Clip(UUID.randomUUID().toString(), source.uri, source.name, source.durationMs, 0, source.durationMs));
-        }
-        if (project.clips.size() > first) { selected = first; playheadMs = startOf(first); changedEdit(); }
+        StudioProject next = project.copy(); int first = next.clips.size();
+        try {
+            for (StudioProject.Clip source : sources) if (all || source.uri.equals(selectedSource)) {
+                if (next.clips.size() >= StudioProject.MAX_CLIPS) throw new IllegalArgumentException("Timeline limit: 500 clips. No clips were added; use selected Add for a smaller batch.");
+                next.clips.add(new StudioProject.Clip(UUID.randomUUID().toString(), source.uri, source.name, source.durationMs, 0, source.durationMs));
+            }
+            if (next.clips.size() > first) commitProposal(next, first, project.durationMs());
+        } catch (IllegalArgumentException error) { message(error.getMessage()); }
     }
     private void splitAtPlayhead() {
         if (operationBusy || selected < 0) return;
         flushFocusedEditor();
         StudioProject.Clip clip = project.clips.get(selected); long sourcePosition = clip.inMs + playheadMs - startOf(selected);
         if (sourcePosition <= clip.inMs || sourcePosition >= clip.outMs) { message("Place the playhead inside a clip before splitting."); return; }
-        try { recordEdit(); project.split(selected, sourcePosition); selected++; changedEdit(); message("Split at playhead. Source media is shared, not copied."); }
+        try { StudioProject next = project.copy(); next.split(selected, sourcePosition); commitProposal(next, selected + 1, playheadMs); message("Split at playhead. Source media is shared, not copied."); }
         catch (IllegalArgumentException e) { message(e.getMessage()); }
     }
-    private void duplicateClip() { if (operationBusy || selected < 0) return; flushFocusedEditor(); try { recordEdit(); project.duplicate(selected); selected++; playheadMs = startOf(selected); changedEdit(); } catch (IllegalArgumentException e) { message(e.getMessage()); } }
-    private void deleteClip() { if (operationBusy || selected < 0) return; flushFocusedEditor(); recordEdit(); project.clips.remove(selected); playheadMs = Math.min(playheadMs, project.durationMs()); changedEdit(); }
+    private void duplicateClip() { if (operationBusy || selected < 0) return; flushFocusedEditor(); try {
+        StudioProject next = project.copy(); next.duplicate(selected); long start = startOf(selected) + project.clips.get(selected).lengthMs(); commitProposal(next, selected + 1, start);
+    } catch (IllegalArgumentException e) { message(e.getMessage()); } }
+    private void deleteClip() { if (operationBusy || selected < 0) return; flushFocusedEditor(); try {
+        StudioProject next = project.copy(); next.clips.remove(selected); commitProposal(next, Math.min(selected, next.clips.size() - 1), Math.min(playheadMs, next.durationMs()));
+    } catch (IllegalArgumentException error) { message(error.getMessage()); } }
     private void recordEdit() { undo.addLast(new EditState(project, selected, playheadMs)); while (undo.size() > 80) undo.removeFirst(); redo.clear(); }
     private void undoEdit() { if (operationBusy) return; flushFocusedEditor(); if (undo.isEmpty()) return; redo.addLast(new EditState(project, selected, playheadMs)); restoreEdit(undo.removeLast()); }
     private void redoEdit() { if (operationBusy) return; flushFocusedEditor(); if (redo.isEmpty()) return; undo.addLast(new EditState(project, selected, playheadMs)); restoreEdit(redo.removeLast()); }
@@ -883,6 +956,8 @@ public final class MainActivity extends Activity {
                 .setMessage("Save a portable backup first if needed. Current imported media remains in private storage and can be restored with Undo.")
                 .setNegativeButton("Cancel", null).setPositiveButton("New project", (d, w) -> {
                     if (!liveUi() || operationBusy || !account.state().canEdit) return;
+                    if (project.clips.isEmpty() && project.sources().isEmpty() && "Untitled edit".equals(project.title)
+                            && project.width == 1920 && project.height == 1080) return;
                     recordEdit(); project = new StudioProject(); selected = -1; selectedSource = null; playheadMs = 0;
                     if (player != null) { player.release(); player = null; }
                     autosave(); showEditor();
@@ -928,8 +1003,11 @@ public final class MainActivity extends Activity {
         new AlertDialog.Builder(this).setTitle("Output canvas · 30 fps")
                 .setItems(new String[]{"1920 × 1080 · landscape", "1280 × 720 · landscape", "1080 × 1920 · portrait"}, (dialog, size) -> {
                     if (!liveUi() || operationBusy || !account.state().canEdit) return;
-                    recordEdit(); project.width = size == 1 ? 1280 : size == 2 ? 1080 : 1920;
-                    project.height = size == 1 ? 720 : size == 2 ? 1920 : 1080; changedEdit();
+                    StudioProject next = project.copy(); next.width = size == 1 ? 1280 : size == 2 ? 1080 : 1920;
+                    next.height = size == 1 ? 720 : size == 2 ? 1920 : 1080;
+                    if (next.width == project.width && next.height == project.height) return;
+                    try { validateProposal(next); recordEdit(); project.width = next.width; project.height = next.height; changedEdit(); }
+                    catch (IllegalArgumentException error) { message(error.getMessage()); }
                 }).show();
     }
 
@@ -986,7 +1064,6 @@ public final class MainActivity extends Activity {
     }
     private void importVideos(List<Uri> uris) {
         flushFocusedEditor();
-        recordEdit();
         setBusy(true, "Copying selected videos into private storage…");
         long ticket = ++operationGeneration;
         StudioProject target = project.copy();
@@ -1001,23 +1078,25 @@ public final class MainActivity extends Activity {
                 } catch (Exception e) { if (copy != null) copy.delete(); failures.add("One video was unreadable, unsupported or exceeded 4 GiB."); }
             }
             target.assets.addAll(imported);
-            String saveWarning = "";
+            if (imported.isEmpty()) {
+                postResult(ticket, () -> setBusy(false, "No sources were imported. Your project and history are unchanged.")); return;
+            }
             try {
+                validateProposal(target);
                 if (!saveDraftIfCurrent(target)) { removePrivateCopies(imported); return; }
             } catch (Exception e) {
-                if (destroyed || ACTIVE_ACTIVITY.get() != activityGeneration) { removePrivateCopies(imported); return; }
-                saveWarning = " Private autosave failed—use Save to keep a project backup.";
+                removePrivateCopies(imported);
+                postResult(ticket, () -> setBusy(false, "Import rejected: " + e.getMessage() + " Your current project is unchanged.")); return;
             }
-            String result = imported.size() + " sources imported. Select Add or Add all." + (failures.isEmpty() ? "" : " " + failures.size() + " could not be imported.") + saveWarning;
+            String result = imported.size() + " sources imported. Select Add or Add all." + (failures.isEmpty() ? "" : " " + failures.size() + " could not be imported.");
             postResult(ticket, () -> {
-                project = target; if (!imported.isEmpty()) selectedSource = imported.get(0).uri;
+                recordEdit(); project = target; selectedSource = imported.get(0).uri;
                 setBusy(false, result); if (editorVisible) { refreshTimeline(false); if (!wideLayout) switchCompactPanel(0); } else if (homeVisible) showHome();
             });
         });
     }
     private void loadProject(Uri source) {
         flushFocusedEditor();
-        recordEdit();
         setBusy(true, "Loading self-contained project…");
         long ticket = ++operationGeneration;
         io.execute(() -> {
@@ -1039,10 +1118,11 @@ public final class MainActivity extends Activity {
                     StudioProject.Clip clip = loaded.clips.get(i); long actual = durations.get(clip.uri);
                     loaded.clips.set(i, new StudioProject.Clip(clip.id, clip.uri, clip.name, actual, clip.inMs, clip.outMs, clip.settings.copy(), clip.animation));
                 }
+                validateProposal(loaded);
                 if (!saveDraftIfCurrent(loaded)) { removePrivateCopies(loaded.sources()); return; }
                 postResult(ticket, () -> {
                     if (player != null) { player.release(); player = null; }
-                    project = loaded; selected = loaded.clips.isEmpty() ? -1 : 0; playheadMs = 0; selectedSource = null;
+                    recordEdit(); project = loaded; selected = loaded.clips.isEmpty() ? -1 : 0; playheadMs = 0; selectedSource = null;
                     setBusy(false, "Project loaded with its media, motion and colour."); showEditor();
                 });
             } catch (Exception e) {
@@ -1160,7 +1240,14 @@ public final class MainActivity extends Activity {
                     if (which == 0) {
                         EditText title = field("Project name", InputType.TYPE_CLASS_TEXT); title.setText(project.title);
                         new AlertDialog.Builder(this).setTitle("Rename edit").setView(title).setNegativeButton("Cancel", null)
-                                .setPositiveButton("Rename", (d, w) -> { if (!liveUi() || operationBusy || !account.state().canEdit) return; recordEdit(); String text = title.getText().toString().trim(); project.title = text.isEmpty() ? "Untitled edit" : text.substring(0, Math.min(text.length(), 200)); changedEdit(); }).show();
+                                .setPositiveButton("Rename", (d, w) -> {
+                                    if (!liveUi() || operationBusy || !account.state().canEdit) return;
+                                    String text = title.getText().toString().trim(); StudioProject next = project.copy();
+                                    next.title = text.isEmpty() ? "Untitled edit" : text.substring(0, Math.min(text.length(), 200));
+                                    if (next.title.equals(project.title)) return;
+                                    try { validateProposal(next); recordEdit(); project.title = next.title; changedEdit(); }
+                                    catch (IllegalArgumentException error) { message(error.getMessage()); }
+                                }).show();
                     } else if (which == 1) {
                         canvasMenu();
                     } else if (which == 2) {
@@ -1202,6 +1289,14 @@ public final class MainActivity extends Activity {
     private void flushFocusedEditor() {
         if (compactDialog != null && compactDialog.getWindow() != null) { View focus = compactDialog.getWindow().getDecorView().findFocus(); if (focus instanceof EditText) focus.clearFocus(); }
         if (root != null) { View focus = root.findFocus(); if (focus instanceof EditText) focus.clearFocus(); }
+        boolean edited = false;
+        for (EffectControlBinding binding : effectBindings) if (binding.tracking) {
+            // Another finger, keyboard shortcut, or navigation may seek/select
+            // before ACTION_UP. End this transaction now and ignore late events.
+            edited |= binding.gestureEdited;
+            binding.tracking = false; binding.gestureCancelled = true; binding.gestureEdited = false;
+        }
+        if (edited) { autosave(); preview(false); updateEnabled(); }
     }
     private void message(String value) { if (!liveUi()) return; if (status != null && (editorVisible || homeVisible)) status.setText(value == null ? "Operation unavailable." : value); }
     @Override public void onConfigurationChanged(Configuration configuration) { super.onConfigurationChanged(configuration); if (operationBusy) pendingLayoutRebuild = true; else if (editorVisible) showEditor(); else if (homeVisible) showHome(); }

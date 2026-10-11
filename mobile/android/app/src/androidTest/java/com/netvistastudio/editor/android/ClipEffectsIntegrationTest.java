@@ -126,7 +126,7 @@ public final class ClipEffectsIntegrationTest {
     @Test public void codecLimitCountsActualUtf8BytesBeforeWritingAnUnreadableProject() throws Exception {
         StudioProject project = new StudioProject(); StringBuilder name = new StringBuilder();
         for (int character = 0; character < 512; character++) name.append('\u754c');
-        for (int index = 0; index < 350; index++) {
+        for (int index = 0; index < 500; index++) {
             String id = UUID.randomUUID().toString(); project.clips.add(new StudioProject.Clip(id, "media/" + id + ".video", name.toString(), 10000, 0, 5000));
         }
         java.util.EnumMap<ClipAnimation.Property, java.util.List<ClipAnimation.Keyframe>> tracks = new java.util.EnumMap<>(ClipAnimation.Property.class);
@@ -137,13 +137,13 @@ public final class ClipEffectsIntegrationTest {
         }
         project.clips.get(0).animation = new ClipAnimation(tracks);
         // Inspect the actual serializer output, not a guessed UTF-16/UTF-8 ratio.
-        // The manifest is otherwise valid; its 350 names and 10,000 keys each
+        // The manifest is otherwise valid; its 500 names and 10,000 keys each
         // satisfy model limits, and only its encoded byte size is too large.
         java.lang.reflect.Method serializer = ProjectCodec.class.getDeclaredMethod("encodeClips", java.util.List.class); serializer.setAccessible(true);
         JSONObject manifest = new JSONObject().put("format", "netvista-mobile").put("version", 3).put("platform", "android")
                 .put("title", project.title).put("width", project.width).put("height", project.height)
                 .put("assets", serializer.invoke(null, project.sources())).put("clips", serializer.invoke(null, project.clips));
-        String actual = manifest.toString(2);
+        String actual = manifest.toString();
         assertTrue("The prior character-only guard would accept this valid model", actual.length() < ProjectCodec.MAX_BYTES);
         assertTrue("The actual UTF-8 archive reader would reject these bytes", actual.getBytes(StandardCharsets.UTF_8).length > ProjectCodec.MAX_BYTES);
         try { ProjectCodec.encode(project); fail("Encoded an unreadable UTF-8 project"); } catch (org.json.JSONException expected) { }
@@ -155,6 +155,32 @@ public final class ClipEffectsIntegrationTest {
         assertEquals(ProjectCodec.MAX_BYTES, exact.toString().getBytes(StandardCharsets.UTF_8).length);
         assertEquals("Untitled edit", ProjectCodec.decode(exact.toString()).title);
         try { ProjectCodec.decode(exact.append(' ').toString()); fail("Accepted byte over the exact UTF-8 cap"); } catch (org.json.JSONException expected) { }
+    }
+
+    @Test public void compactCanonicalBudgetRejectsGrowthAndMigrationWithoutDroppingExistingData() throws Exception {
+        StudioProject base = new StudioProject(); base.clips.add(new StudioProject.Clip(ID, "media/" + ID + ".video", "Source", 10000, 0, 2400));
+        StudioProject saved = ProjectBudgetFixtures.nearLimit(base); String original = ProjectCodec.encode(saved);
+        assertFalse("Canonical projects do not spend their budget on indentation", original.contains("\n"));
+        for (String action : new String[]{"duplicate", "split", "keyframe", "curve", "source-add", "title"}) {
+            StudioProject proposed = saved.copy(); StudioProject.Clip clip = proposed.clips.get(0);
+            switch (action) {
+                case "duplicate": proposed.duplicate(0); break;
+                case "split": proposed.split(0, 2200); break;
+                case "keyframe": clip.animation = clip.animation.withKeyframe(ClipAnimation.Property.OPACITY, 2200, .5f, ClipAnimation.Curve.LINEAR); break;
+                case "curve": clip.animation = clip.animation.withKeyframe(ClipAnimation.Property.OPACITY, 1998, .8f, ClipAnimation.Curve.EASE_IN_OUT); break;
+                case "source-add": proposed.clips.add(new StudioProject.Clip(UUID.randomUUID().toString(), clip.uri, "Source", clip.durationMs, 0, clip.durationMs)); break;
+                default: proposed.title += "more";
+            }
+            try { ProjectCodec.encode(proposed); fail("Accepted unsavable proposal " + action); } catch (org.json.JSONException expected) { }
+            assertEquals("Preflight never mutates the saved model", original, ProjectCodec.encode(saved));
+        }
+        JSONObject incoming = new JSONObject(original); incoming.put("version", 1); incoming.remove("assets");
+        // Removing the saved pool leaves room in the INPUT, but restoring its
+        // source records during migration can exceed the canonical save budget.
+        incoming.put("title", saved.title + "more");
+        String compactInput = incoming.toString(); assertTrue(compactInput.getBytes(StandardCharsets.UTF_8).length <= ProjectCodec.MAX_BYTES);
+        try { ProjectCodec.decode(compactInput); fail("Migration returned an unsavable project"); } catch (org.json.JSONException expected) { }
+        assertEquals(original, ProjectCodec.encode(ProjectCodec.decode(original)));
     }
 
     @Test(timeout = 180000)

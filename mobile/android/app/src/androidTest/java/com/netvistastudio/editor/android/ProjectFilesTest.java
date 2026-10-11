@@ -49,8 +49,11 @@ public final class ProjectFilesTest {
     }
     @Test public void malformedProjectTrimIsRejected() throws Exception {
         StudioProject value = new StudioProject(); value.clips.add(new StudioProject.Clip(ID, "media/" + ID + ".video", "test", 1000, 0, 1000));
-        String json = ProjectCodec.encode(value).replace("\"outMs\": 1000", "\"outMs\": 2000");
-        try { ProjectCodec.decode(json); fail("Accepted out of bounds trim"); } catch (org.json.JSONException expected) { /* expected */ }
+        org.json.JSONObject json = new org.json.JSONObject(ProjectCodec.encode(value));
+        json.getJSONArray("clips").getJSONObject(0).put("outMs", 2000);
+        assertEquals("The malformed fixture must actually exceed its source duration", 2000,
+                json.getJSONArray("clips").getJSONObject(0).getLong("outMs"));
+        try { ProjectCodec.decode(json.toString()); fail("Accepted out of bounds trim"); } catch (org.json.JSONException expected) { /* expected */ }
     }
     @Test public void previewAndExportUseIdenticalOrderedTrimBounds() throws Exception {
         ProjectFiles files = new ProjectFiles(InstrumentationRegistry.getInstrumentation().getTargetContext()); StudioProject value = new StudioProject();
