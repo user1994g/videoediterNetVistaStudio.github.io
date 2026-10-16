@@ -119,6 +119,7 @@ public final class NativeWorkspaceUiTest {
             ui.assertGraphicalTimeline();
             ui.capture("editor-initial");
             ui.assertErroredPreviewRecovery();
+            ui.assertEmbeddedMonitorOutput();
 
             // A pre-existing maximum native contrast is outside the visible 400% factor cap.
             // Inspecting it and editing a different grade must never silently normalize it.
@@ -153,6 +154,11 @@ public final class NativeWorkspaceUiTest {
 
             View obsoleteSurface = ui.main(() -> ((androidx.media3.ui.PlayerView) field(activity, "playerView")).getVideoSurfaceView());
             assertNotNull("Source playback owns an actual native video surface", obsoleteSurface);
+            CompositionTextureOutput obsoleteOutput = ui.main(() -> (CompositionTextureOutput)
+                    ((androidx.media3.ui.PlayerView) field(activity, "playerView")).getPlayer());
+            android.view.Surface obsoleteProducer = ui.main(obsoleteOutput::ownedSurface);
+            assertNotNull("Actual decoder output owns a valid native producer Surface", obsoleteProducer);
+            assertTrue(ui.main(obsoleteProducer::isValid));
             while (!ui.project().clips.isEmpty()) ui.click("Delete");
             assertEquals("Deleting every timeline instance does not delete the source pool", 2, ui.project().assets.size());
             assertEquals(2, ui.project().sources().size());
@@ -164,6 +170,10 @@ public final class NativeWorkspaceUiTest {
                         ((androidx.media3.ui.PlayerView) field(activity, "playerView")).getVideoSurfaceView());
                 assertNull("An empty monitor has no attached or replacement video surface/compositor hole",
                         ((androidx.media3.ui.PlayerView) field(activity, "playerView")).getVideoSurfaceView());
+                assertNull("Deleted output no longer owns a TextureView", obsoleteOutput.boundView());
+                assertNull("Deleted output synchronously clears its producer Surface", obsoleteOutput.ownedSurface());
+                assertFalse("Only the owned Surface wrapper is released after the engine clears it", obsoleteProducer.isValid());
+                assertEquals("Every created producer in the deleted output is released", obsoleteOutput.createdSurfaceCount(), obsoleteOutput.releasedSurfaceCount());
                 return null;
             });
             ui.openPanel("mediaPanel", "Media", "Media Pool");
@@ -174,6 +184,7 @@ public final class NativeWorkspaceUiTest {
             ui.closeCompactDialog();
             ui.click("Undo"); assertTrue(ui.project().clips.isEmpty());
             ui.click("Redo"); assertEquals(2, ui.project().clips.size());
+            ui.waitPreview(); ui.assertEmbeddedMonitorOutput();
             ui.click("Fit"); ui.tapTimeline(600, true);
 
             ui.openWorkspace("Effects", "Motion/Effects");
@@ -1058,6 +1069,24 @@ public final class NativeWorkspaceUiTest {
             try { return screenshot.getPixel(bounds.centerX(), bounds.centerY()); }
             finally { screenshot.recycle(); }
         }
+        void assertEmbeddedMonitorOutput() throws Exception {
+            waitUntil("Native composition binds its embedded monitor with a live producer Surface", 3000, () -> main(() -> {
+                androidx.media3.ui.PlayerView monitor = (androidx.media3.ui.PlayerView) field(activity, "playerView");
+                if (!(monitor.getPlayer() instanceof CompositionTextureOutput)) return false;
+                CompositionTextureOutput output = (CompositionTextureOutput) monitor.getPlayer();
+                assertSame("Display adapter delegates all playback to the actual native composition engine", field(activity, "player"), output.engine());
+                View actual = monitor.getVideoSurfaceView();
+                assertTrue("Source frames belong to the editor window, not a separate SurfaceView underlay", actual instanceof android.view.TextureView);
+                android.view.TextureView texture = (android.view.TextureView) actual;
+                assertSame("The actual PlayerView texture has exactly one lifecycle owner", output, texture.getSurfaceTextureListener());
+                assertSame(texture, output.boundView());
+                android.view.Surface producer = output.ownedSurface();
+                if (!texture.isAvailable() || producer == null || !producer.isValid()) return false;
+                assertEquals("Output width follows real view layout", texture.getWidth(), output.getSurfaceSize().getWidth());
+                assertEquals("Output height follows real view layout", texture.getHeight(), output.getSurfaceSize().getHeight());
+                return true;
+            }));
+        }
         void assertMotionPreview() throws Exception {
             // The source is solid red. Its centered interior is still covered
             // after the tested scale/rotation/offset; 80% opacity must change its
@@ -1442,6 +1471,9 @@ public final class NativeWorkspaceUiTest {
                             Color.red(pixel) < 20 && Color.green(pixel) < 20 && Color.blue(pixel) < 20);
                 }
             } catch (AssertionError failure) {
+                // Retain the exact composited bitmap that failed, not only a
+                // later screenshot after the display has advanced a frame.
+                QaEvidence.savePng(context, "empty-monitor-pixel-oracle-failure.png", screenshot);
                 capture("empty-monitor-failure");
                 String diagnostic = main(() -> {
                     androidx.media3.ui.PlayerView monitor = (androidx.media3.ui.PlayerView) field(activity, "playerView");

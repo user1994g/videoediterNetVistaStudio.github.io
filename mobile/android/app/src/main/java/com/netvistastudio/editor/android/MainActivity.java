@@ -240,7 +240,7 @@ public final class MainActivity extends Activity {
     private void showLogin() {
         flushFocusedEditor();
         editorVisible = false; homeVisible = false; main.removeCallbacks(playheadTimer); main.removeCallbacks(effectsPreview);
-        if (player != null) { player.release(); player = null; }
+        releasePreviewPlayer();
         previewGraph = null;
         status = null; progress = null; accountStatus = null; timeline = null;
         LinearLayout container = screen(); header(container);
@@ -265,7 +265,7 @@ public final class MainActivity extends Activity {
         if (!liveUi() || transformer != null || account == null || !account.state().canEdit) return;
         flushFocusedEditor();
         main.removeCallbacks(playheadTimer); main.removeCallbacks(effectsPreview);
-        if (player != null) { player.release(); player = null; }
+        releasePreviewPlayer();
         previewGraph = null;
         editorVisible = false; homeVisible = true; loginStatus = null; signInButton = null;
         LinearLayout container = screen(); header(container);
@@ -296,7 +296,7 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(playheadTimer); main.removeCallbacks(effectsPreview);
         if (player != null) {
             if (player.isPlaying()) playheadMs = player.getCurrentPosition();
-            player.release();
+            releasePreviewPlayer();
         }
         editorVisible = true; homeVisible = false; loginStatus = null; signInButton = null;
         wideLayout = getResources().getConfiguration().screenWidthDp >= 900 && getResources().getConfiguration().screenHeightDp >= 420;
@@ -845,18 +845,17 @@ public final class MainActivity extends Activity {
     }
 
     private PlayerView programMonitorView(CompositionPlayer current) {
-        // A default PlayerView creates a SurfaceView even with a null Player.
-        // Merely replacing it with another null-bound SurfaceView can leave a
-        // compositor hole exposing the old red/blue source buffer. An empty
-        // edit has no native video surface at all: the actual window paints an
-        // opaque black monitor until Add/Undo creates a new video output.
+        // Source video is an embedded TextureView, not an independent compositor
+        // underlay. Last-clip deletion and the editor's opaque empty monitor are
+        // consequently part of the same native window frame. The pinned engine
+        // needs a direct-Surface lifecycle adapter, not setVideoTextureView().
         PlayerView view = current == null
                 ? (PlayerView) getLayoutInflater().inflate(R.layout.program_monitor_empty, null, false)
-                : new PlayerView(this);
+                : (PlayerView) getLayoutInflater().inflate(R.layout.program_monitor_video, null, false);
         view.setUseController(false);
         view.setShutterBackgroundColor(Color.BLACK); view.setBackgroundColor(Color.BLACK);
         view.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT); view.setKeepContentOnPlayerReset(true);
-        view.setPlayer(current); return view;
+        view.setPlayer(current == null ? null : new CompositionTextureOutput(current)); return view;
     }
 
     private void bindProgramMonitor(CompositionPlayer current) {
@@ -865,14 +864,24 @@ public final class MainActivity extends Activity {
             int index = parent.indexOfChild(empty); ViewGroup.LayoutParams layout = empty.getLayoutParams();
             playerView = programMonitorView(current); parent.removeView(empty); parent.addView(playerView, index, layout);
         } else {
-            playerView.setKeepContentOnPlayerReset(true); playerView.setPlayer(current);
+            playerView.setKeepContentOnPlayerReset(true);
+            Player bound = playerView.getPlayer();
+            if (!(bound instanceof CompositionTextureOutput) || ((CompositionTextureOutput) bound).engine() != current) {
+                playerView.setPlayer(new CompositionTextureOutput(current));
+            }
         }
     }
 
-    /** Last-clip deletion ends the old output immediately, including its Surface.
-     * Detaching only the Player leaves SurfaceView's last queued buffer alive in
-     * the compositor. A surface-free native monitor prevents a late old frame
-     * from remaining visible or becoming the surface used by a later Undo/Add.
+    /** Detach the display adapter before releasing its playback delegate, so
+     * no delayed TextureView callback can target a released native engine. */
+    private void releasePreviewPlayer() {
+        if (playerView != null) playerView.setPlayer(null);
+        if (player != null) { CompositionPlayer obsolete = player; player = null; obsolete.release(); }
+    }
+
+    /** Last-clip deletion synchronously clears/releases the adapter's output.
+     * The surface-free empty monitor and removed texture share one window
+     * render, so a frame-commit completion cannot expose a separate old underlay.
      */
     private void clearEmptyPreview() {
         main.removeCallbacks(effectsPreview);
@@ -885,7 +894,7 @@ public final class MainActivity extends Activity {
         if (obsoleteOutput && obsoleteView.getParent() instanceof ViewGroup) {
             ViewGroup parent = (ViewGroup) obsoleteView.getParent();
             int index = parent.indexOfChild(obsoleteView); ViewGroup.LayoutParams layout = obsoleteView.getLayoutParams();
-            parent.removeView(obsoleteView); // Releases the obsolete native video Surface.
+            parent.removeView(obsoleteView); // TextureView releases its own SurfaceTexture.
             playerView = programMonitorView(null); parent.addView(playerView, index, layout);
         }
         updatePlayhead(false);
@@ -1026,7 +1035,7 @@ public final class MainActivity extends Activity {
                     if (project.clips.isEmpty() && project.sources().isEmpty() && "Untitled edit".equals(project.title)
                             && project.width == 1920 && project.height == 1080) return;
                     recordEdit(); project = new StudioProject(); selected = -1; selectedSource = null; playheadMs = 0;
-                    if (player != null) { player.release(); player = null; }
+                    releasePreviewPlayer();
                     autosave(); showEditor();
                 }).show();
     }
@@ -1235,7 +1244,7 @@ public final class MainActivity extends Activity {
                 validateProposal(loaded);
                 if (!saveDraftIfCurrent(loaded)) { removePrivateCopies(loaded.sources()); return; }
                 postResult(ticket, () -> {
-                    if (player != null) { player.release(); player = null; }
+                    releasePreviewPlayer();
                     recordEdit(); project = loaded; selected = loaded.clips.isEmpty() ? -1 : 0; playheadMs = 0; selectedSource = null;
                     setBusy(false, "Project loaded with its media, motion and colour."); showEditor();
                 });
@@ -1430,7 +1439,7 @@ public final class MainActivity extends Activity {
         main.removeCallbacksAndMessages(null);
         if (transformer != null) { transformer.cancel(); transformer = null; }
         if (renderingFile != null) { renderingFile.delete(); renderingFile = null; }
-        if (player != null) { player.release(); player = null; }
+        releasePreviewPlayer();
         playerView = null;
         previewGraph = null;
         // shutdown(), not shutdownNow(): pending document writes and private draft

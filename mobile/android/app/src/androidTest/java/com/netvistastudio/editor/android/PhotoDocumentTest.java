@@ -197,9 +197,9 @@ public final class PhotoDocumentTest {
     }
 
     @Test public void rendererRejectsUnsupportedSavedOperationsAndMemoryBudgetWithoutMutatingDocument() throws Exception {
-        PhotoDocument document = blank(8, 8, Color.BLACK); PhotoDocument.Layer layer = document.layers.get(0).withAdjustment("exposure", 1).withProperty("blendMode", "Multiply");
+        PhotoDocument document = blank(8, 8, Color.BLACK); PhotoDocument.Layer layer = document.layers.get(0).withAdjustment("vibrance", .5).withAdjustment("blur", 2);
         document = document.withLayers(Arrays.asList(layer), layer.id); String preserved = document.encode();
-        assertTrue(PhotoBitmapEngine.unsupportedOperations(document).contains("Adjustment: exposure")); assertTrue(PhotoBitmapEngine.unsupportedOperations(document).contains("Blend mode: Multiply"));
+        assertTrue(PhotoBitmapEngine.unsupportedOperations(document).contains("Adjustment: vibrance")); assertTrue(PhotoBitmapEngine.unsupportedOperations(document).contains("Adjustment: blur"));
         try { PhotoBitmapEngine.render(document, 0, RENDER_BUDGET); fail("Rendered while silently dropping unsupported grade data"); }
         catch (IOException expected) { assertTrue(expected.getMessage().contains("remains intact")); }
         assertEquals(preserved, document.encode());
