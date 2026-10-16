@@ -93,6 +93,51 @@ import Foundation
         effects.removeKeyframe(for: .opacity, at: 2); precondition(effects.frames(for: .opacity).count == 1)
         effects.removeKeyframe(for: .opacity, at: 6); precondition(effects.keyframes["opacity"] == nil)
         clip.effects = effects; try clip.validate()
+        try aggregateCaps()
         print("PASS: 8-property source-time curves, all 5 Mac interpolation modes, strict validation/caps, split/trim/move/duplicate, undo/redo and schema 2/3 migration")
+    }
+    static func aggregateCaps() throws {
+        var full = MobileClipEffects()
+        for property in MobileEffectProperty.allCases {
+            full.keyframes[property.rawValue] = (0..<1_250).map {
+                MobileEffectKeyframe(sourceSeconds: Double($0) * 0.002, value: full.value(for: property))
+            }
+        }
+        var project = MobileProject()
+        project.clips = (0..<10).map { MobileClip(name: "Full \($0)", file: "source.mov", duration: 3, outPoint: 3, effects: full) }
+        project.clips.append(MobileClip(name: "Editable", file: "source.mov", duration: 3, outPoint: 3))
+        try project.validate(); precondition(project.totalKeyframeCount == 100_000)
+        let original = project
+        var added = project.clips[10].effects; try added.upsertKeyframe(for: .opacity, at: 1, value: 0.5)
+        do { try project.validateEffectsChange(10, effects: added); fatalError("100001st key was accepted") }
+        catch MobileProjectError.animationLimit {}
+        precondition(project == original, "Rejected substituted effect changed project")
+        var updated = full; try updated.upsertKeyframe(for: .opacity, at: 0.7, value: 0.5)
+        try project.validateEffectsChange(0, effects: updated)
+        var removed = full; removed.removeKeyframe(for: .opacity, at: 0)
+        try project.validateEffectsChange(0, effects: removed)
+        do { try project.split(0, at: 1); fatalError("Split bypassed project key cap") }
+        catch MobileProjectError.animationLimit {}
+        precondition(project == original, "Failed split partially mutated ranges or IDs")
+        // A source-pool curve counts too, even when it is not on the timeline.
+        project.clips.remove(at: 0); project.library = [original.clips[0]]
+        precondition(project.totalKeyframeCount == 100_000)
+        do { try project.validateEffectsChange(9, effects: added); fatalError("Library keys were omitted from aggregate cap") }
+        catch MobileProjectError.animationLimit {}
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let compact = try encoder.encode(project)
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let expanded = try encoder.encode(project)
+        precondition(compact.count <= 8 * 1024 * 1024 && expanded.count > 8 * 1024 * 1024,
+                     "Fixture must prove compact-import/pretty-save byte-limit regression")
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("animation-size-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try compact.write(to: file, options: .atomic)
+        let loaded = try MobileProject.read(file); try loaded.write(file)
+        let reopened = try MobileProject.read(file)
+        let saved = try Data(contentsOf: file)
+        precondition(reopened == loaded && saved.count <= 8 * 1024 * 1024,
+                     "Loaded compact project became unsaveable or changed after roundtrip")
+        print("PASS: aggregate100k key edit/library/split caps, substitution without mutation, existing-key update/removal and compact8MiB save roundtrip")
     }
 }

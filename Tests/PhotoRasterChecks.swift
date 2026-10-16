@@ -25,6 +25,9 @@ struct PhotoRasterChecks {
         precondition(rgba(clear,30,12)[3] == 0, "Undo source must remain immutable")
         let erase = PhotoRasterStroke(base:painted,brush:PhotoBrush.defaults[0],size:20,hardness:1,opacity:1,flow:1,color:.black,erase:true,selection:nil)!
         erase.append(CGPoint(x:30,y:12)); precondition(rgba(erase.image(),30,12)[3] == 0)
+        precondition(erase.image().extent == painted.extent, "Erasing must keep the full layer bounds")
+        precondition(rgba(erase.image(),10,12)[3] == rgba(painted,10,12)[3] && rgba(erase.image(),10,12)[3] > 0,
+                     "An unavailable filter returning an empty image must not count as a working eraser")
         let selection = CIImage(color:.white).cropped(to:CGRect(x:0,y:0,width:25,height:64)).composited(over:CIImage(color:.black).cropped(to:extent))
         let clipped = PhotoRasterStroke(base:clear,brush:PhotoBrush.defaults[1],size:30,hardness:0,opacity:1,flow:1,color:.blue,erase:false,selection:selection)!
         clipped.append(CGPoint(x:24,y:20)); precondition(rgba(clipped.image(),30,20)[3] == 0); precondition(rgba(clipped.image(),20,20)[3] > 0)
@@ -65,7 +68,15 @@ struct PhotoRasterChecks {
         func unicode(_ text: String) -> [UInt8] { let units = Array(text.utf16); return be(units.count,4)+units.flatMap { be(Int($0),2) } }
         func identifier(_ text: String) -> [UInt8] { be(text.utf8.count,4)+Array(text.utf8) }
         func descriptor(_ cls: String, _ entries: [(String,String,[UInt8])]) -> [UInt8] {
-            unicode("")+identifier(cls)+be(entries.count,4)+entries.flatMap { identifier($0.0)+Array($0.1.utf8)+$0.2 }
+            var bytes = unicode("")
+            bytes.append(contentsOf: identifier(cls))
+            bytes.append(contentsOf: be(entries.count,4))
+            for (key,type,payload) in entries {
+                bytes.append(contentsOf: identifier(key))
+                bytes.append(contentsOf: type.utf8)
+                bytes.append(contentsOf: payload)
+            }
+            return bytes
         }
         let shape = descriptor("computedBrush",[("Dmtr","long",be(40,4)),("Hrdn","long",be(50,4))])
         let preset = descriptor("brushPreset",[("Nm  ","TEXT",unicode("My soft round")),("Brsh","Objc",shape)])
@@ -77,7 +88,12 @@ struct PhotoRasterChecks {
         for compressed in [false,true] {
             let bounds = be(0,4)+be(0,4)+be(2,4)+be(2,4)+be(16,2)
             let values: [UInt8] = [255,255,0,0,64,0,128,0]
-            let pixels = compressed ? [UInt8(1)]+be(5,2)+be(5,2)+[3]+Array(values.prefix(4))+[3]+Array(values.suffix(4)) : [UInt8(0)]+values
+            var pixels: [UInt8] = [compressed ? 1 : 0]
+            if compressed {
+                pixels.append(contentsOf: be(5,2)); pixels.append(contentsOf: be(5,2))
+                pixels.append(3); pixels.append(contentsOf: values.prefix(4))
+                pixels.append(3); pixels.append(contentsOf: values.suffix(4))
+            } else { pixels.append(contentsOf: values) }
             let body = [UInt8](repeating:0,count:15)+bounds+pixels
             let file = be(1,2)+be(1,2)+be(2,2)+be(body.count,4)+body
             let tips = try PhotoABR.read(Data(file),name:"16bit")
@@ -85,7 +101,11 @@ struct PhotoRasterChecks {
         }
         // A damaged tip in an otherwise framed pack must not discard good tips.
         let good = [UInt8](repeating:0,count:15)+sample(false)
-        let mixed = be(1,2)+be(2,2)+be(2,2)+be(1,4)+[0]+be(2,2)+be(good.count,4)+good
+        var mixed = be(1,2)
+        mixed.append(contentsOf: be(2,2)); mixed.append(contentsOf: be(2,2))
+        mixed.append(contentsOf: be(1,4)); mixed.append(0)
+        mixed.append(contentsOf: be(2,2)); mixed.append(contentsOf: be(good.count,4))
+        mixed.append(contentsOf: good)
         let report = try PhotoABR.readReport(Data(mixed),name:"Mixed")
         precondition(report.brushes.count == 1 && !report.warnings.isEmpty)
         let invalid = PhotoBrush(name:"Bad",kind:"sample",hardness:1,width:Int.max,height:Int.max,samples:Data([1]))

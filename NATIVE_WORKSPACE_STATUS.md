@@ -26,6 +26,48 @@ That proves shared engines, not completed Photo/Game/3D mobile workspaces.
 Full Mac product typechecking and its existing brush-pixel regressions pass after
 the portability changes. New Android compilation/device checks are still required.
 
+### Photo authoring increment — 11 October 2026
+
+Apple development source now exposes a separate native Photo workspace from
+Studio Home. It shares the Mac layer model, compositor, brush/ABR engine and
+`.netvistaphoto` v2 schema, with a shared immutable command/history session.
+Blank documents, image layers, paint/erase, masks, selections, fill/clone/heal,
+text/shapes, adjustments, group motion, transforms, canvas navigation and layered
+Files save/image export have real implementations. Text edits preserve resized
+masks and create one Undo step. Pixel mapping distinguishes mirrored image pixels
+from post-flip mask space. Native brush browsing allocates only visible cells
+and keeps thumbnail work bounded. Core and interface checks are separate.
+
+Android now has isolated native photo document/session/bitmap foundations and
+tests in development. These are not an accessible Photo workspace yet. Saved
+unsupported processing is preserved and explicitly blocked by rendering rather
+than being flattened or discarded. Android and Qt photo authoring remain work.
+
+The local package table below still identifies older previews, not these new
+source changes. Current builds must pass expanded checks before updating it.
+
+### Native creative workspaces — 16 October 2026
+
+Apple source now has all four Home launch cards: Video, Photos, Game Maker and
+3D Editor, each retaining its own document. Game Maker exposes empty 2D/3D scenes,
+asset/object editing, connected rules, shared runtime play/collision/rig behaviour,
+desktop project files and existing JavaScript/Python exports. The 3D workspace
+exposes real SceneKit mesh-side picking, face/vertex edits, topology operations,
+touch sculpt/detail preparation and independent physics preview. Their native
+runtime tests are additional gates, not substitutes for physical-device tests.
+
+Photo follow-ups include lazy image layer thumbnails, collapsible folders,
+persistent swatches, editable Wand/Fill tolerance, a native tone-curve graph,
+rulers, selection/mask commands and control-ownership/late-export protections.
+The Mac photo workspace regressions and full Mac product typecheck still pass.
+Android pending Files saves now have durable immutable captures and lifecycle
+tests. Its empty-monitor regression and expanded compositor checks are still being
+investigated/verified; do not infer a passing device suite from source changes.
+
+These are development changes, not a finished full-suite port or new public beta.
+Android Game/3D authoring, advanced mobile video grading/effect stacks/multitrack
+placement, mobile modeling AI and several desktop interaction details remain.
+
 ## Desktop work implemented and checked
 
 - Mac palette, logo/wordmark, coast Home artwork, persistent Studio Home access.
@@ -130,8 +172,9 @@ e68043a0997f24130bd8e29dc587433b1db76698f2055f672d1ee20352143682  NetVista-Studi
 
 ## Remaining parity boundaries
 
-The Mac Photo Editor, Game Maker and modelling/sculpting workspaces are not yet
-implemented in the mobile or Qt edition. Mac advanced grading nodes/curves/LUTs,
+Apple Photos has a native workspace in development; remaining desktop commands
+and physical-device acceptance are still required. Android/Qt Photos, Game Maker
+and modelling/sculpting workspaces are not yet implemented. Mac advanced grading nodes/curves/LUTs,
 full effect/keyframe systems and unrestricted multi-track mobile compositing
 are not covered by this UI alignment. Mobile project packages are not yet a
 universal interchangeable desktop project format. Device export limits depend

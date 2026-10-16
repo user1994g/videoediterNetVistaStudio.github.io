@@ -58,6 +58,7 @@ struct MobileClipEffects: Codable, Equatable {
     var contrast: Double = 1
     var saturation: Double = 1
     var keyframes: [String: [MobileEffectKeyframe]] = [:]
+    var keyframeCount: Int { keyframes.values.reduce(0) { $0 + $1.count } }
 
     private enum CodingKeys: String, CodingKey {
         case scale, positionX, positionY, rotation, opacity, brightness, contrast, saturation, keyframes
@@ -148,7 +149,7 @@ struct MobileClipEffects: Codable, Equatable {
             throw MobileProjectError.invalidClip
         }
         guard keyframes.count <= MobileEffectProperty.allCases.count else { throw MobileProjectError.invalidAnimation }
-        guard keyframes.values.reduce(0, { $0 + $1.count }) <= 10_000 else { throw MobileProjectError.animationLimit }
+        guard keyframeCount <= 10_000 else { throw MobileProjectError.animationLimit }
         for (key, frames) in keyframes {
             guard let property = MobileEffectProperty(rawValue: key), !frames.isEmpty else { throw MobileProjectError.invalidAnimation }
             guard frames.count <= 2_000 else { throw MobileProjectError.animationLimit }
@@ -201,13 +202,14 @@ struct MobileClip: Codable, Equatable, Identifiable {
 }
 
 enum MobileProjectError: LocalizedError {
-    case invalidClip, invalidProject, invalidAnimation, animationLimit, missingMedia(String), noVideo
+    case invalidClip, invalidProject, invalidAnimation, animationLimit, projectTooLarge, missingMedia(String), noVideo
     var errorDescription: String? {
         switch self {
         case .invalidClip: return "A clip has invalid trim, motion, colour or media settings."
         case .invalidProject: return "This is not a supported NetVista mobile project."
         case .invalidAnimation: return "A keyframe has an invalid property, time, value or ordering. Your previous animation is unchanged."
         case .animationLimit: return "Animation keyframe limit reached: 2,000 per property, 10,000 per clip or 100,000 per project. Remove unused keyframes before adding more. Your previous animation is unchanged."
+        case .projectTooLarge: return "This project's editing metadata exceeds 8 MB. Remove unused animation keys or media-pool entries before saving. Source videos are not part of this limit. Your previous saved project is unchanged."
         case .missingMedia(let file): return "The project is missing media: \(file)"
         case .noVideo: return "This file does not contain a playable video track."
         }
@@ -221,6 +223,7 @@ struct MobileProject: Codable, Equatable {
     var clips: [MobileClip] = []
     var library: [MobileClip] = []
     var totalDuration: Double { clips.reduce(0) { $0 + $1.length } }
+    var totalKeyframeCount: Int { clips.reduce(0, { $0 + $1.effects.keyframeCount }) + library.reduce(0, { $0 + $1.effects.keyframeCount }) }
 
     func validate() throws {
         guard format == "netvista-mobile-video", (1...3).contains(version), !name.isEmpty,
@@ -230,8 +233,25 @@ struct MobileProject: Codable, Equatable {
         }
         try clips.forEach { try $0.validate() }
         try library.forEach { try $0.validate() }
-        guard (clips + library).reduce(0, { count, clip in count + clip.effects.keyframes.values.reduce(0, { $0 + $1.count }) }) <= 100_000 else {
+        guard totalKeyframeCount <= 100_000 else {
             throw MobileProjectError.animationLimit
+        }
+    }
+
+    /// Existing projects are validated on import. A hot slider validates only
+    /// its proposed clip, then sums constant-time track counts for the others;
+    /// it never copies clips or rescans all existing keys on every slider tick.
+    func validateEffectsChange(_ index: Int, effects: MobileClipEffects) throws {
+        guard clips.indices.contains(index) else { throw MobileProjectError.invalidClip }
+        try effects.validate(duration: clips[index].duration)
+        var total = effects.keyframeCount
+        for other in clips.indices where other != index {
+            total += clips[other].effects.keyframeCount
+            guard total <= 100_000 else { throw MobileProjectError.animationLimit }
+        }
+        for source in library {
+            total += source.effects.keyframeCount
+            guard total <= 100_000 else { throw MobileProjectError.animationLimit }
         }
     }
 
@@ -254,8 +274,9 @@ struct MobileProject: Codable, Equatable {
     mutating func split(_ index: Int, at seconds: Double) throws {
         guard clips.indices.contains(index), seconds.isFinite, seconds >= 0.04,
               seconds <= clips[index].length - 0.04 else { throw MobileProjectError.invalidClip }
-        var right = clips[index]; right.id = UUID(); right.inPoint += seconds
-        clips[index].outPoint = right.inPoint; clips.insert(right, at: index + 1)
+        var next = self, right = clips[index]; right.id = UUID(); right.inPoint += seconds
+        next.clips[index].outPoint = right.inPoint; next.clips.insert(right, at: index + 1)
+        try next.validate(); self = next
     }
 
     mutating func trim(_ index: Int, start: Double, end: Double) throws {
@@ -276,13 +297,16 @@ struct MobileProject: Codable, Equatable {
         try value.validate(); return value
     }
 
-    func write(_ url: URL) throws {
+    func encodedData() throws -> Data {
         try validate()
-        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        // A compact valid project must remain saveable after loading. Pretty
+        // printing can expand a file severalfold beyond the import byte limit.
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(self)
-        guard data.count <= 8 * 1024 * 1024 else { throw MobileProjectError.invalidProject }
-        try data.write(to: url, options: .atomic)
+        guard data.count <= 8 * 1024 * 1024 else { throw MobileProjectError.projectTooLarge }
+        return data
     }
+    func write(_ url: URL) throws { try encodedData().write(to: url, options: .atomic) }
 }
 
 final class MobileHistory {

@@ -13,6 +13,9 @@ cp "$SOURCE_DIR/Info.plist" "$APP_DIR/Info.plist"
 xcrun --sdk iphonesimulator swiftc -swift-version 5 -O -D NETVISTA_SHARED_CORE_QA \
   -sdk "$SDK" -target arm64-apple-ios16.0-simulator -module-cache-path "$OUTPUT_DIR/SharedModuleCache" \
   "$REPO_DIR/PhotoRaster.swift" "$REPO_DIR/Tests/PhotoRasterChecks.swift" \
+  "$REPO_DIR/PhotoDocumentCore.swift" "$REPO_DIR/PhotoRenderEngine.swift" \
+  "$REPO_DIR/PhotoProjectCodec.swift" "$REPO_DIR/Tests/PhotoDocumentCoreChecks.swift" \
+  "$REPO_DIR/PhotoEditingSession.swift" "$REPO_DIR/Tests/PhotoEditingSessionChecks.swift" \
   "$REPO_DIR/GameProject.swift" "$REPO_DIR/GameGraph.swift" "$REPO_DIR/GameRuntime.swift" \
   "$REPO_DIR/GameEditingSupport.swift" "$REPO_DIR/GameExport.swift" \
   "$REPO_DIR/ModelingDocument.swift" "$REPO_DIR/ModelingSculpt.swift" \

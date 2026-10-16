@@ -13,15 +13,60 @@ Native UIKit + AVFoundation editor. Runs on the device itself; it does not conne
 - Saved per-clip scale, position, rotation, opacity, brightness, contrast and saturation. Native sliders and exact numeric entry use the same Core Image processing in preview and export. Position uses half-canvas units, positive Y up and positive rotation counterclockwise.
 - Source-time keyframes for all eight motion/colour properties, evaluated per frame in preview/export. Native diamond lanes, zoom/pan/seek, Add/Update/Remove, previous/next, Auto Key, and all five Mac interpolation modes (Hold, Linear, Ease In, Ease Out, Ease In/Out). Trim/split/move/duplicate retain animation; history and schema-3 saves retain all curves. Static schema-1/2 projects still load without adding animation.
 - Studio Home remains accessible and uses the original Mac coast artwork and logo.
+- Separate native Photo Editor from Studio Home, using the Mac layer schema,
+  Core Image compositor and brush/ABR engine. Start a blank HD, square, portrait,
+  A4 or custom document; import images as layers; paint, erase, select, fill,
+  clone/heal, add text/shapes, crop, move/transform, group, mask and adjust layers.
+  Layer opacity, eight blend modes, visibility, locking, ordering and duplication
+  use reversible commands. Photos retain their own working draft and do not
+  replace the video project. The searchable brush library reuses native cells and
+  bounded thumbnails for large packs.
+- Photo tools also include selection lifting, reveal/hide/invert masks, folder
+  navigation, live layer thumbnails, saved swatches, editable selection tolerance,
+  a draggable three-anchor tone curve, rulers and hardware tool/history shortcuts.
+  A stroke, curve drag or slider gesture is one reversible edit; cancelled and
+  obsolete controls cannot take ownership of a newer gesture.
+- Separate native **Game Maker** and **3D Editor** workspaces from Home, using the
+  original Mac artwork and shared engines. They retain their own working drafts,
+  independent from Photos and the Video Editor, and return to the same Home.
+- Game Maker starts with an empty 2D or 3D scene. Add objects/assets, edit their
+  transforms/properties, connect event/action blocks, and play the shared runtime
+  with touch or keyboard controls. Undo/redo, collisions, sprite animation,
+  weighted rigs, `.netvistagame` projects and existing JavaScript/Python source
+  exports use the desktop implementations. Exported games require their stated
+  third-party runtimes; the authoring workspace itself is native and offline.
+- 3D Editor has a real SceneKit viewport, object/face/vertex/sculpt modes, mesh
+  side picking, connected topology operations, subdivision/detail preparation,
+  sculpt masks, outliner and transforms. Native rigid-body physics is a separate
+  preview, not a mutation of the saved model. Save `.netvistamodel` desktop
+  projects or import/export OBJ geometry; use Undo/redo across mesh edits.
+- Open/save desktop-native `.netvistaphoto` v2 files containing embedded layers,
+  masks, folders and editable text metadata; export full-resolution PNG/JPEG to
+  Files. Linked-image v1 files report missing sources rather than losing layers.
+  Documents share the desktop limits of 16,000 pixels per side / 64 megapixels.
 - Automatic local working-project recovery. Save/Open `.netvistamobile` project packages in Files containing `project.json`, effects, the source pool and deduplicated media. Deleting a timeline instance retains its source. Older version-1 projects migrate with neutral effects. This format is mobile-specific, **not** the desktop `.netvistastudio` format and is **not** interchangeable with Android projects.
 - MP4 exports at 720p, 1080p or 4K, 16:9, 30fps, with a cancellable progress dialog and Files destination picker.
 - Original NetVista logo and adaptive dark phone/tablet workspace with portrait, landscape and split-window layouts.
 
 ## Remaining full-port work
 
-This is development toward the full app, not a permanent light-edition target. Desktop photo/3D/game workspaces, node grading, full ordered effect stacks/all Mac animated properties, arbitrary audio layers, 16K export, background export and Mac collaboration are not ported yet. Supported codecs depend on the device's AVFoundation decoder/encoder. 4K exports can use substantial memory and storage. Keep the app in the foreground during export. See [the full-port plan](../../design/FULL_PORT_PLAN.md).
+This is development toward the full app. The Photo workspace shares the desktop
+engines but still needs remaining command/UI coverage, including multi-layer
+selection, font-browser polish and large-document workflow checks. Game/3D now
+have native authoring source, but modeling AI assistance, proportional/axis editing,
+physics baking and complete desktop gizmo/keyboard polish remain. Node grading,
+full ordered video effect stacks/all Mac animated properties,
+arbitrary audio layers, 16K video export, background export and Mac collaboration
+are not ported yet. Supported codecs depend on the device's AVFoundation
+decoder/encoder. 4K exports can use substantial memory and storage. Keep the app
+in the foreground during export. See [the full-port plan](../../design/FULL_PORT_PLAN.md).
 
-The original Mac brush/ABR, grading/LUT/keyer, modelling and game engines are now compiled and exercised directly in isolated UIKit checks, without source copies. Those checks demonstrate reusable processing/document commands, **not** finished Photo/Game/3D interfaces. The Mac brush path retains its original colour and PNG adapters.
+The original Mac photo/brush/ABR, grading/LUT/keyer, modelling and game engines
+compile and execute in isolated UIKit checks. Photos now additionally has a native
+workspace and input/display checks; Game/3D now have their own native input/display
+checks too. Core compilation alone does not establish completed ports or physical
+device acceptance. The Mac brush path retains its original
+colour and PNG adapters.
 
 ## Installation with AltStore
 

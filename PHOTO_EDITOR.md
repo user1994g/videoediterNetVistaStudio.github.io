@@ -47,7 +47,10 @@ Properties provides exposure, brightness/contrast, hue/saturation, vibrance, hig
 
 ## Current boundaries and verification
 
-- This implementation targets the native macOS photo editor; it does not add these systems to the Windows/Linux editor.
+- The Mac layer state, compositor, native project schema and raster/ABR engine are
+  now shared with the native iPhone/iPad Photo workspace. Its command/history
+  adapter is `PhotoEditingSession.swift`. Windows/Linux Photo authoring is still
+  pending; see [the full-port plan](design/FULL_PORT_PLAN.md).
 - Documents are 8-bit RGB, at most 16,000 px per side and 64 megapixels total. No CMYK, PSD/PSB import/export or Photoshop plug-in compatibility is claimed.
 - Undo has up to 80 steps, reduced for large documents by an approximate 512 MB history budget. No disk-backed history or tiled painting engine yet.
 - Regression checks exercise real pixels: brush opacity/spacing, selection clipping, coordinate orientation, clone/eraser, immutable history sources, masks, folder visibility, adjustment composition, embedded project round trips, and ABR parsing failures. The native workspace is rendered offscreen at 1320×820 and 980×640 to inspect layout.
@@ -57,8 +60,10 @@ Run the checks on macOS with graphics access:
 ```sh
 xcrun swiftc -module-cache-path /private/tmp/netvista-photo-check-cache PhotoRaster.swift Tests/PhotoRasterChecks.swift -o /private/tmp/netvista-photo-raster-checks
 /private/tmp/netvista-photo-raster-checks
-xcrun swiftc -D PHOTO_EDITOR_CHECKS -module-cache-path /private/tmp/netvista-photo-check-cache PhotoRaster.swift PhotoEditor.swift Tests/PhotoWorkspaceChecks.swift -o /private/tmp/netvista-photo-workspace-checks
+xcrun swiftc -D PHOTO_EDITOR_CHECKS -module-cache-path /private/tmp/netvista-photo-check-cache PhotoRaster.swift PhotoDocumentCore.swift PhotoRenderEngine.swift PhotoProjectCodec.swift PhotoEditor.swift Tests/PhotoWorkspaceChecks.swift -o /private/tmp/netvista-photo-workspace-checks
 /private/tmp/netvista-photo-workspace-checks
+xcrun swiftc -module-cache-path /private/tmp/netvista-photo-check-cache PhotoRaster.swift PhotoDocumentCore.swift PhotoRenderEngine.swift PhotoProjectCodec.swift PhotoEditingSession.swift Tests/PhotoEditingSessionChecks.swift -o /private/tmp/netvista-photo-session-checks
+/private/tmp/netvista-photo-session-checks
 ```
 
 The second harness opens no visible windows and writes only temporary project/screenshot fixtures in `/private/tmp`.

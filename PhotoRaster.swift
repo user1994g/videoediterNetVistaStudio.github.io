@@ -213,7 +213,12 @@ final class PhotoRasterStroke {
         guard let cg = ink.makeImage() else { return base }
         var paint = CIImage(cgImage: cg).applyingFilter("CIColorMatrix", parameters: ["inputAVector": CIVector(x: 0, y: 0, z: 0, w: opacity)])
         if let selection { paint = paint.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: CIImage(color: .clear).cropped(to: base.extent), kCIInputMaskImageKey: selection]) }
-        return paint.applyingFilter(erase ? "CIDestinationOutCompositing" : "CISourceOverCompositing", parameters: [kCIInputBackgroundImageKey: base]).cropped(to: base.extent)
+        // Core Image has SourceOut, not DestinationOut. Erasing is the original
+        // layer outside the ink alpha; reversing these inputs erases the layer.
+        let result = erase
+            ? base.applyingFilter("CISourceOutCompositing", parameters: [kCIInputBackgroundImageKey: paint])
+            : paint.applyingFilter("CISourceOverCompositing", parameters: [kCIInputBackgroundImageKey: base])
+        return result.cropped(to: base.extent)
     }
 }
 

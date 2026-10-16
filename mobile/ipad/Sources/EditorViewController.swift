@@ -105,6 +105,9 @@ class MobileEditorCore: UIViewController, UIDocumentPickerDelegate {
     func playbackTimeChanged(_ seconds: Double) { }
     func selectedClipChanged() { }
     func previewStateChanged(_ text: String?) { }
+    /// Finish a live inspector transaction before another command reads or
+    /// replaces the project. Subclasses may reject an unsaveable draft.
+    func prepareForCommand() -> Bool { true }
 
     func clock(_ seconds: Double) -> String {
         let value = max(0, min(31_536_000, seconds.isFinite ? seconds : 0))
@@ -118,8 +121,13 @@ class MobileEditorCore: UIViewController, UIDocumentPickerDelegate {
         alert.addAction(UIAlertAction(title: "OK", style: .default)); present(alert, animated: true)
     }
     func saveWorking() { do { try project.write(autosave) } catch { message("Autosave failed: \(error.localizedDescription)") } }
-    func change(_ mutation: (inout MobileProject) -> Void) {
-        history.record(project); mutation(&project); saveWorking(); refresh(); rebuildPreview()
+    @discardableResult func change(_ mutation: (inout MobileProject) -> Void) -> Bool {
+        guard prepareForCommand() else { return false }
+        var next = project; mutation(&next)
+        guard next != project else { return true }
+        do { try next.encodedData().write(to: autosave, options: .atomic) }
+        catch { self.error(error); refresh(); return false }
+        history.record(project); project = next; refresh(); rebuildPreview(); return true
     }
     func refresh() {
         titleField.text = project.name
@@ -256,23 +264,23 @@ class MobileEditorCore: UIViewController, UIDocumentPickerDelegate {
         updateTrimLabels()
     }
     @objc func commitTrim(_ slider: UISlider) {
-        guard canEdit, let selected else { refresh(); return }
+        guard canEdit, prepareForCommand(), let selected else { refresh(); return }
         do {
             var next = project; try next.trim(selected, start: Double(start.value), end: Double(end.value))
-            history.record(project); project = next; saveWorking(); refresh(); rebuildPreview()
+            _ = change { $0 = next }
         } catch { self.error(error); refresh() }
     }
     @objc func numericTrim() {
-        guard canEdit, let selected else { return }
+        guard canEdit, prepareForCommand(), let selected else { return }
         let clip = project.clips[selected]
         let value = UIAlertController(title: "Trim \(clip.name)", message: "Start and end in source seconds (0 – \(String(format: "%.2f", clip.duration))).", preferredStyle: .alert)
         value.addTextField { $0.text = String(format: "%.2f", clip.inPoint); $0.keyboardType = .decimalPad; $0.placeholder = "Start seconds" }
         value.addTextField { $0.text = String(format: "%.2f", clip.outPoint); $0.keyboardType = .decimalPad; $0.placeholder = "End seconds" }
         value.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         value.addAction(UIAlertAction(title: "Apply", style: .default) { [weak self] _ in
-            guard let self, let a = Double(value.textFields?[0].text ?? ""), let b = Double(value.textFields?[1].text ?? "") else { return }
+            guard let self, self.prepareForCommand(), let a = Double(value.textFields?[0].text ?? ""), let b = Double(value.textFields?[1].text ?? "") else { return }
             do { var next = self.project; try next.trim(selected, start: a, end: b)
-                self.history.record(self.project); self.project = next; self.saveWorking(); self.refresh(); self.rebuildPreview()
+                _ = self.change { $0 = next }
             } catch { self.error(error) }
         }); present(value, animated: true)
     }
@@ -280,7 +288,7 @@ class MobileEditorCore: UIViewController, UIDocumentPickerDelegate {
         let name = titleField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard canEdit, !name.isEmpty else { titleField.text = project.name; return }
         guard name != project.name else { return }
-        history.record(project); project.name = String(name.prefix(150)); saveWorking(); refresh()
+        _ = change { $0.name = String(name.prefix(150)) }
     }
     @objc func playPause() {
         guard canEdit else { return }
@@ -308,42 +316,44 @@ class MobileEditorCore: UIViewController, UIDocumentPickerDelegate {
         }
     }
     private func timelineSeconds() -> Double { previewTargetTime }
-    @objc func undoAction() { guard canEdit, let previous = history.undo(project) else { return }; project = previous; saveWorking(); refresh(); rebuildPreview() }
-    @objc func redoAction() { guard canEdit, let next = history.redo(project) else { return }; project = next; saveWorking(); refresh(); rebuildPreview() }
+    @objc func undoAction() { guard canEdit, prepareForCommand(), let previous = history.undo(project) else { return }; project = previous; saveWorking(); refresh(); rebuildPreview() }
+    @objc func redoAction() { guard canEdit, prepareForCommand(), let next = history.redo(project) else { return }; project = next; saveWorking(); refresh(); rebuildPreview() }
     @objc func moveEarlier() { moveSelected(-1) }
     @objc func moveLater() { moveSelected(1) }
     func moveSelected(_ offset: Int) {
         guard canEdit, let selected, project.clips.indices.contains(selected + offset) else { return }
-        change { $0.move(selected, to: selected + offset) }; self.selected = selected + offset; refresh()
+        guard change({ $0.move(selected, to: selected + offset) }) else { return }; self.selected = selected + offset; refresh()
     }
     @objc func duplicateClip() {
-        guard canEdit, let selected else { return }; var copy = project.clips[selected]; copy.id = UUID()
-        change { $0.clips.insert(copy, at: selected + 1) }; self.selected = selected + 1; refresh(); selectedClipChanged()
+        guard canEdit, prepareForCommand(), let selected else { return }; var copy = project.clips[selected]; copy.id = UUID()
+        guard change({ $0.clips.insert(copy, at: selected + 1) }) else { return }; self.selected = selected + 1; refresh(); selectedClipChanged()
     }
     @objc func removeClip() {
-        guard canEdit, let selected else { return }; change { $0.clips.remove(at: selected) }; self.selected = nil; refresh()
+        guard canEdit, let selected else { return }; guard change({ $0.clips.remove(at: selected) }) else { return }; self.selected = nil; refresh()
     }
     @objc func newProject() {
-        guard canEdit else { return }
+        guard canEdit, prepareForCommand() else { return }
         let confirm = UIAlertController(title: "Start a new movie?", message: "Save a project package first if you want to keep the current edit. Imported media is not deleted.", preferredStyle: .alert)
         confirm.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        confirm.addAction(UIAlertAction(title: "New movie", style: .default) { [weak self] _ in self?.change { $0 = MobileProject() }; self?.selected = nil })
+        confirm.addAction(UIAlertAction(title: "New movie", style: .default) { [weak self] _ in
+            guard let self, self.change({ $0 = MobileProject() }) else { return }; self.selected = nil
+        })
         present(confirm, animated: true)
     }
     @objc func importVideos() {
-        guard canEdit else { return }; pickerMode = "video"
+        guard canEdit, prepareForCommand() else { return }; pickerMode = "video"
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.movie], asCopy: false)
         picker.allowsMultipleSelection = true; picker.delegate = self; present(picker, animated: true)
     }
     @objc func openProject() {
-        guard canEdit else { return }; pickerMode = "project"
+        guard canEdit, prepareForCommand() else { return }; pickerMode = "project"
         let type = UTType("com.netvistastudio.mobile-project") ?? .package
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [type, .folder], asCopy: false)
         picker.delegate = self; present(picker, animated: true)
     }
     @objc func saveProject() {
         // Saving remains available after session invalidation so an account failure cannot destroy work.
-        guard !exporting, !importing else { return }
+        guard !exporting, !importing, prepareForCommand() else { return }
         view.endEditing(true)
         saveWorking()
         importing = true
@@ -389,7 +399,15 @@ class MobileEditorCore: UIViewController, UIDocumentPickerDelegate {
                 }
             }
             importing = false
-            if !added.isEmpty { change { $0.library.append(contentsOf: added); $0.clips.append(contentsOf: added) }; selected = project.clips.count - added.count; refresh(); selectedClipChanged() }
+            if !added.isEmpty {
+                if change({ $0.library.append(contentsOf: added); $0.clips.append(contentsOf: added) }) {
+                    selected = project.clips.count - added.count; refresh(); selectedClipChanged()
+                } else {
+                    // Only the newly created private import copies are removed;
+                    // original Files documents and existing project media stay.
+                    for clip in added { try? FileManager.default.removeItem(at: media.appendingPathComponent(clip.file)) }
+                }
+            }
             if !failures.isEmpty { alert("Some videos could not be imported", failures.joined(separator: "\n")) }
         }
     }
@@ -401,6 +419,7 @@ class MobileEditorCore: UIViewController, UIDocumentPickerDelegate {
         pendingTemporary = nil
     }
     func loadPackage(_ url: URL) {
+        guard prepareForCommand() else { return }
         importing = true; message("Opening portable project…")
         Task {
             let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() }; importing = false }
@@ -437,13 +456,13 @@ class MobileEditorCore: UIViewController, UIDocumentPickerDelegate {
                     var clip = original; clip.file = mapped[original.file]!; clip.duration = durations[original.file]!
                     try clip.validate(); return clip
                 }
-                change { $0 = value }; committed = true; selected = nil; desiredPreviewTime = 0; refresh()
+                guard change({ $0 = value }) else { return }; committed = true; selected = nil; desiredPreviewTime = 0; refresh()
             } catch { self.error(error) }
         }
     }
 
     @objc func exportAction() {
-        guard canEdit else { return }
+        guard canEdit, prepareForCommand() else { return }
         guard !project.clips.isEmpty else { alert("No clips to export", "Import at least one video first."); return }
         let options = UIAlertController(title: "Export movie", message: "MP4 · 16:9 · 30 fps\nAll clips are fit within the frame without cropping.", preferredStyle: .alert)
         for (name, height) in [("720p", 720), ("1080p", 1080), ("4K", 2160)] {
@@ -531,7 +550,7 @@ class MobileEditorCore: UIViewController, UIDocumentPickerDelegate {
         }); present(value, animated: true)
     }
     @objc func openAccountWebsite() { UIApplication.shared.open(URL(string: "https://netvistastudio.com/account/")!) }
-    @objc func willBackground() { pendingPlay = false; player.pause(); saveWorking() }
+    @objc func willBackground() { pendingPlay = false; player.pause(); if prepareForCommand() { saveWorking() } }
     @objc func willForeground() { account.checkIfDue() }
 
 }
@@ -554,10 +573,19 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
     private let inspectorTitle = MobileTheme.label("INSPECTOR", size: 10, weight: .bold)
     private let programTitle = MobileTheme.label("PROGRAM MONITOR", size: 10, weight: .bold)
     private let homeTitle = MobileTheme.label("Welcome to your studio.", size: 27, weight: .semibold)
-    private let homeSubtitle = MobileTheme.label("Open an editor or continue your saved movie.", size: 13)
+    private let homeSubtitle = MobileTheme.label("Your creative tools. Separate workspaces, one studio.", size: 13)
     private let hero = UIView(), heroPhoto = UIImageView(), heroTitle = MobileTheme.label("Video Editor", size: 22, weight: .semibold)
     private let heroDetails = MobileTheme.label("Timeline, motion and colour. A native workspace on every device.", size: 12)
-    private let homeLimits = MobileTheme.label("Mobile video workspace preview · Photo, Game Maker, 3D, advanced grading and independent multitrack audio are not available here yet.", size: 12)
+    private let homeLimits = MobileTheme.label("Native development preview · Advanced video grading, independent multitrack audio and remaining desktop tools are still being ported. Save projects before installing a new build.", size: 12)
+    private let photoHero = UIView(), photoArtwork = UIImageView(), photoTitle = MobileTheme.label("Photo Editor", size: 22, weight: .semibold)
+    private let photoDetails = MobileTheme.label("Layers, masks, brushes and full-resolution photos.", size: 12)
+    private var photoButton: UIButton!
+    private(set) var photoEditor: PhotoEditorViewController?
+    private let gameHero = StudioWorkspaceCard(title: "Game Maker", detail: "2D, 3D, visual logic and play.", artworkName: "home-game-world.png", symbol: "gamecontroller", identifier: "studio.open.game")
+    private let modelingHero = StudioWorkspaceCard(title: "3D Editor", detail: "Meshes, face editing and sculpting.", artworkName: "home-modeling.png", symbol: "cube.transparent", identifier: "studio.open.modeling")
+    private(set) var gameEditor: GameWorkspaceViewController?
+    private(set) var modelingEditor: ModelingWorkspaceViewController?
+    private var pendingDocumentURL: URL?
     private let recentTitle = MobileTheme.label("Working project", size: 17, weight: .semibold)
     private let recentDetails = MobileTheme.label("", size: 13)
     private var headerButtons: [UIButton] = [], timelineButtons: [UIButton] = [], navButtons: [UIButton] = []
@@ -630,6 +658,14 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
         openEditorButton.backgroundColor = .white; openEditorButton.setTitleColor(MobileTheme.top, for: .normal); openEditorButton.tintColor = MobileTheme.top
         hero.addSubview(openEditorButton)
         continueButton = action("Continue project", symbol: "play", id: "studio.continue") { [weak self] in self?.openWorkspace() }; home.addSubview(continueButton)
+        home.addSubview(photoHero); photoHero.backgroundColor = MobileTheme.panel; photoHero.layer.cornerRadius = 7; photoHero.clipsToBounds = true
+        photoArtwork.image = UIImage(named: "home-photo-petals.png"); photoArtwork.contentMode = .scaleAspectFill; photoArtwork.clipsToBounds = true
+        photoDetails.textColor = MobileTheme.secondary; photoDetails.numberOfLines = 2
+        photoButton = action("Open editor", symbol: "photo", id: "studio.open.photo") { [weak self] in self?.openPhotos() }
+        for item in [photoArtwork, photoTitle, photoDetails] { photoHero.addSubview(item) }; photoHero.addSubview(photoButton)
+        home.addSubview(gameHero); home.addSubview(modelingHero)
+        gameHero.onOpen = { [weak self] in self?.openGameMaker() }
+        modelingHero.onOpen = { [weak self] in self?.openModeling() }
     }
     private func buildMedia() {
         mediaPanel.accessibilityIdentifier = "workspace.media.pool"; mediaPanel.addSubview(poolTitle)
@@ -666,18 +702,21 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
                            action("Fit", id: "timeline.zoom.fit") { [weak self] in self?.timeline.fit() },
                            action("+", id: "timeline.zoom.in") { [weak self] in self?.timeline.zoom(1.33) }]
         timelineButtons.forEach { timelineToolbar.addSubview($0) }
-        timeline.onSelect = { [weak self] index, seconds in self?.selected = index; self?.seekTo(seconds); self?.refresh() }
+        timeline.onSelect = { [weak self] index, seconds in
+            guard let self, self.prepareForCommand() else { return }
+            self.selected = index; self.seekTo(seconds); self.refresh()
+        }
         timeline.onSeek = { [weak self] seconds in self?.seekTo(seconds) }
         timeline.onMove = { [weak self] index, destination in
             guard let self, self.canEdit, index != destination else { return }
-            let id = self.project.clips[index].id; self.change { $0.move(index, to: destination) }
+            let id = self.project.clips[index].id; guard self.change({ $0.move(index, to: destination) }) else { return }
             self.selected = self.project.clips.firstIndex { $0.id == id }; self.refresh()
         }
         timeline.onSplit = { [weak self] index, seconds in self?.split(index, local: seconds) }
         timeline.onTrim = { [weak self] index, begin, finish in
-            guard let self, self.canEdit else { return }; do {
+            guard let self, self.canEdit, self.prepareForCommand() else { return }; do {
                 var next = self.project; try next.trim(index, start: begin, end: finish)
-                self.history.record(self.project); self.project = next; self.selected = index; self.saveWorking(); self.refresh(); self.rebuildPreview()
+                guard self.change({ $0 = next }) else { return }; self.selected = index; self.refresh()
             } catch { self.error(error) }
         }
     }
@@ -731,7 +770,8 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
         row.accessibilityIdentifier = "property.\(key)"; row.slider.accessibilityIdentifier = "property.\(key).slider"
         row.onBegin = { [weak self] in
             guard let self, self.canEdit, let selected = self.selected, self.project.clips.indices.contains(selected) else { return }
-            self.finishPropertyGesture(); self.propertyBefore = self.project; self.propertySourceTime = self.selectedSourceTime
+            guard self.finishPropertyGesture() else { self.propertyGestureRejected = true; self.refresh(); return }
+            self.propertyBefore = self.project; self.propertySourceTime = self.selectedSourceTime
             self.propertyClipID = self.project.clips[selected].id
             if self.autoKeyframe || self.selected.flatMap({ self.project.clips.indices.contains($0) ? self.project.clips[$0].effects.keyframes[key] : nil }) != nil {
                 self.player.pause(); self.pendingPlay = false
@@ -803,13 +843,20 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
         homeTitle.frame = CGRect(x: x, y: 30, width: contentWidth, height: 40)
         homeTitle.font = .systemFont(ofSize: width < 420 ? 24 : 27, weight: .semibold)
         homeSubtitle.frame = CGRect(x: x, y: 76, width: contentWidth, height: 32); homeSubtitle.numberOfLines = 2
-        let imageHeight = min(350, max(180, contentWidth * 0.43))
-        hero.frame = CGRect(x: x, y: 130, width: contentWidth, height: imageHeight + 138)
-        heroPhoto.frame = CGRect(x: 0, y: 0, width: contentWidth, height: imageHeight)
-        heroTitle.frame = CGRect(x: 18, y: imageHeight + 14, width: contentWidth - 36, height: 30)
-        heroDetails.frame = CGRect(x: 18, y: imageHeight + 46, width: contentWidth - 36, height: 34)
+        let sideBySide = contentWidth >= 700, cardWidth = sideBySide ? (contentWidth - 20) / 2 : contentWidth
+        let imageHeight = min(300, max(150, cardWidth * 0.52))
+        hero.frame = CGRect(x: x, y: 130, width: cardWidth, height: imageHeight + 138)
+        heroPhoto.frame = CGRect(x: 0, y: 0, width: cardWidth, height: imageHeight)
+        heroTitle.frame = CGRect(x: 18, y: imageHeight + 14, width: cardWidth - 36, height: 30)
+        heroDetails.frame = CGRect(x: 18, y: imageHeight + 46, width: cardWidth - 36, height: 34)
         openEditorButton.frame = CGRect(x: 18, y: imageHeight + 84, width: 140, height: 44)
-        let bottom = hero.frame.maxY
+        photoHero.frame = CGRect(x: sideBySide ? hero.frame.maxX + 20 : x, y: sideBySide ? 130 : hero.frame.maxY + 20, width: cardWidth, height: imageHeight + 138)
+        photoArtwork.frame = heroPhoto.frame; photoTitle.frame = heroTitle.frame; photoDetails.frame = heroDetails.frame; photoButton.frame = openEditorButton.frame
+        let rowHeight = imageHeight + 138, secondRow = photoHero.frame.maxY + 20
+        gameHero.frame = CGRect(x: x, y: secondRow, width: cardWidth, height: rowHeight)
+        modelingHero.frame = CGRect(x: sideBySide ? x + cardWidth + 20 : x,
+            y: sideBySide ? secondRow : secondRow + rowHeight + 20, width: cardWidth, height: rowHeight)
+        let bottom = modelingHero.frame.maxY
         homeLimits.frame = CGRect(x: x, y: bottom + 16, width: contentWidth, height: 62)
         recentTitle.frame = CGRect(x: x, y: bottom + 92, width: contentWidth, height: 26)
         recentDetails.frame = CGRect(x: x, y: bottom + 124, width: contentWidth, height: 24)
@@ -900,7 +947,57 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
         inspectorScroll.contentSize = inspectorContent.bounds.size
     }
 
-    func showHome() { homeVisible = true; home.isHidden = false; workspace.isHidden = true; pendingPlay = false; player.pause(); refresh(); view.setNeedsLayout() }
+    func showHome() {
+        guard prepareForCommand() else { return }
+        homeVisible = true; home.isHidden = false; workspace.isHidden = true; pendingPlay = false; player.pause(); refresh(); view.setNeedsLayout()
+        if canEdit, !importing, !exporting, presentedViewController == nil, let url = pendingDocumentURL {
+            openDocumentFromSystem(url)
+        }
+    }
+    func openPhotos() {
+        guard prepareForCommand(), !importing, !exporting, presentedViewController == nil else { return }
+        pendingPlay = false; player.pause()
+        let controller = photoEditor ?? PhotoEditorViewController(); photoEditor = controller
+        controller.permitsEditing = { [weak self] in self?.canEdit == true }
+        controller.onHome = { [weak self, weak controller] in controller?.dismiss(animated: true) { self?.showHome() } }
+        controller.modalPresentationStyle = .fullScreen; present(controller, animated: true) { controller.refreshAccess() }
+    }
+    func openGameMaker() {
+        guard prepareForCommand(), !importing, !exporting, presentedViewController == nil else { return }
+        pendingPlay = false; player.pause()
+        let controller = gameEditor ?? GameWorkspaceViewController(); gameEditor = controller
+        controller.permitsEditing = { [weak self] in self?.canEdit == true }
+        controller.loadViewIfNeeded()
+        controller.onHome = { [weak self, weak controller] in controller?.dismiss(animated: true) { self?.showHome() } }
+        controller.modalPresentationStyle = .fullScreen; present(controller, animated: true) { controller.refreshAccess() }
+    }
+    func openModeling() {
+        guard prepareForCommand(), !importing, !exporting, presentedViewController == nil else { return }
+        pendingPlay = false; player.pause()
+        let controller = modelingEditor ?? ModelingWorkspaceViewController(); modelingEditor = controller
+        controller.permitsEditing = { [weak self] in self?.canEdit == true }
+        controller.loadViewIfNeeded()
+        controller.onHome = { [weak self, weak controller] in controller?.dismiss(animated: true) { self?.showHome() } }
+        controller.modalPresentationStyle = .fullScreen; present(controller, animated: true) { controller.refreshAccess() }
+    }
+    func openDocumentFromSystem(_ url: URL) {
+        guard canEdit else { pendingDocumentURL = url; message("Sign in to open the requested project."); return }
+        guard prepareForCommand(), !importing, !exporting, presentedViewController == nil else { pendingDocumentURL = url; message("Return to Studio Home after the current task to open the requested project."); return }
+        pendingDocumentURL = nil
+        if url.pathExtension.lowercased() == "netvistaphoto" {
+            let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
+            do {
+                guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= PhotoEditingSession.maximumProjectBytes else { throw PhotoBrushError.invalid("Photo project exceeds the 512 MB load limit.") }
+                let data = try Data(contentsOf: url); openPhotos()
+                try photoEditor?.loadProject(data, name: url.lastPathComponent)
+            } catch { self.error(error) }
+        } else if url.pathExtension.lowercased() == "netvistagame" {
+            do { openGameMaker(); try gameEditor?.openProject(url: url) } catch { self.error(error) }
+        } else if url.pathExtension.lowercased() == "netvistamodel" {
+            do { openModeling(); try modelingEditor?.openProject(url: url) } catch { self.error(error) }
+        } else if url.pathExtension.lowercased() == "netvistamobile" { loadPackage(url) }
+        else { message("Choose a NetVista photo, game, model or mobile video project.") }
+    }
     func openWorkspace() { homeVisible = false; home.isHidden = true; workspace.isHidden = false; refresh(); view.setNeedsLayout() }
     func selectPage(_ name: String) {
         if name == "Media" || name == "Inspector" { drawer = drawer == name ? nil : name }
@@ -910,6 +1007,8 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
     private func showMenu() {
         let menu = UIAlertController(title: "NetVista Studio", message: nil, preferredStyle: .actionSheet)
         for (title, body) in [("Studio Home", { [weak self] in self?.showHome() }), ("New movie", { [weak self] in self?.newProject() }),
+                              ("Photo Editor", { [weak self] in self?.openPhotos() }), ("Game Maker", { [weak self] in self?.openGameMaker() }),
+                              ("3D Editor", { [weak self] in self?.openModeling() }),
                               ("Open project", { [weak self] in self?.openProject() }), ("Save project", { [weak self] in self?.saveProject() }),
                               ("Export movie", { [weak self] in self?.exportAction() }), ("Undo", { [weak self] in self?.undoAction() }),
                               ("Redo", { [weak self] in self?.redoAction() }), ("Previous frame", { [weak self] in self?.step(-1) }),
@@ -939,7 +1038,10 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
         continueButton.isEnabled = !project.clips.isEmpty
         refreshTools(); layoutInspector()
     }
-    override func refreshAccount() { super.refreshAccount(); refresh(); view.setNeedsLayout() }
+    override func refreshAccount() {
+        super.refreshAccount(); refresh(); photoEditor?.refreshAccess(); gameEditor?.refreshAccess(); modelingEditor?.refreshAccess(); view.setNeedsLayout()
+        if canEdit, let url = pendingDocumentURL, presentedViewController == nil { openDocumentFromSystem(url) }
+    }
     override func playbackTimeChanged(_ seconds: Double) {
         timeline.time = seconds; if player.rate > 0 { timeline.revealPlayhead() }
         refreshAnimationControls()
@@ -975,16 +1077,20 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
         split(index, local: previewTargetTime - start)
     }
     private func split(_ index: Int, local seconds: Double) {
-        guard canEdit else { return }; do {
-            var next = project; try next.split(index, at: seconds); history.record(project); project = next; selected = index + 1
-            saveWorking(); refresh(); rebuildPreview()
-        } catch { alert("Choose a point inside the clip", "Leave at least one frame on each side of the cut. Scrub the ruler, then press Split, or tap inside a clip with the Blade tool.") }
+        guard canEdit, prepareForCommand() else { return }; do {
+            var next = project; try next.split(index, at: seconds)
+            guard change({ $0 = next }) else { return }; selected = index + 1; refresh()
+        } catch {
+            if let reason = error as? MobileProjectError, case .invalidClip = reason {
+                alert("Choose a point inside the clip", "Leave at least one frame on each side of the cut. Scrub the ruler, then press Split, or tap inside a clip with the Blade tool.")
+            } else { self.error(error) }
+        }
     }
     private func addSource() { guard canEdit, let selectedSource, project.library.indices.contains(selectedSource) else { return }; addSources([project.library[selectedSource]]) }
     private func addAllSources() { guard canEdit else { return }; addSources(project.library) }
     private func addSources(_ sources: [MobileClip]) {
         guard !sources.isEmpty else { return }; let start = project.clips.count
-        change { project in project.clips.append(contentsOf: sources.map { original in var clip = original; clip.id = UUID(); return clip }) }
+        guard change({ project in project.clips.append(contentsOf: sources.map { original in var clip = original; clip.id = UUID(); return clip }) }) else { return }
         selected = start; refresh(); selectedClipChanged()
     }
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { project.library.count }
@@ -1036,13 +1142,16 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
         if let next { seekSelectedSource(next.sourceSeconds) }
     }
     private func applyAnimatedEffects(_ effects: MobileClipEffects) {
-        guard canEdit, let selected, project.clips.indices.contains(selected), effects != project.clips[selected].effects else { return }
-        guard (try? effects.validate(duration: project.clips[selected].duration)) != nil else { return }
-        history.record(project); project.clips[selected].effects = effects
-        updateEffectPreview(ended: true); saveWorking(); refresh()
+        guard canEdit, prepareForCommand(), let selected, project.clips.indices.contains(selected), effects != project.clips[selected].effects else { return }
+        do { try project.validateEffectsChange(selected, effects: effects) }
+        catch { self.error(error); refresh(); return }
+        var next = project; next.clips[selected].effects = effects
+        do { try next.encodedData().write(to: autosave, options: .atomic) }
+        catch { self.error(error); refresh(); return }
+        history.record(project); project = next; updateEffectPreview(ended: true); refresh()
     }
     private func addKeyframe() {
-        guard canEdit, let selected, project.clips.indices.contains(selected) else { return }
+        guard canEdit, prepareForCommand(), let selected, project.clips.indices.contains(selected) else { return }
         var effects = project.clips[selected].effects
         let value = Double(rows[animationProperty.rawValue]?.slider.value ?? Float(effects.value(for: animationProperty, at: selectedSourceTime)))
         let interpolation = effects.keyframeIndex(for: animationProperty, at: selectedSourceTime).map { effects.frames(for: animationProperty)[$0].interpolation } ?? animationInterpolation
@@ -1050,14 +1159,14 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
         catch { self.error(error) }
     }
     private func removeKeyframe() {
-        guard canEdit, let selected, project.clips.indices.contains(selected) else { return }
+        guard canEdit, prepareForCommand(), let selected, project.clips.indices.contains(selected) else { return }
         var effects = project.clips[selected].effects
         // Keep the visible value if removing the final key disables animation.
         effects.setValue(effects.value(for: animationProperty, at: selectedSourceTime), for: animationProperty)
         effects.removeKeyframe(for: animationProperty, at: selectedSourceTime); applyAnimatedEffects(effects)
     }
     private func clearKeyframeTrack() {
-        guard canEdit, let selected, project.clips.indices.contains(selected) else { return }
+        guard canEdit, prepareForCommand(), let selected, project.clips.indices.contains(selected) else { return }
         let dialog = UIAlertController(title: "Clear \(animationProperty.title) animation?", message: "All keys for this property will be removed. The current visible value will remain. Undo can restore the curve.", preferredStyle: .alert)
         dialog.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         let id = project.clips[selected].id, property = animationProperty
@@ -1069,6 +1178,7 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
         }); present(dialog, animated: true)
     }
     private func setKeyframeInterpolation(_ interpolation: MobileKeyframeInterpolation) {
+        guard prepareForCommand() else { return }
         animationInterpolation = interpolation
         guard canEdit, let selected, project.clips.indices.contains(selected) else { refreshAnimationControls(); return }
         var effects = project.clips[selected].effects
@@ -1094,7 +1204,7 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
             catch { rejectPropertyGesture(error, ended: ended); return }
             animationProperty = property
         }
-        do { try effects.validate(duration: project.clips[selected].duration) }
+        do { try project.validateEffectsChange(selected, effects: effects) }
         catch { rejectPropertyGesture(error, ended: ended); return }
         propertyChanged = propertyChanged || effects != project.clips[selected].effects
         project.clips[selected].effects = effects
@@ -1102,10 +1212,33 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
         if ended { finishPropertyGesture(); refresh() }
         else { refreshAnimationControls() }
     }
-    private func finishPropertyGesture() {
-        if propertyChanged, let before = propertyBefore, before != project { history.record(before); saveWorking() }
+    override func prepareForCommand() -> Bool {
+        // A second finger can invoke a toolbar action while a slider is still
+        // tracking. Commit its one Undo entry first, then ignore that slider's
+        // remaining events. Otherwise touch-up can append a pre-command state
+        // after the command and make Undo resurrect deleted/duplicated clips.
+        guard propertyBefore != nil else { return true }
+        let saved = finishPropertyGesture()
+        propertyGestureRejected = true
+        if !saved { refresh() }
+        return saved
+    }
+    @discardableResult private func finishPropertyGesture() -> Bool {
+        var saved = true
+        if propertyChanged, let before = propertyBefore, before != project {
+            do {
+                try project.encodedData().write(to: autosave, options: .atomic)
+                history.record(before)
+            } catch {
+                // Preview may have shown this draft while the slider was held,
+                // but an unsaveable end value must not replace a valid project
+                // or create a false Undo step.
+                project = before; rebuildPreview(); self.error(error); saved = false
+            }
+        }
         propertyBefore = nil; propertySourceTime = nil; propertyClipID = nil
         propertyChanged = false; propertyGestureRejected = false
+        return saved
     }
     private func rejectPropertyGesture(_ error: Error, ended: Bool) {
         // Preserve earlier valid edits in this gesture, but never add history
@@ -1138,7 +1271,7 @@ class EditorViewController: MobileEditorCore, UITableViewDataSource, UITableView
         }
     }
     private func numericProperty(_ key: String) {
-        guard canEdit, let selected, project.clips.indices.contains(selected), let row = rows[key] else { return }
+        guard canEdit, prepareForCommand(), let selected, project.clips.indices.contains(selected), let row = rows[key] else { return }
         let clipID = project.clips[selected].id
         let dialog = UIAlertController(title: row.slider.accessibilityLabel, message: "\(String(format: "%.1f", Double(row.slider.minimumValue) * row.multiplier)) – \(String(format: "%.1f", Double(row.slider.maximumValue) * row.multiplier))", preferredStyle: .alert)
         dialog.addTextField { field in field.text = String(format: "%.2f", self.propertyValue(key, self.project.clips[selected].effects.evaluated(at: self.selectedSourceTime)) * row.multiplier); field.keyboardType = .numbersAndPunctuation }

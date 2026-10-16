@@ -16,6 +16,12 @@ final class MobileSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let window = UIWindow(windowScene: scene)
         window.rootViewController = EditorViewController(); window.makeKeyAndVisible()
         self.window = window
+        if let url = connectionOptions.urlContexts.first?.url {
+            DispatchQueue.main.async { (window.rootViewController as? EditorViewController)?.openDocumentFromSystem(url) }
+        }
+    }
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        if let url = URLContexts.first?.url { (window?.rootViewController as? EditorViewController)?.openDocumentFromSystem(url) }
     }
 }
 

@@ -38,11 +38,41 @@
     <key>CFBundleTypeRole</key><string>Editor</string>
     <key>LSHandlerRank</key><string>Owner</string>
     <key>LSItemContentTypes</key><array><string>com.netvistastudio.mobile-project</string></array>
+  </dict><dict>
+    <key>CFBundleTypeName</key><string>NetVista layered photo project</string>
+    <key>CFBundleTypeRole</key><string>Editor</string>
+    <key>LSHandlerRank</key><string>Owner</string>
+    <key>LSItemContentTypes</key><array><string>com.netvistastudio.photo-project</string></array>
+  </dict><dict>
+    <key>CFBundleTypeName</key><string>NetVista game project</string>
+    <key>CFBundleTypeRole</key><string>Editor</string>
+    <key>LSHandlerRank</key><string>Owner</string>
+    <key>LSItemContentTypes</key><array><string>com.netvistastudio.game-project</string></array>
+  </dict><dict>
+    <key>CFBundleTypeName</key><string>NetVista 3D modelling project</string>
+    <key>CFBundleTypeRole</key><string>Editor</string>
+    <key>LSHandlerRank</key><string>Owner</string>
+    <key>LSItemContentTypes</key><array><string>com.netvistastudio.model-project</string></array>
   </dict></array>
   <key>UTExportedTypeDeclarations</key><array><dict>
     <key>UTTypeIdentifier</key><string>com.netvistastudio.mobile-project</string>
     <key>UTTypeDescription</key><string>NetVista mobile project</string>
     <key>UTTypeConformsTo</key><array><string>com.apple.package</string></array>
     <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>netvistamobile</string></array></dict>
+  </dict><dict>
+    <key>UTTypeIdentifier</key><string>com.netvistastudio.photo-project</string>
+    <key>UTTypeDescription</key><string>NetVista layered photo project</string>
+    <key>UTTypeConformsTo</key><array><string>public.json</string></array>
+    <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>netvistaphoto</string></array></dict>
+  </dict><dict>
+    <key>UTTypeIdentifier</key><string>com.netvistastudio.game-project</string>
+    <key>UTTypeDescription</key><string>NetVista game project</string>
+    <key>UTTypeConformsTo</key><array><string>public.json</string></array>
+    <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>netvistagame</string></array></dict>
+  </dict><dict>
+    <key>UTTypeIdentifier</key><string>com.netvistastudio.model-project</string>
+    <key>UTTypeDescription</key><string>NetVista 3D modelling project</string>
+    <key>UTTypeConformsTo</key><array><string>public.json</string></array>
+    <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>netvistamodel</string></array></dict>
   </dict></array>
 </dict></plist>

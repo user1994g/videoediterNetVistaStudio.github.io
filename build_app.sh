@@ -85,6 +85,9 @@ CLANG_MODULE_CACHE_PATH="$CACHE_DIR" xcrun swiftc \
     ModelingEditor.swift \
     PhotoEditor.swift \
     PhotoRaster.swift \
+    PhotoDocumentCore.swift \
+    PhotoRenderEngine.swift \
+    PhotoProjectCodec.swift \
     EffectsStudio.swift \
     NativeTimelineExportEngine.swift \
     ExportWorkspace.swift \

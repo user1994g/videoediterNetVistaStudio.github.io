@@ -1,4 +1,12 @@
-import Cocoa
+#if canImport(AppKit)
+import AppKit
+private typealias GameNativeColour = NSColor
+private typealias GameNativeScalar = CGFloat
+#else
+import UIKit
+private typealias GameNativeColour = UIColor
+private typealias GameNativeScalar = Float
+#endif
 import SceneKit
 import SceneKit.ModelIO
 import ModelIO
@@ -125,7 +133,7 @@ final class GameRigRenderer {
         }
         let weightSource = SCNGeometrySource(data:weights.withUnsafeBytes { Data($0) },semantic:.boneWeights,vectorCount:vertices.count,usesFloatComponents:true,componentsPerVector:4,bytesPerComponent:4,dataOffset:0,dataStride:16)
         let indexSource = SCNGeometrySource(data:indices.withUnsafeBytes { Data($0) },semantic:.boneIndices,vectorCount:vertices.count,usesFloatComponents:false,componentsPerVector:4,bytesPerComponent:2,dataOffset:0,dataStride:8)
-        let inverses = rig.joints.map { NSValue(scnMatrix4:SCNMatrix4MakeTranslation(-$0.x,-$0.y,-$0.z)) }
+        let inverses = rig.joints.map { NSValue(scnMatrix4:SCNMatrix4MakeTranslation(GameNativeScalar(-$0.x),GameNativeScalar(-$0.y),GameNativeScalar(-$0.z))) }
         let body = SCNNode(geometry:geometry)
         body.skinner = SCNSkinner(baseGeometry:geometry,bones:bones,boneInverseBindTransforms:inverses,boneWeights:weightSource,boneIndices:indexSource)
         body.skinner?.skeleton = skeleton; body.skinner?.baseGeometryBindTransform = SCNMatrix4Identity; root.addChildNode(body)
@@ -136,8 +144,8 @@ final class GameRigRenderer {
         for (i,joint) in rig.joints.enumerated() {
             let sign = joint.name.hasPrefix("Left") ? 1.0 : -1.0
             let value = joint.name.contains("thigh") ? swing*sign : joint.name.contains("knee") ? max(0,-swing*sign)*0.7 : joint.name.contains("arm") ? -swing*sign : 0
-            bones[i].eulerAngles.x = value
-            bones[i].eulerAngles.z = walking && joint.name.contains("arm") ? -sign * .pi/2 : 0
+            bones[i].eulerAngles.x = GameNativeScalar(value)
+            bones[i].eulerAngles.z = GameNativeScalar(walking && joint.name.contains("arm") ? -sign * .pi/2 : 0)
         }
     }
     func guides(selected:Int?) {
@@ -152,12 +160,12 @@ final class GameRigRenderer {
                     let line = SCNNode(geometry:SCNCylinder(radius:0.004,height:CGFloat(length)))
                     line.position = SCNVector3((j.x+p.x)/2,(j.y+p.y)/2,(j.z+p.z)/2)
                     line.simdOrientation = simd_quatf(from:SIMD3<Float>(0,1,0),to:simd_normalize(vector))
-                    let material = SCNMaterial(); material.diffuse.contents = NSColor.systemTeal; material.lightingModel = .constant; material.readsFromDepthBuffer = false; material.writesToDepthBuffer = false
+                    let material = SCNMaterial(); material.diffuse.contents = GameNativeColour.systemTeal; material.lightingModel = .constant; material.readsFromDepthBuffer = false; material.writesToDepthBuffer = false
                     line.geometry?.materials = [material]; line.renderingOrder = 99; guides.addChildNode(line)
                 }
             }
             let node = SCNNode(geometry:SCNSphere(radius:0.012)); node.position = SCNVector3(j.x,j.y,j.z)
-            let material = SCNMaterial(); material.diffuse.contents = i == selected ? NSColor.systemOrange : NSColor.systemTeal; material.lightingModel = .constant; material.readsFromDepthBuffer = false; material.writesToDepthBuffer = false; node.geometry?.materials = [material]; node.renderingOrder = 100; guides.addChildNode(node)
+            let material = SCNMaterial(); material.diffuse.contents = i == selected ? GameNativeColour.systemOrange : GameNativeColour.systemTeal; material.lightingModel = .constant; material.readsFromDepthBuffer = false; material.writesToDepthBuffer = false; node.geometry?.materials = [material]; node.renderingOrder = 100; guides.addChildNode(node)
         }
     }
 }

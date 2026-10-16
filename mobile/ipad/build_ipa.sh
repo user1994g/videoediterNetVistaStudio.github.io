@@ -19,6 +19,9 @@ if [[ "$PLATFORM" == iphonesimulator ]]; then TARGET=arm64-apple-ios16.0-simulat
 cp "$SOURCE_DIR/Info.plist" "$APP_DIR/Info.plist"
 cp "$REPO_DIR/assets/NetVistaStudio.png" "$APP_DIR/NetVistaStudio.png"
 cp "$REPO_DIR/assets/home-video-coast.png" "$APP_DIR/home-video-coast.png"
+cp "$REPO_DIR/assets/home-photo-petals.png" "$APP_DIR/home-photo-petals.png"
+cp "$REPO_DIR/assets/home-game-world.png" "$REPO_DIR/assets/home-modeling.png" "$APP_DIR/"
+cp -R "$REPO_DIR/assets/game-runtime" "$APP_DIR/game-runtime"
 cp -R "$SOURCE_DIR/Assets.xcassets/." "$STAGE_DIR/Assets.xcassets/"
 for SIZE in 20 29 40 58 60 76 80 87 120 152 167 180 1024; do
   sips -z "$SIZE" "$SIZE" "$REPO_DIR/assets/NetVistaStudio.png" --out "$STAGE_DIR/Assets.xcassets/AppIcon.appiconset/AppIcon$SIZE.png" >/dev/null
@@ -29,9 +32,14 @@ xcrun actool "$STAGE_DIR/Assets.xcassets" --compile "$APP_DIR" --platform "$PLAT
 /usr/libexec/PlistBuddy -c "Merge $STAGE_DIR/asset-info.plist" "$APP_DIR/Info.plist"
 xcrun --sdk "$PLATFORM" swiftc -swift-version 5 -O -whole-module-optimization \
   -sdk "$SDK" -target "$TARGET" -module-cache-path "$STAGE_DIR/ModuleCache" \
-  "$REPO_DIR/StudioAccount.swift" "$SOURCE_DIR"/Sources/*.swift \
+  "$REPO_DIR/StudioAccount.swift" "$REPO_DIR/PhotoRaster.swift" \
+  "$REPO_DIR/PhotoDocumentCore.swift" "$REPO_DIR/PhotoRenderEngine.swift" \
+  "$REPO_DIR/PhotoProjectCodec.swift" "$REPO_DIR/PhotoEditingSession.swift" "$SOURCE_DIR"/Sources/*.swift \
+  "$REPO_DIR/GameProject.swift" "$REPO_DIR/GameGraph.swift" "$REPO_DIR/GameRuntime.swift" \
+  "$REPO_DIR/GameEditingSupport.swift" "$REPO_DIR/GameExport.swift" "$REPO_DIR/GameModelSupport.swift" \
+  "$REPO_DIR/ModelingDocument.swift" "$REPO_DIR/ModelingSculpt.swift" "$REPO_DIR/ModelingGenerators.swift" "$REPO_DIR/ModelingPhysics.swift" \
   -framework UIKit -framework AVFoundation -framework AVKit -framework Security \
-  -framework UniformTypeIdentifiers -framework CoreImage -framework CoreVideo \
+  -framework UniformTypeIdentifiers -framework CoreImage -framework CoreVideo -framework SceneKit -framework ModelIO \
   -Xlinker -rpath -Xlinker @executable_path/Frameworks \
   -o "$APP_DIR/NetVistaStudio"
 # Ad-hoc signature permits package inspection; AltStore supplies the user's real

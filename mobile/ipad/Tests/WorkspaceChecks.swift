@@ -138,6 +138,18 @@ final class WorkspaceCheckDelegate: UIResponder, UIApplicationDelegate {
         return (Int(pointer[offset + 2]), Int(pointer[offset + 1]), Int(pointer[offset]))
     }
     func check() async {
+        if CommandLine.arguments.contains("--creative-only") {
+            do { try await checkCreativeWorkspaces() }
+            catch { fail(error.localizedDescription) }
+            try? "PASS: native four-workspace diagnostic\n".write(to: documents.appendingPathComponent("workspace-result.txt"), atomically: true, encoding: .utf8)
+            return
+        }
+        if CommandLine.arguments.contains("--photo-only") {
+            do { try await PhotoWorkspaceChecks.run(editor: editor, documents: documents) }
+            catch { fail(error.localizedDescription) }
+            try? "PASS: native photo-only diagnostic\n".write(to: documents.appendingPathComponent("workspace-result.txt"), atomically: true, encoding: .utf8)
+            return
+        }
         require(editor.project.clips.count == 2, "Actual private draft must restore")
         require(editor.account.session == nil, "QA must never use a real account")
         require(!editor.playerController.view.isUserInteractionEnabled, "Monitor must be inspection-only; transport owns playback")
@@ -270,6 +282,79 @@ final class WorkspaceCheckDelegate: UIResponder, UIApplicationDelegate {
         opacityRow.onBegin?(); let otherClipBefore = editor.project.clips[1]
         editor.selected = 1; editor.refresh(); opacityRow.onChange?("opacity", 0.1, true)
         require(editor.project.clips[1] == otherClipBefore, "Old slider gesture must not edit a newly selected clip")
+        // A toolbar command can arrive from a second finger after the slider
+        // has already changed the project, not just after its touch-down.
+        // The live edit must become the earlier Undo entry; stale move/up
+        // events must never append the pre-command snapshot afterwards.
+        editor.change { $0 = beforeAnimation }; editor.selected = 0; editor.refresh()
+        let gestureBase = editor.project, duplicateUndoCount = editor.history.undo.count
+        opacityRow.onBegin?(); opacityRow.onChange?("opacity", 0.4, false)
+        let beforeDuplicate = editor.project
+        control("clip.duplicate").sendActions(for: .touchUpInside)
+        let afterDuplicate = editor.project
+        require(afterDuplicate.clips.count == gestureBase.clips.count + 1 &&
+                editor.history.undo.count == duplicateUndoCount + 2,
+                "An active slider commits before Duplicate as two ordered Undo steps")
+        opacityRow.onChange?("opacity", 0.9, false); opacityRow.onChange?("opacity", 0.9, true)
+        require(editor.project == afterDuplicate && editor.history.undo.count == duplicateUndoCount + 2,
+                "A stale slider move/up must not edit the new duplicate or append history")
+        editor.undoAction(); require(editor.project == beforeDuplicate, "First Undo removes only the duplicate, keeping the prior slider edit")
+        editor.undoAction(); require(editor.project == gestureBase, "Second Undo removes only the prior slider edit")
+        editor.redoAction(); require(editor.project == beforeDuplicate, "First Redo restores the slider edit without the duplicate")
+        editor.redoAction(); require(editor.project == afterDuplicate, "Second Redo restores the duplicate after the slider edit")
+
+        editor.change { $0 = gestureBase }; editor.selected = 0; editor.refresh()
+        let deleteUndoCount = editor.history.undo.count
+        opacityRow.onBegin?(); opacityRow.onChange?("opacity", 0.3, false)
+        let beforeDelete = editor.project
+        control("clip.delete").sendActions(for: .touchUpInside)
+        let afterDelete = editor.project
+        opacityRow.onChange?("opacity", 0.8, false); opacityRow.onChange?("opacity", 0.8, true)
+        require(editor.project == afterDelete && afterDelete.clips.count == gestureBase.clips.count - 1 &&
+                editor.history.undo.count == deleteUndoCount + 2,
+                "Delete must finalize the slider edit and ignore its remaining events")
+        editor.undoAction(); require(editor.project == beforeDelete, "Undo Delete restores the edited clip without rolling back its prior property value")
+        editor.undoAction(); require(editor.project == gestureBase, "The next Undo restores the pre-slider state")
+
+        editor.selected = 0; editor.refresh(); let directUndoCount = editor.history.undo.count
+        opacityRow.onBegin?(); opacityRow.onChange?("opacity", 0.2, false)
+        let beforeDirectUndo = editor.project
+        editor.undoAction()
+        require(editor.project == gestureBase && editor.history.undo.count == directUndoCount && editor.history.redo.last == beforeDirectUndo,
+                "Undo during a drag must undo that drag and retain it for Redo")
+        let redoCountAfterUndo = editor.history.redo.count
+        opacityRow.onChange?("opacity", 0.7, false); opacityRow.onChange?("opacity", 0.7, true)
+        require(editor.project == gestureBase && editor.history.undo.count == directUndoCount && editor.history.redo.count == redoCountAfterUndo,
+                "Stale slider events after Undo must not reapply the edit or erase Redo")
+        editor.redoAction(); require(editor.project == beforeDirectUndo, "Redo restores the interrupted slider's complete value")
+        editor.undoAction(); editor.selected = 0; editor.refresh()
+        // Ten valid10k-key clips reach the project cap. Adding to an empty
+        // eleventh clip is locally valid, so only project-aware validation can
+        // prevent the edit, Auto Key, duplicate and split from crossing100k.
+        var aggregate = beforeAnimation
+        aggregate.clips = (0..<10).map { number in
+            var clip = beforeAnimation.clips[0]; clip.id = UUID(); clip.name = "Full \(number)"; clip.effects = capped; return clip
+        }
+        var empty = beforeAnimation.clips[0]; empty.id = UUID(); empty.effects = MobileClipEffects(); aggregate.clips.append(empty)
+        try! aggregate.validate(); require(aggregate.totalKeyframeCount == 100_000, "Aggregate cap fixture")
+        editor.project = aggregate; editor.selected = 10; editor.refresh()
+        editor.seek.value = 32.7; editor.scrub()
+        let aggregateUndo = editor.history.undo.count, aggregateErrors = editor.capturedEditErrors.count
+        editor.captureExpectedEditError = true
+        control("property.opacity.keyframe").sendActions(for: .touchUpInside)
+        control("animation.add").sendActions(for: .touchUpInside)
+        control("animation.auto").sendActions(for: .touchUpInside); slider("opacity", value: 0.2)
+        control("animation.auto").sendActions(for: .touchUpInside)
+        require(editor.project == aggregate && editor.history.undo.count == aggregateUndo &&
+                editor.capturedEditErrors.count == aggregateErrors + 3,
+                "Diamond/Add/Auto slider must reject aggregate overflow without mutation, Undo or repeated gesture errors")
+        editor.selected = 0; editor.refresh(); control("clip.duplicate").sendActions(for: .touchUpInside)
+        let aggregateTimeline = views(editor.view).compactMap { $0 as? MobileTimelineView }.first!
+        aggregateTimeline.onSplit?(0, 1)
+        require(editor.project == aggregate && editor.selected == 0 && editor.history.undo.count == aggregateUndo &&
+                editor.capturedEditErrors.count == aggregateErrors + 5,
+                "Failed duplicate/split must remain atomic, keep selection and report the actual animation limit")
+        editor.captureExpectedEditError = false
         editor.selected = 0; editor.change { $0 = beforeAnimation }
         editor.selectPage("Edit"); await settle()
         let timeline = views(editor.view).compactMap { $0 as? MobileTimelineView }.first!
@@ -289,7 +374,43 @@ final class WorkspaceCheckDelegate: UIResponder, UIApplicationDelegate {
         require(saved == editor.project && saved.library.count == 2, "Native persistence and media pool retained")
         editor.showHome(); await settle(); control("studio.continue").sendActions(for: .touchUpInside)
         await settle(); snapshot("editor-final")
+        do { try await PhotoWorkspaceChecks.run(editor: editor, documents: documents) }
+        catch { fail(error.localizedDescription) }
+        do { try await checkCreativeWorkspaces() }
+        catch { fail(error.localizedDescription) }
         try? "PASS: actual AVPlayer frames, second-clip playback, opacity 0/50 and undo preview; native Home artwork; phone/tablet portrait/landscape and split-window layout; real animation diamonds, animated playback, Add/Remove/Previous/Next/Auto key, seekable lane, undo and saved tracks; real property controls, split/duplicate/delete/reorder callback, draft/effects/media-pool persistence; no account traffic. Simulator QA is not physical-device signing or codec coverage.\n".write(to: documents.appendingPathComponent("workspace-result.txt"), atomically: true, encoding: .utf8)
+    }
+    func checkCreativeWorkspaces() async throws {
+        let video = editor.project
+        let photo = editor.photoEditor
+        editor.showHome(); await settle()
+        for id in ["studio.open.video", "studio.open.photo", "studio.open.game", "studio.open.modeling"] {
+            require(control(id).bounds.height >= 44, "Every editor has an accessible Home launch action")
+        }
+        control("studio.open.game").sendActions(for: .touchUpInside)
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        guard let game = editor.gameEditor, editor.presentedViewController === game else { fail("Home must open a real independent Game Maker") }
+        try await GameWorkspaceChecks.run(controller: game, documents: documents)
+        let savedGame = game.session.project
+        try PhotoWorkspaceChecks.button(game.view, "game.home").sendActions(for: .touchUpInside)
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        require(editor.presentedViewController == nil, "Game Home returns to the shared launcher")
+        control("studio.open.modeling").sendActions(for: .touchUpInside)
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        guard let model = editor.modelingEditor, editor.presentedViewController === model else { fail("Home must open a real independent 3D Editor") }
+        try await ModelingWorkspaceChecks.run(controller: model, documents: documents)
+        let savedModel = model.document
+        try PhotoWorkspaceChecks.button(model.view, "model.home").sendActions(for: .touchUpInside)
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        require(editor.presentedViewController == nil, "3D Home returns to the shared launcher")
+        control("studio.open.game").sendActions(for: .touchUpInside)
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        require(editor.gameEditor === game && game.session.project == savedGame,
+                "Switching apps retains the authored game, not a replacement session")
+        try PhotoWorkspaceChecks.button(game.view, "game.home").sendActions(for: .touchUpInside)
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        require(editor.modelingEditor === model && model.document == savedModel && editor.photoEditor === photo && editor.project == video,
+                "Each editor retains its independent project through the shared Home navigation")
     }
 }
 

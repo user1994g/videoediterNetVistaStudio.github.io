@@ -20,10 +20,12 @@ import SceneKit
             let result = documents.appendingPathComponent("shared-core-result.txt")
             do {
                 try PhotoRasterChecks.main()
+                try PhotoDocumentCoreChecks.main()
+                try PhotoEditingSessionChecks.main()
                 try Self.checkModelCommands(documents)
                 try Self.checkGameCommands(documents)
                 try Self.checkGradePixels(documents)
-                try "PASS: original Mac brush/ABR/selection pixels on UIKit; shared model extrude, subdivide, side sculpt and native project/OBJ round trip; 2D/3D connected game rules and project persistence; real grading/LUT/keyed pixels. Shared engines only, not finished mobile workspaces.\n".write(to: result, atomically: true, encoding: .utf8)
+                try "PASS: original Mac brush/ABR/selection and full photo-layer/compositor/project checks on UIKit; shared model extrude, subdivide, side sculpt and native project/OBJ round trip; 2D/3D connected game rules and project persistence; real grading/LUT/keyed pixels. Shared engines only, not finished mobile workspaces.\n".write(to: result, atomically: true, encoding: .utf8)
             } catch {
                 try? "FAIL: \(error)\n".write(to: result, atomically: true, encoding: .utf8)
                 fatalError("Shared native engines failed: \(error)")

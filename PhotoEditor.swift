@@ -166,118 +166,6 @@ private final class PhotoToneCurveView: NSView {
     override func mouseUp(with event: NSEvent) { draggingIndex = nil }
 }
 
-private struct PhotoAdjustments {
-    var exposure = 0.0
-    var brightness = 0.0
-    var contrast = 1.0
-    var saturation = 1.0
-    var vibrance = 0.0
-    var highlights = 1.0
-    var shadows = 0.0
-    var temperature = 6500.0
-    var tint = 0.0
-    var sharpen = 0.0
-    var blur = 0.0
-    var sepia = 0.0
-    var vignette = 0.0
-    var mirrored = false
-}
-
-private struct PhotoLayerExtras: Codable {
-    var groupID: UUID? = nil
-    var isGroup = false
-    var isAdjustment = false
-    var maskPNG: Data? = nil
-    var skew = 0.0
-    var hue = 0.0
-    var black = 0.0
-    var white = 1.0
-    var midtone = 0.5
-    var curveShadows = 0.25
-    var curveHighlights = 0.75
-    var noise = 0.0
-    var text: String? = nil
-    var fontName: String? = nil
-    var fontSize: Double? = nil
-    var textColor: [Double]? = nil
-}
-
-private enum PhotoBlendMode: String, CaseIterable {
-    case normal = "Normal"
-    case multiply = "Multiply"
-    case screen = "Screen"
-    case overlay = "Overlay"
-    case softLight = "Soft Light"
-    case darken = "Darken"
-    case lighten = "Lighten"
-    case colorDodge = "Color Dodge"
-
-    var filterName: String {
-        switch self {
-        case .normal: return "CISourceOverCompositing"
-        case .multiply: return "CIMultiplyBlendMode"
-        case .screen: return "CIScreenBlendMode"
-        case .overlay: return "CIOverlayBlendMode"
-        case .softLight: return "CISoftLightBlendMode"
-        case .darken: return "CIDarkenBlendMode"
-        case .lighten: return "CILightenBlendMode"
-        case .colorDodge: return "CIColorDodgeBlendMode"
-        }
-    }
-}
-
-private final class PhotoLayer {
-    let id: UUID
-    var name: String
-    let sourceURL: URL?
-    var sourceImage: CIImage
-    var thumbnail: NSImage?
-    var isVisible = true
-    var isLocked = false
-    var opacity = 1.0
-    var blendMode = PhotoBlendMode.normal
-    var position = CGPoint.zero
-    var scale = 1.0
-    var rotation = 0.0
-    var adjustments = PhotoAdjustments()
-    var extras = PhotoLayerExtras()
-    var maskPreview: CIImage?
-
-    init(id: UUID = UUID(), name: String, sourceURL: URL?, sourceImage: CIImage, thumbnail: NSImage?) {
-        self.id = id
-        self.name = name
-        self.sourceURL = sourceURL
-        self.sourceImage = sourceImage
-        self.thumbnail = thumbnail
-    }
-}
-
-private struct PhotoLayerSnapshot {
-    let id: UUID
-    let name: String
-    let sourceURL: URL?
-    let sourceImage: CIImage
-    let thumbnail: NSImage?
-    let isVisible: Bool
-    let isLocked: Bool
-    let opacity: Double
-    let blendMode: PhotoBlendMode
-    let position: CGPoint
-    let scale: Double
-    let rotation: Double
-    let adjustments: PhotoAdjustments
-    var extras = PhotoLayerExtras()
-    var maskPreview: CIImage? = nil
-}
-
-private struct PhotoDocumentSnapshot {
-    let layers: [PhotoLayerSnapshot]
-    let selectedLayerID: UUID?
-    let documentSize: CGSize
-    let documentName: String
-    var dpi = 72.0
-    var projectURL: URL? = nil
-}
 
 private enum PhotoTool: Int, CaseIterable {
     case move, marquee, lasso, wand, brush, eraser, bucket, clone, heal, text, rectangle, ellipse, line, polygon, eyedropper, hand, zoom
@@ -1353,63 +1241,6 @@ private extension PhotoEditorViewController {
     }
 }
 
-private struct PhotoProjectAdjustmentData: Codable {
-    let exposure: Double
-    let brightness: Double
-    let contrast: Double
-    let saturation: Double
-    let vibrance: Double
-    let highlights: Double
-    let shadows: Double
-    let temperature: Double
-    let tint: Double
-    let sharpen: Double
-    let blur: Double
-    let sepia: Double
-    let vignette: Double
-    let mirrored: Bool
-
-    init(_ value: PhotoAdjustments) {
-        exposure = value.exposure; brightness = value.brightness; contrast = value.contrast; saturation = value.saturation; vibrance = value.vibrance
-        highlights = value.highlights; shadows = value.shadows; temperature = value.temperature; tint = value.tint; sharpen = value.sharpen
-        blur = value.blur; sepia = value.sepia; vignette = value.vignette; mirrored = value.mirrored
-    }
-
-    var adjustments: PhotoAdjustments {
-        var value = PhotoAdjustments()
-        value.exposure = exposure; value.brightness = brightness; value.contrast = contrast; value.saturation = saturation; value.vibrance = vibrance
-        value.highlights = highlights; value.shadows = shadows; value.temperature = temperature; value.tint = tint; value.sharpen = sharpen
-        value.blur = blur; value.sepia = sepia; value.vignette = vignette; value.mirrored = mirrored
-        return value
-    }
-}
-
-private struct PhotoProjectLayerData: Codable {
-    let id: UUID
-    let name: String
-    let sourcePath: String
-    let isVisible: Bool
-    let isLocked: Bool
-    let opacity: Double
-    let blendMode: String
-    let positionX: Double
-    let positionY: Double
-    let scale: Double
-    let rotation: Double
-    let adjustments: PhotoProjectAdjustmentData
-    var pixels: Data? = nil
-    var extras: PhotoLayerExtras? = nil
-}
-
-private struct PhotoProjectFile: Codable {
-    let format: String
-    let version: Int
-    let canvasWidth: Double
-    let canvasHeight: Double
-    let selectedLayerID: UUID?
-    let layers: [PhotoProjectLayerData]
-    var dpi: Double? = nil
-}
 
 extension PhotoEditorViewController {
     static func supportsPhotoProject(_ url: URL) -> Bool { url.pathExtension.lowercased() == "netvistaphoto" }
@@ -1589,59 +1420,14 @@ private extension PhotoEditorViewController {
     func renderStates() -> [PhotoLayerSnapshot] { snapshot().layers }
 
     func composite(_ states: [PhotoLayerSnapshot], documentSize: CGSize, maxSide: CGFloat?, bypassAdjustments: Bool, opaqueBackground: Bool) -> CIImage? {
-        guard documentSize.width > 0, documentSize.height > 0 else { return nil }
-        let factor: CGFloat = maxSide.map { min(1, $0 / max(documentSize.width, documentSize.height)) } ?? 1
-        let extent = CGRect(x: 0, y: 0, width: documentSize.width * factor, height: documentSize.height * factor)
-        func level(_ parent: UUID?, depth: Int) -> CIImage {
-            var result = CIImage(color: parent == nil && opaqueBackground ? CIColor.white : CIColor.clear).cropped(to: extent)
-            guard depth < 3 else { return result }
-            for state in states.reversed() where state.extras.groupID == parent && state.isVisible && state.opacity > 0 {
-                let extra = state.extras
-                var image: CIImage
-                if extra.isGroup { image = level(state.id, depth: depth+1) }
-                else if extra.isAdjustment { image = result }
-                else { image = state.sourceImage }
-                if !bypassAdjustments { image = applyExtras(extra, to: apply(state.adjustments, to: image)) }
-                if !extra.isGroup && !extra.isAdjustment {
-                    if let mask = state.maskPreview ?? extra.maskPNG.flatMap({ CIImage(data: $0) }) {
-                        image = image.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: CIImage(color: .clear).cropped(to: image.extent), kCIInputMaskImageKey: mask])
-                    }
-                    let transform = layerTransform(size: state.sourceImage.extent.size, position: state.position, scale: state.scale, rotation: state.rotation, skew: extra.skew, document: documentSize)
-                    image = image.transformed(by: transform).transformed(by: CGAffineTransform(scaleX: factor, y: factor))
-                }
-                if extra.isAdjustment {
-                    if state.blendMode != .normal { image = image.applyingFilter(state.blendMode.filterName,parameters:[kCIInputBackgroundImageKey:result]) }
-                    var mask = (state.maskPreview ?? extra.maskPNG.flatMap { CIImage(data: $0) })?.transformed(by: CGAffineTransform(scaleX: factor, y: factor)) ?? CIImage(color: .white).cropped(to: extent)
-                    mask = mask.applyingFilter("CIColorMatrix", parameters: ["inputRVector": CIVector(x: state.opacity, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: state.opacity, z: 0, w: 0), "inputBVector": CIVector(x: 0, y: 0, z: state.opacity, w: 0)])
-                    result = image.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: result, kCIInputMaskImageKey: mask]).cropped(to: extent)
-                } else {
-                    image = image.applyingFilter("CIColorMatrix", parameters: ["inputAVector": CIVector(x: 0, y: 0, z: 0, w: state.opacity)])
-                    result = image.applyingFilter(state.blendMode.filterName, parameters: [kCIInputBackgroundImageKey: result]).cropped(to: extent)
-                }
-            }
-            return result
-        }
-        return level(nil, depth: 0)
+        PhotoRenderEngine.composite(states, documentSize: documentSize, maxSide: maxSide, bypassAdjustments: bypassAdjustments, opaqueBackground: opaqueBackground)
     }
 
     func apply(_ settings: PhotoAdjustments, to source: CIImage) -> CIImage {
-        var image = source
-        if settings.mirrored { image = normalized(image.transformed(by: CGAffineTransform(translationX: image.extent.width, y: 0).scaledBy(x: -1, y: 1))) }
-        image = image.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: settings.exposure])
-        image = image.applyingFilter("CIColorControls", parameters: [kCIInputBrightnessKey: settings.brightness, kCIInputContrastKey: settings.contrast, kCIInputSaturationKey: settings.saturation])
-        image = image.applyingFilter("CIVibrance", parameters: ["inputAmount": settings.vibrance])
-        image = image.applyingFilter("CIHighlightShadowAdjust", parameters: ["inputHighlightAmount": settings.highlights, "inputShadowAmount": settings.shadows])
-        image = image.applyingFilter("CITemperatureAndTint", parameters: ["inputNeutral": CIVector(x: 6500, y: 0), "inputTargetNeutral": CIVector(x: settings.temperature, y: settings.tint)])
-        if settings.sharpen > 0 { image = image.applyingFilter("CISharpenLuminance", parameters: [kCIInputSharpnessKey: settings.sharpen]) }
-        if settings.blur > 0 { let extent = image.extent; image = image.clampedToExtent().applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: settings.blur]).cropped(to: extent) }
-        if settings.sepia > 0 { image = image.applyingFilter("CISepiaTone", parameters: [kCIInputIntensityKey: settings.sepia]) }
-        if settings.vignette > 0 { image = image.applyingFilter("CIVignette", parameters: [kCIInputIntensityKey: settings.vignette, kCIInputRadiusKey: min(image.extent.width, image.extent.height) * 0.45]) }
-        return normalized(image)
+        PhotoRenderEngine.apply(settings, to: source)
     }
     func normalized(_ image: CIImage) -> CIImage {
-        let extent = image.extent
-        guard extent.minX != 0 || extent.minY != 0 else { return image }
-        return image.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+        PhotoRenderEngine.normalized(image)
     }
 }
 
@@ -1839,7 +1625,7 @@ private extension PhotoEditorViewController {
         if (choice == 1 || choice == 2) && documentSelectionMask() == nil { showPhotoError("Make a selection first."); return }
         let extent = layer.sourceImage.extent
         var mask = CIImage(color: .white).cropped(to: extent)
-        if choice == 1 || choice == 2, let selected = selectionForLayer(layer) { mask = selected.cropped(to: extent) }
+        if choice == 1 || choice == 2, let selected = selectionForLayer(layer, onMask: true) { mask = selected.cropped(to: extent) }
         if choice == 3 { mask = layer.extras.maskPNG.flatMap { CIImage(data: $0) } ?? mask }
         if choice == 2 || choice == 3 { mask = mask.applyingFilter("CIColorInvert") }
         do {
@@ -1919,9 +1705,14 @@ private extension PhotoEditorViewController {
         pushHistory()
         let crop = PhotoPixels.maskBounds(mask,context:context) ?? layer.sourceImage.extent
         let copy = PhotoLayer(name:layer.name+" selection",sourceURL:nil,sourceImage:PhotoPixels.frozen(normalized(lifted.cropped(to:crop)),context:context),thumbnail:nil)
-        let centre = CGPoint(x:crop.midX,y:crop.midY).applying(transform(layer))
+        let centre = CGPoint(x:crop.midX,y:crop.midY).applying(sourcePixelTransform(layer))
         copy.position = CGPoint(x:centre.x-documentSize.width/2,y:centre.y-documentSize.height/2); copy.scale = layer.scale; copy.rotation = layer.rotation; copy.opacity = layer.opacity; copy.blendMode = layer.blendMode; copy.adjustments = layer.adjustments; copy.extras = layer.extras
-        if let data = copy.extras.maskPNG, let mask = CIImage(data:data) { copy.extras.maskPNG = try? PhotoPixels.png(normalized(mask.cropped(to:crop)),context:context) }
+        if let data = copy.extras.maskPNG, var mask = CIImage(data:data) {
+            // Masks are in the post-flip layer space; crop the corresponding
+            // displayed region while source pixels keep their flip adjustment.
+            let maskCrop = layer.adjustments.mirrored ? CGRect(x: layer.sourceImage.extent.width - crop.maxX, y: crop.minY, width: crop.width, height: crop.height) : crop
+            mask = normalized(mask.cropped(to: maskCrop)); copy.extras.maskPNG = try? PhotoPixels.png(mask,context:context)
+        }
         layer.sourceImage = PhotoPixels.frozen(remaining,context:context); insertLayer(copy); canvasView.clearSelection(); selectTool(.move)
         statusLabel.stringValue = "Selection lifted. Drag to move; Properties resizes, rotates and skews it. Undo restores the original."
     }
@@ -2052,26 +1843,10 @@ private extension PhotoEditorViewController {
         updateSliderLabels(); schedulePreview()
     }
     func applyExtras(_ e: PhotoLayerExtras, to source: CIImage) -> CIImage {
-        var image = source
-        if e.hue != 0 { image = image.applyingFilter("CIHueAdjust", parameters: [kCIInputAngleKey:e.hue * .pi/180]) }
-        if e.black != 0 || e.white != 1 {
-            let gain = 1/max(0.01,e.white-e.black), bias = -e.black*gain
-            image = image.applyingFilter("CIColorMatrix", parameters: ["inputRVector":CIVector(x:gain,y:0,z:0,w:0),"inputGVector":CIVector(x:0,y:gain,z:0,w:0),"inputBVector":CIVector(x:0,y:0,z:gain,w:0),"inputBiasVector":CIVector(x:bias,y:bias,z:bias,w:0)])
-        }
-        if e.curveShadows != 0.25 || e.midtone != 0.5 || e.curveHighlights != 0.75 {
-            image = image.applyingFilter("CIToneCurve", parameters: ["inputPoint0":CIVector(x:0,y:0),"inputPoint1":CIVector(x:0.25,y:e.curveShadows),"inputPoint2":CIVector(x:0.5,y:e.midtone),"inputPoint3":CIVector(x:0.75,y:e.curveHighlights),"inputPoint4":CIVector(x:1,y:1)])
-        }
-        if e.noise > 0, let noise = CIFilter(name: "CIRandomGenerator")?.outputImage {
-            let grain = noise.cropped(to: source.extent).applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey:0]).applyingFilter("CIColorMatrix", parameters: ["inputAVector":CIVector(x:0,y:0,z:0,w:e.noise)])
-            image = grain.applyingFilter("CISoftLightBlendMode", parameters: [kCIInputBackgroundImageKey:image])
-        }
-        return image.cropped(to: source.extent)
+        PhotoRenderEngine.applyExtras(e, to: source)
     }
     func layerTransform(size: CGSize, position: CGPoint, scale: Double, rotation: Double, skew: Double, document: CGSize) -> CGAffineTransform {
-        CGAffineTransform(translationX: -size.width/2, y: -size.height/2)
-            .concatenating(CGAffineTransform(a: scale,b: 0,c: skew*scale,d: scale,tx: 0,ty: 0))
-            .concatenating(CGAffineTransform(rotationAngle: rotation * .pi/180))
-            .concatenating(CGAffineTransform(translationX: document.width/2+position.x,y: document.height/2+position.y))
+        PhotoRenderEngine.layerTransform(size: size, position: position, scale: scale, rotation: rotation, skew: skew, document: document)
     }
     func transform(_ layer: PhotoLayer) -> CGAffineTransform { layerTransform(size: layer.sourceImage.extent.size, position: layer.position, scale: layer.scale, rotation: layer.rotation, skew: layer.extras.skew, document: documentSize) }
     func documentSelectionMask() -> CIImage? {
@@ -2079,8 +1854,12 @@ private extension PhotoEditorViewController {
         guard let rect = canvasView.documentSelectionRect else { return nil }
         return CIImage(color: .white).cropped(to: rect).composited(over: CIImage(color: .black).cropped(to: CGRect(origin: .zero,size: documentSize)))
     }
-    func selectionForLayer(_ layer: PhotoLayer) -> CIImage? {
-        documentSelectionMask()?.transformed(by: transform(layer).inverted()).cropped(to: layer.sourceImage.extent)
+    func sourcePixelTransform(_ layer: PhotoLayer) -> CGAffineTransform {
+        PhotoRenderEngine.pixelTransform(size: layer.sourceImage.extent.size, position: layer.position, scale: layer.scale, rotation: layer.rotation, skew: layer.extras.skew, mirrored: layer.adjustments.mirrored, document: documentSize)
+    }
+    func selectionForLayer(_ layer: PhotoLayer, onMask: Bool = false) -> CIImage? {
+        let mapping = layer.extras.isAdjustment ? CGAffineTransform.identity : onMask ? transform(layer) : sourcePixelTransform(layer)
+        return documentSelectionMask()?.transformed(by: mapping.inverted()).cropped(to: layer.sourceImage.extent)
     }
     func pathMask(_ path: CGPath) -> CIImage? {
         guard let cg = PhotoPixels.context(documentSize) else { return nil }
@@ -2129,11 +1908,13 @@ private extension PhotoEditorViewController {
         if phase == 0 { activeStroke = nil; strokeLayerID = nil }
         guard let layer = selectedLayer, editable(layer), !layer.extras.isGroup else { statusLabel.stringValue = "Choose an unlocked pixel layer, not a folder."; return }
         guard layer.isVisible, !(layers.first { $0.id == layer.extras.groupID }.map { !$0.isVisible } ?? false) else { statusLabel.stringValue = "This layer is hidden. Turn on its eye icon before painting."; return }
-        let local = point.applying(transform(layer).inverted())
+        let onMask = maskEditing.state == .on && layer.extras.maskPNG != nil
+        let mapping = layer.extras.isAdjustment ? CGAffineTransform.identity : onMask ? transform(layer) : sourcePixelTransform(layer)
+        let local = point.applying(mapping.inverted())
         if phase == 0 {
             activeStroke = nil
             if [.clone,.heal].contains(selectedTool) && flags.contains(.option) { cloneSource = local; cloneLayerID = layer.id; statusLabel.stringValue = "Sample source set. Paint to clone/heal."; return }
-            strokeMask = maskEditing.state == .on && layer.extras.maskPNG != nil
+            strokeMask = onMask
             if layer.extras.isAdjustment && !strokeMask { statusLabel.stringValue = "Adjustment layers have no paint pixels. Add a mask or select an image layer."; return }
             if layer.extras.text != nil && !strokeMask { statusLabel.stringValue = "Text stays editable. Paint on a new transparent layer above it."; return }
             var clone: CGImage?, offset = CGPoint.zero
@@ -2153,7 +1934,7 @@ private extension PhotoEditorViewController {
             guard brushLibrary.indices.contains(index) else { statusLabel.stringValue = "Select a brush in the Brushes panel."; return }
             let brush = brushLibrary[index]
             let color: NSColor = strokeMask && selectedTool == .eraser ? .white : foreground.color
-            guard let stroke = PhotoRasterStroke(base:base,brush:brush,size:brushSize.doubleValue / layer.scale,hardness:brushHardness.doubleValue,opacity:brushOpacity.doubleValue/100,flow:brushFlow.doubleValue/100,color:color,erase:selectedTool == .eraser && !strokeMask,selection:selectionForLayer(layer),clone:clone,cloneOffset:offset) else { statusLabel.stringValue = "Unable to allocate brush surface."; return }
+            guard let stroke = PhotoRasterStroke(base:base,brush:brush,size:brushSize.doubleValue / layer.scale,hardness:brushHardness.doubleValue,opacity:brushOpacity.doubleValue/100,flow:brushFlow.doubleValue/100,color:color,erase:selectedTool == .eraser && !strokeMask,selection:selectionForLayer(layer, onMask: strokeMask),clone:clone,cloneOffset:offset) else { statusLabel.stringValue = "Unable to allocate brush surface."; return }
             pushHistory(); activeStroke = stroke; strokeLayerID = layer.id; lastStrokePreview = 0
         }
         guard let stroke = activeStroke, strokeLayerID == layer.id else { return }
@@ -2176,7 +1957,7 @@ private extension PhotoEditorViewController {
         guard let layer = selectedLayer, !fill || (editable(layer) && !layer.extras.isGroup && !layer.extras.isAdjustment && layer.extras.text == nil) else { statusLabel.stringValue = "Choose an unlocked pixel layer to fill."; return }
         let source = fill ? layer.sourceImage : composite(renderStates(),documentSize:documentSize,maxSide:nil,bypassAdjustments:false,opaqueBackground:false)
         guard let source else { return }
-        let sample = fill ? point.applying(transform(layer).inverted()) : point
+        let sample = fill ? point.applying(sourcePixelTransform(layer).inverted()) : point
         let generation = renderGeneration, id = layer.id, toleranceValue = Int(tolerance.doubleValue), selection = selectionForLayer(layer), color = CIColor(color:foreground.color) ?? .black
         statusLabel.stringValue = "Finding connected colour region…"
         renderQueue.async { [weak self] in
