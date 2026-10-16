@@ -1,8 +1,10 @@
 package com.netvistastudio.editor.android;
 
 import android.app.Instrumentation;
+import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
@@ -38,16 +40,22 @@ import androidx.test.platform.app.InstrumentationRegistry;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.FileInputStream;
 import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.nio.charset.StandardCharsets;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipEntry;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import static org.junit.Assert.*;
@@ -153,6 +161,8 @@ public final class NativeWorkspaceUiTest {
             ui.main(() -> {
                 assertFalse("Last-clip deletion detaches the obsolete native surface, including queued source buffers", obsoleteSurface.isAttachedToWindow());
                 assertNotSame("Later edits cannot reuse the deleted source's video surface", obsoleteSurface,
+                        ((androidx.media3.ui.PlayerView) field(activity, "playerView")).getVideoSurfaceView());
+                assertNull("An empty monitor has no attached or replacement video surface/compositor hole",
                         ((androidx.media3.ui.PlayerView) field(activity, "playerView")).getVideoSurfaceView());
                 return null;
             });
@@ -506,6 +516,139 @@ public final class NativeWorkspaceUiTest {
             finally { restoreDraft(draft, originalDraft); for (File file : ownedMedia) file.delete();
                 File[] temporary = scratch.listFiles(); if (temporary != null) for (File file : temporary) file.delete(); scratch.delete(); }
         }
+    }
+
+    @Test(timeout = 180000)
+    public void portableFilesSaveKeepsItsCapturedProjectAcrossRealActivityRecreation() throws Exception {
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation(); Context context = instrumentation.getTargetContext();
+        assumeTrue("Never use real stored credentials in native Files QA",
+                !context.getSharedPreferences("encrypted_account", Context.MODE_PRIVATE).contains("ciphertext"));
+        ProjectFiles files = new ProjectFiles(context); AtomicFile draft = new AtomicFile(new File(context.getFilesDir(), "mobile-draft.json"));
+        byte[] originalDraft = readExistingDraft(draft); File scratch = new File(context.getCacheDir(), "native-files-save-" + UUID.randomUUID());
+        assertTrue(scratch.mkdir()); List<File> ownedMedia = new ArrayList<>(); Harness ui = null;
+        IntentFilter filter = new IntentFilter(Intent.ACTION_CREATE_DOCUMENT);
+        filter.addCategory(Intent.CATEGORY_OPENABLE); filter.addDataType("application/octet-stream");
+        // Intercept only the external Files launch, not our Activity lifecycle or
+        // archive writer. A null blocked result leaves its asynchronous request
+        // pending until QA supplies the selected destination/cancel callback.
+        Instrumentation.ActivityMonitor picker = new Instrumentation.ActivityMonitor(filter, null, true);
+        instrumentation.addMonitor(picker);
+        List<String> ownedSnapshots = new ArrayList<>();
+        try {
+            StudioProject requested = fixtureProject(instrumentation, files, scratch, ownedMedia); files.saveDraft(requested);
+            String expectedManifest = ProjectCodec.encode(requested);
+            Map<String, byte[]> expectedMedia = new LinkedHashMap<>();
+            for (StudioProject.Clip clip : requested.sources()) {
+                try (InputStream input = new FileInputStream(files.mediaFile(clip)); ByteArrayOutputStream bytes = new ByteArrayOutputStream()) {
+                    ProjectFiles.copy(input, bytes, 2 * 1024 * 1024); expectedMedia.put(clip.uri, bytes.toByteArray());
+                }
+            }
+            MainActivity activity = (MainActivity) instrumentation.startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            ui = new Harness(instrumentation, context, activity); Harness initial = ui;
+            waitUntil("Private project restores before the Files scenario", 15000, () -> initial.main(() -> (Boolean) field(activity, "draftReady")));
+            StudioAccount account = ui.main(() -> (StudioAccount) field(activity, "account"));
+            ((ExecutorService) field(account, "worker")).submit(() -> {}).get(15, TimeUnit.SECONDS); instrumentation.waitForIdleSync();
+            ui.installInMemoryTestSnapshot(account); ui.click("Continue edit"); ui.waitPreview();
+            ui.requestPortableSave(); String capturedId = ui.pendingSaveId(); ownedSnapshots.add(capturedId);
+            assertEquals(1, picker.getHits());
+            assertEquals("A fresh file-store instance reads the exact request, independent of working draft memory",
+                    expectedManifest, ProjectCodec.encode(new ProjectFiles(context).loadPendingProject(capturedId)));
+            try { files.savePendingProject(capturedId, new StudioProject()); fail("A captured save must not be overwritten by a later project"); }
+            catch (java.io.IOException expected) { assertTrue(expected.getMessage().contains("already captured")); }
+            // Changes made while an external picker is outstanding must not
+            // silently replace the project the user requested to save.
+            ui.click("Duplicate"); ui.drainActivityIo();
+            String laterDraft = ProjectCodec.encode(ui.project()); assertNotEquals(expectedManifest, laterDraft);
+            ui = ui.recreatePreservingTestAccount(); Harness restored = ui;
+            assertEquals("Only the durable snapshot ID survives real onSaveInstanceState/destroy/create", capturedId,
+                    ui.main(() -> (String) field(restored.activity, "pendingProjectSaveId")));
+            assertEquals("Recreation restores the later working draft, not the pending export snapshot", laterDraft, ProjectCodec.encode(ui.project()));
+            File output = new File(scratch, "captured.netvistamobile");
+            ui.main(() -> { restored.activity.onActivityResult(102, Activity.RESULT_OK, new Intent().setData(Uri.fromFile(output))); return null; });
+            ui.waitForFilesOperation("Self-contained project saved.");
+            Map<String, byte[]> entries = new LinkedHashMap<>();
+            try (ZipInputStream zip = new ZipInputStream(new FileInputStream(output))) {
+                ZipEntry entry;
+                while ((entry = zip.getNextEntry()) != null) {
+                    assertFalse("Archive has no duplicate entries", entries.containsKey(entry.getName()));
+                    ByteArrayOutputStream bytes = new ByteArrayOutputStream(); ProjectFiles.copy(zip, bytes, 2 * 1024 * 1024);
+                    entries.put(entry.getName(), bytes.toByteArray()); zip.closeEntry();
+                }
+            }
+            assertEquals("Portable ZIP contains exactly the captured manifest and both originals", expectedMedia.size() + 1, entries.size());
+            assertArrayEquals("Actual ZIP bytes are the immutable captured edit, not the later working draft",
+                    expectedManifest.getBytes(StandardCharsets.UTF_8), entries.remove("project.json"));
+            for (Map.Entry<String, byte[]> media : expectedMedia.entrySet()) assertArrayEquals("Original media bytes: " + media.getKey(), media.getValue(), entries.get(media.getKey()));
+            assertPendingSaveRemoved(files, capturedId);
+            assertEquals("Saving an older captured request never rolls back the live working edit", laterDraft, ProjectCodec.encode(ui.project()));
+            ui.click("Continue edit"); ui.waitPreview();
+            ui.requestPortableSave(); String cancelled = ui.pendingSaveId(); ownedSnapshots.add(cancelled);
+            ui.main(() -> { restored.activity.onActivityResult(102, Activity.RESULT_CANCELED, null); return null; });
+            assertPendingSaveRemoved(files, cancelled);
+            assertNull(ui.main(() -> (String) field(restored.activity, "pendingProjectSaveId")));
+            ui.requestPortableSave(); String failed = ui.pendingSaveId(); ownedSnapshots.add(failed);
+            // A directory is not a writable project document. Exercise the real
+            // ContentResolver/ZIP failure path without a fake archive writer.
+            ui.main(() -> { restored.activity.onActivityResult(102, Activity.RESULT_OK, new Intent().setData(Uri.fromFile(scratch))); return null; });
+            ui.waitForFilesOperation("Project save failed:"); assertPendingSaveRemoved(files, failed);
+            assertEquals("Failed destination preserves the current project", laterDraft, ProjectCodec.encode(ui.project()));
+            ui.requestPortableSave(); String noUri = ui.pendingSaveId(); ownedSnapshots.add(noUri);
+            ui.main(() -> { restored.activity.onActivityResult(102, Activity.RESULT_OK, new Intent()); return null; });
+            assertPendingSaveRemoved(files, noUri);
+            Log.i("NetVistaNativeUiChecks", "PASS: real Activity recreation, persisted immutable Files request, exact ZIP/manifest/media bytes and success/cancel/failure cleanup");
+        } finally {
+            instrumentation.removeMonitor(picker);
+            try { if (ui != null) ui.close(); }
+            finally {
+                for (String id : ownedSnapshots) files.deletePendingProject(id);
+                restoreDraft(draft, originalDraft); for (File file : ownedMedia) file.delete();
+                File[] temporary = scratch.listFiles(); if (temporary != null) for (File file : temporary) file.delete(); scratch.delete();
+            }
+        }
+    }
+
+    @Test(timeout = 120000)
+    public void nestedExportCanvasChoiceUpdatesTheVisibleAndAccessibleLabel() throws Exception {
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation(); Context context = instrumentation.getTargetContext();
+        assumeTrue(!context.getSharedPreferences("encrypted_account", Context.MODE_PRIVATE).contains("ciphertext"));
+        ProjectFiles files = new ProjectFiles(context); AtomicFile draft = new AtomicFile(new File(context.getFilesDir(), "mobile-draft.json"));
+        byte[] originalDraft = readExistingDraft(draft); File scratch = new File(context.getCacheDir(), "native-export-label-" + UUID.randomUUID());
+        assertTrue(scratch.mkdir()); List<File> ownedMedia = new ArrayList<>(); Harness ui = null;
+        try {
+            StudioProject value = fixtureProject(instrumentation, files, scratch, ownedMedia); files.saveDraft(value);
+            MainActivity activity = (MainActivity) instrumentation.startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            ui = new Harness(instrumentation, context, activity); Harness current = ui;
+            waitUntil("Native export-label fixture restores", 15000, () -> current.main(() -> (Boolean) field(activity, "draftReady")));
+            StudioAccount account = ui.main(() -> (StudioAccount) field(activity, "account"));
+            ((ExecutorService) field(account, "worker")).submit(() -> {}).get(15, TimeUnit.SECONDS); instrumentation.waitForIdleSync();
+            ui.installInMemoryTestSnapshot(account); ui.click("Continue edit"); ui.waitPreview();
+            Button export = ui.main(() -> findButton(current.root(), "Export"));
+            if (export != null) ui.click("Export"); else { ui.click("⋮"); ui.clickAccessibleText("Export MP4"); }
+            ui.clickAccessibleText("1280 × 720 · change canvas"); ui.clickAccessibleText("1080 × 1920 · Portrait");
+            waitUntil("Export dialog refreshes its exact chosen resolution without reopening", 3000, () -> uiLabelExists(instrumentation, "1080 × 1920 · change canvas"));
+            ui.main(() -> {
+                Button canvas = (Button) field(activity, "exportCanvasButton"); assertNotNull(canvas);
+                assertTrue(canvas.isShown()); assertEquals("1080 × 1920 · change canvas", canvas.getText().toString());
+                assertEquals("Screen readers announce the current canvas too", canvas.getText().toString(), canvas.getContentDescription().toString()); return null;
+            });
+            assertEquals(1080, ui.project().width); assertEquals(1920, ui.project().height);
+            ui.clickAccessibleText("Cancel"); assertNull(ui.main(() -> field(activity, "exportCanvasButton")));
+            ui.drainActivityIo(); assertEquals(1080, files.loadDraft().width); assertEquals(1920, files.loadDraft().height);
+        } finally {
+            try { if (ui != null) ui.close(); }
+            finally { restoreDraft(draft, originalDraft); for (File file : ownedMedia) file.delete();
+                File[] temporary = scratch.listFiles(); if (temporary != null) for (File file : temporary) file.delete(); scratch.delete(); }
+        }
+    }
+
+    private static boolean uiLabelExists(Instrumentation instrumentation, String text) {
+        AccessibilityNodeInfo root = instrumentation.getUiAutomation().getRootInActiveWindow(); if (root == null) return false;
+        for (AccessibilityNodeInfo node : root.findAccessibilityNodeInfosByText(text)) if (node.getText() != null && text.contentEquals(node.getText()) && node.isVisibleToUser()) return true;
+        return false;
+    }
+    private static void assertPendingSaveRemoved(ProjectFiles files, String id) throws Exception {
+        try { files.loadPendingProject(id); fail("Completed/cancelled/failed save leaves no owned request snapshot"); }
+        catch (java.io.FileNotFoundException expected) { /* exact owned snapshot removed */ }
     }
 
     private static StudioProject fixtureProject(Instrumentation instrumentation, ProjectFiles files,
@@ -966,6 +1109,42 @@ public final class NativeWorkspaceUiTest {
         void drainActivityIo() throws Exception {
             ExecutorService io = main(() -> (ExecutorService) field(activity, "io")); io.submit(() -> {}).get(15, TimeUnit.SECONDS);
             instrumentation.waitForIdleSync();
+        }
+        void requestPortableSave() throws Exception {
+            Button save = main(() -> findButton(root(), "Save"));
+            if (save != null) click("Save"); else { click("⋮"); clickAccessibleText("Save project"); }
+            waitUntil("Files request is durably captured before its system picker opens", 15000,
+                    () -> main(() -> field(activity, "pendingProjectSaveId") != null && !(Boolean) field(activity, "operationBusy")));
+        }
+        String pendingSaveId() throws Exception { return main(() -> (String) field(activity, "pendingProjectSaveId")); }
+        void waitForFilesOperation(String statusPrefix) throws Exception {
+            waitUntil("Real Files operation completes: " + statusPrefix, 15000, () -> main(() -> {
+                TextView status = (TextView) field(activity, "status");
+                return !(Boolean) field(activity, "operationBusy") && status != null && status.getText().toString().startsWith(statusPrefix);
+            }));
+            drainActivityIo();
+        }
+        Harness recreatePreservingTestAccount() throws Exception {
+            drainActivityIo();
+            Instrumentation.ActivityMonitor monitor = instrumentation.addMonitor(MainActivity.class.getName(), null, false);
+            MainActivity replacement;
+            try {
+                main(() -> { activity.recreate(); return null; });
+                replacement = (MainActivity) monitor.waitForActivityWithTimeout(15000);
+                assertNotNull("The OS recreated an actual MainActivity", replacement);
+                assertNotSame("No in-memory Activity fields are reused", activity, replacement);
+            } finally { instrumentation.removeMonitor(monitor); }
+            Harness next = new Harness(instrumentation, context, replacement);
+            next.account = account; next.originalSnapshot = originalSnapshot;
+            waitUntil("Old Activity has really been destroyed", 10000, () -> main(activity::isDestroyed));
+            assertTrue("Old draft writes finish before the replacement is inspected",
+                    ((ExecutorService) field(activity, "io")).awaitTermination(15, TimeUnit.SECONDS));
+            waitUntil("New Activity reads its independent persisted working draft", 15000,
+                    () -> next.main(() -> (Boolean) field(replacement, "draftReady")));
+            instrumentation.waitForIdleSync();
+            next.main(() -> { ((Handler) field(replacement, "main")).removeCallbacks((Runnable) field(replacement, "accountTimer")); return null; });
+            assertTrue("Memory-only QA account survives without any stored token or real request", account.state().canEdit);
+            return next;
         }
         void tapTimeline(long positionMs, boolean ruler) throws Exception {
             waitPreview();

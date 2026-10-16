@@ -28,6 +28,7 @@ public final class ProjectFiles {
     private final Context context;
     private final File media;
     private final AtomicFile draft;
+    private static final Object PENDING_SAVE_LOCK = new Object();
 
     public ProjectFiles(Context context) throws IOException {
         this.context = context.getApplicationContext();
@@ -64,6 +65,34 @@ public final class ProjectFiles {
     public synchronized StudioProject loadDraft() throws Exception {
         if (!draft.getBaseFile().exists()) return new StudioProject();
         try (InputStream input = draft.openRead()) { return ProjectCodec.decode(readText(input)); }
+    }
+
+    /** A Files picker may outlive its Activity/process. Keep the exact requested
+     * edit separately from the later working draft, without copying source media.
+     */
+    public void savePendingProject(String id, StudioProject project) throws Exception {
+        byte[] manifest = ProjectCodec.encode(project).getBytes(StandardCharsets.UTF_8);
+        synchronized (PENDING_SAVE_LOCK) {
+            AtomicFile file = pendingProjectFile(id); FileOutputStream output = null;
+            if (file.getBaseFile().exists() || new File(file.getBaseFile().getPath() + ".bak").exists()
+                    || new File(file.getBaseFile().getPath() + ".new").exists()) {
+                throw new IOException("The requested project save is already captured.");
+            }
+            try { output = file.startWrite(); output.write(manifest); file.finishWrite(output); }
+            catch (Exception error) { if (output != null) file.failWrite(output); throw error; }
+        }
+    }
+    public StudioProject loadPendingProject(String id) throws Exception {
+        synchronized (PENDING_SAVE_LOCK) {
+            try (InputStream input = pendingProjectFile(id).openRead()) { return ProjectCodec.decode(readText(input)); }
+        }
+    }
+    public void deletePendingProject(String id) throws IOException {
+        synchronized (PENDING_SAVE_LOCK) { pendingProjectFile(id).delete(); }
+    }
+    private AtomicFile pendingProjectFile(String id) throws IOException {
+        if (!StudioProject.validMediaPath(id, "media/" + id + ".video")) throw new IOException("Invalid pending-save identifier.");
+        return new AtomicFile(new File(context.getFilesDir(), "pending-project-save-" + id + ".json"));
     }
 
     public void saveArchive(StudioProject project, OutputStream output) throws Exception {

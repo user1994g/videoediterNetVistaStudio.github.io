@@ -127,7 +127,8 @@ public final class MainActivity extends Activity {
         final StudioProject project; final int selected; final long playhead;
         EditState(StudioProject project, int selected, long playhead) { this.project = project.copy(); this.selected = selected; this.playhead = playhead; }
     }
-    private StudioProject pendingSave;
+    private String pendingProjectSaveId, preparingProjectSaveId;
+    private Button exportCanvasButton;
     private final StudioAccount.Listener accountListener = this::accountChanged;
     private final Runnable accountTimer = new Runnable() {
         @Override public void run() { if (foreground && liveUi()) { account.checkAsync(false); main.postDelayed(this, 30000); } }
@@ -172,6 +173,8 @@ public final class MainActivity extends Activity {
             if (movie != null && movie.matches("netvista-export-[0-9a-f-]+\\.mp4")) {
                 File restored = new File(getCacheDir(), movie); if (restored.isFile()) completedMovie = restored;
             }
+            String pending = saved.getString("pending_project_save_id");
+            if (StudioProject.validMediaPath(pending, "media/" + pending + ".video")) pendingProjectSaveId = pending;
         }
         account = StudioAccount.get(this); showLogin(); account.addListener(accountListener);
         AccountCheckJob.schedule(this);
@@ -824,8 +827,7 @@ public final class MainActivity extends Activity {
             }
             NativePreviewGraph nextGraph = new NativePreviewGraph(snapshot, files);
             recreateErroredPreviewPlayer();
-            playerView.setKeepContentOnPlayerReset(true);
-            playerView.setPlayer(player);
+            bindProgramMonitor(player);
             player.setComposition(nextGraph.composition(), requested);
             // Replacing clip structure releases the SDK's old source holders.
             // A release timeout can synchronously poison this otherwise healthy
@@ -834,8 +836,7 @@ public final class MainActivity extends Activity {
             if (player.getPlayerError() != null) {
                 Log.w("NetVistaPreview", "Native graph replacement failed; retrying the current snapshot once", player.getPlayerError());
                 recreateErroredPreviewPlayer();
-                playerView.setKeepContentOnPlayerReset(true);
-                playerView.setPlayer(player);
+                bindProgramMonitor(player);
                 player.setComposition(nextGraph.composition(), requested);
             }
             previewGraph = nextGraph;
@@ -844,15 +845,33 @@ public final class MainActivity extends Activity {
     }
 
     private PlayerView programMonitorView(CompositionPlayer current) {
-        PlayerView view = new PlayerView(this); view.setUseController(false);
+        // A default PlayerView creates a SurfaceView even with a null Player.
+        // Merely replacing it with another null-bound SurfaceView can leave a
+        // compositor hole exposing the old red/blue source buffer. An empty
+        // edit has no native video surface at all: the actual window paints an
+        // opaque black monitor until Add/Undo creates a new video output.
+        PlayerView view = current == null
+                ? (PlayerView) getLayoutInflater().inflate(R.layout.program_monitor_empty, null, false)
+                : new PlayerView(this);
+        view.setUseController(false);
         view.setShutterBackgroundColor(Color.BLACK); view.setBackgroundColor(Color.BLACK);
         view.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT); view.setKeepContentOnPlayerReset(true);
         view.setPlayer(current); return view;
     }
 
+    private void bindProgramMonitor(CompositionPlayer current) {
+        if (playerView.getVideoSurfaceView() == null && playerView.getParent() instanceof ViewGroup) {
+            PlayerView empty = playerView; ViewGroup parent = (ViewGroup) empty.getParent();
+            int index = parent.indexOfChild(empty); ViewGroup.LayoutParams layout = empty.getLayoutParams();
+            playerView = programMonitorView(current); parent.removeView(empty); parent.addView(playerView, index, layout);
+        } else {
+            playerView.setKeepContentOnPlayerReset(true); playerView.setPlayer(current);
+        }
+    }
+
     /** Last-clip deletion ends the old output immediately, including its Surface.
      * Detaching only the Player leaves SurfaceView's last queued buffer alive in
-     * the compositor. A fresh unbound native monitor prevents a late old frame
+     * the compositor. A surface-free native monitor prevents a late old frame
      * from remaining visible or becoming the surface used by a later Undo/Add.
      */
     private void clearEmptyPreview() {
@@ -1042,9 +1061,10 @@ public final class MainActivity extends Activity {
         LinearLayout options = column(); options.setPadding(dp(12), dp(8), dp(12), dp(8));
         options.addView(label("MP4 · H.264 video · AAC audio · 30 fps", 12, TEXT, true));
         options.addView(label("Fits each source to the selected canvas. Motion and colour match the monitor composition; sources stay local.", 12, MUTED, false));
-        Button canvas = button(project.width + " × " + project.height + " · change canvas", () -> canvasMenu(), false); options.addView(canvas);
-        new AlertDialog.Builder(this).setTitle("Export workspace").setView(options).setNegativeButton("Cancel", null)
-                .setPositiveButton("Render MP4", (d, w) -> export()).show();
+        Button canvas = button("", this::canvasMenu, false); exportCanvasButton = canvas; updateExportCanvasButton(); options.addView(canvas);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Export workspace").setView(options).setNegativeButton("Cancel", null)
+                .setPositiveButton("Render MP4", (d, w) -> export()).create();
+        dialog.setOnDismissListener(d -> { if (exportCanvasButton == canvas) exportCanvasButton = null; }); dialog.show();
     }
     private void canvasMenu() {
         if (operationBusy) return;
@@ -1054,9 +1074,15 @@ public final class MainActivity extends Activity {
                     StudioProject next = project.copy(); next.width = size == 1 ? 1280 : size == 2 ? 1080 : 1920;
                     next.height = size == 1 ? 720 : size == 2 ? 1920 : 1080;
                     if (next.width == project.width && next.height == project.height) return;
-                    try { validateProposal(next); recordEdit(); project.width = next.width; project.height = next.height; changedEdit(); }
+                    try { validateProposal(next); recordEdit(); project.width = next.width; project.height = next.height; changedEdit(); updateExportCanvasButton(); }
                     catch (IllegalArgumentException error) { message(error.getMessage()); }
                 }).show();
+    }
+    private void updateExportCanvasButton() {
+        if (exportCanvasButton != null) {
+            String title = project.width + " × " + project.height + " · change canvas";
+            exportCanvasButton.setText(title); exportCanvasButton.setContentDescription(title);
+        }
     }
 
     private void pickVideos() {
@@ -1076,7 +1102,33 @@ public final class MainActivity extends Activity {
     }
     private void pickSaveProject() {
         if (operationBusy || !draftReady) return; flushFocusedEditor();
-        pendingSave = project.copy(); createDocument("application/octet-stream", filename(project.title) + ".netvistamobile", SAVE_PROJECT);
+        if (pendingProjectSaveId != null) { message("Finish or cancel the existing Files save request first."); return; }
+        StudioProject captured = project.copy(); String id = UUID.randomUUID().toString();
+        setBusy(true, "Preparing the requested project for Files…"); preparingProjectSaveId = id;
+        long ticket = ++operationGeneration;
+        io.execute(() -> {
+            try { files.savePendingProject(id, captured); }
+            catch (Exception error) {
+                discardPendingProject(id);
+                postResult(ticket, () -> { preparingProjectSaveId = null; setBusy(false, "Could not prepare project save: " + error.getMessage()); }); return;
+            }
+            if (!liveUi()) { discardPendingProject(id); return; }
+            main.post(() -> {
+                if (!liveUi() || ticket != operationGeneration || !foreground || !account.state().canEdit) {
+                    discardPendingProject(id); preparingProjectSaveId = null;
+                    if (liveUi() && ticket == operationGeneration) setBusy(false, "Project save was interrupted. Choose Save again; your edit remains intact.");
+                    return;
+                }
+                preparingProjectSaveId = null; pendingProjectSaveId = id; setBusy(false, "Choose where to save the requested project.");
+                try { createDocument("application/octet-stream", filename(captured.title) + ".netvistamobile", SAVE_PROJECT); }
+                catch (RuntimeException error) { pendingProjectSaveId = null; discardPendingProject(id); message("Files could not open: " + error.getMessage()); }
+            });
+        });
+    }
+    private void discardPendingProject(String id) {
+        if (id == null || files == null) return;
+        try { files.deletePendingProject(id); }
+        catch (IOException error) { Log.w("NetVistaProject", "Pending project-save cleanup failed", error); }
     }
     private void createDocument(String type, String name, int request) {
         if (!liveUi() || !foreground) return;
@@ -1086,26 +1138,40 @@ public final class MainActivity extends Activity {
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
         if (!liveUi() || account == null || io.isShutdown()) return;
-        if (result != RESULT_OK || data == null) { if (request == SAVE_PROJECT) pendingSave = null; return; }
-        if (!account.state().canEdit) { message("Sign in again to continue. Your project is safe."); return; }
+        if (result != RESULT_OK || data == null) {
+            if (request == SAVE_PROJECT) { discardPendingProject(pendingProjectSaveId); pendingProjectSaveId = null; }
+            return;
+        }
+        if (!account.state().canEdit) {
+            if (request == SAVE_PROJECT) { discardPendingProject(pendingProjectSaveId); pendingProjectSaveId = null; if (data.getData() != null) deleteIncomplete(data.getData()); }
+            message("Sign in again to continue. Your project is safe."); return;
+        }
         if (request == IMPORT_VIDEO) {
             List<Uri> uris = new ArrayList<>();
             if (data.getClipData() != null) for (int i = 0; i < data.getClipData().getItemCount(); i++) uris.add(data.getClipData().getItemAt(i).getUri());
             else if (data.getData() != null) uris.add(data.getData());
             importVideos(uris); return;
         }
-        Uri destination = data.getData(); if (destination == null) return;
+        Uri destination = data.getData();
+        if (destination == null) {
+            if (request == SAVE_PROJECT) { discardPendingProject(pendingProjectSaveId); pendingProjectSaveId = null; }
+            return;
+        }
         if (request == OPEN_PROJECT) loadProject(destination);
-        else if (request == SAVE_PROJECT && pendingSave != null) {
-            StudioProject value = pendingSave; pendingSave = null;
+        else if (request == SAVE_PROJECT) {
+            String capturedId = pendingProjectSaveId; pendingProjectSaveId = null;
+            if (capturedId == null) { deleteIncomplete(destination); message("The Files save request could not be restored. Choose Save again; your current project is safe."); return; }
             setBusy(true, "Saving project with original videos…");
             long ticket = ++operationGeneration;
             io.execute(() -> {
-                try (OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
-                    if (output == null) throw new IOException("Project destination is unavailable."); files.saveArchive(value, output);
+                try {
+                    StudioProject value = files.loadPendingProject(capturedId);
+                    try (OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
+                        if (output == null) throw new IOException("Project destination is unavailable."); files.saveArchive(value, output);
+                    }
                 } catch (Exception e) {
                     deleteIncomplete(destination); postResult(ticket, () -> setBusy(false, "Project save failed: " + e.getMessage())); return;
-                }
+                } finally { discardPendingProject(capturedId); }
                 postResult(ticket, () -> setBusy(false, "Self-contained project saved. All imported videos are included."));
             });
         } else if (request == SAVE_MOVIE && completedMovie != null) saveMovie(destination);
@@ -1350,9 +1416,15 @@ public final class MainActivity extends Activity {
     @Override public void onConfigurationChanged(Configuration configuration) { super.onConfigurationChanged(configuration); if (operationBusy) pendingLayoutRebuild = true; else if (editorVisible) showEditor(); else if (homeVisible) showHome(); }
     @Override protected void onResume() { super.onResume(); foreground = true; if (account != null) { account.checkAsync(true); main.removeCallbacks(accountTimer); main.post(accountTimer); } main.removeCallbacks(playheadTimer); if (editorVisible) { main.post(playheadTimer); if (!operationBusy && player != null) preview(false); } }
     @Override protected void onStop() { foreground = false; main.removeCallbacks(accountTimer); main.removeCallbacks(playheadTimer); main.removeCallbacks(effectsPreview); flushFocusedEditor(); if (player != null) player.pause(); if (renderingFile != null) cancelRendering("Export cancelled when the app left the foreground. Keep the app open while rendering."); if (editorVisible || homeVisible) autosave(); super.onStop(); }
-    @Override protected void onSaveInstanceState(Bundle saved) { if (completedMovie != null) saved.putString("rendered_movie", completedMovie.getName()); super.onSaveInstanceState(saved); }
+    @Override protected void onSaveInstanceState(Bundle saved) {
+        if (completedMovie != null) saved.putString("rendered_movie", completedMovie.getName());
+        if (pendingProjectSaveId != null) saved.putString("pending_project_save_id", pendingProjectSaveId);
+        super.onSaveInstanceState(saved);
+    }
     @Override protected void onDestroy() {
         destroyed = true; operationGeneration++; editorVisible = false;
+        discardPendingProject(preparingProjectSaveId);
+        if (isFinishing()) discardPendingProject(pendingProjectSaveId);
         dismissCompactDialog();
         if (account != null) account.removeListener(accountListener);
         main.removeCallbacksAndMessages(null);
