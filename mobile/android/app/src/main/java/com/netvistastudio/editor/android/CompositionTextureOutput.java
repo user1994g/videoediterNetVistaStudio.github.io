@@ -4,7 +4,7 @@ import android.graphics.SurfaceTexture;
 import android.os.Looper;
 import android.view.Surface;
 import android.view.TextureView;
-import androidx.annotation.Nullable;
+import android.annotation.Nullable;
 import androidx.media3.common.ForwardingPlayer;
 import androidx.media3.common.util.Size;
 import androidx.media3.common.util.UnstableApi;
