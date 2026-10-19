@@ -137,6 +137,9 @@ enum MobileVideoEngine {
     static func sequence(_ project: MobileProject, media: URL, height: Int = 1080, fps: Int = 30,
                          livePreview: Bool = false) async throws -> MobileSequence {
         try project.validate()
+        guard [720, 1080, 2160].contains(height), [24, 25, 30, 50, 60].contains(fps) else {
+            throw MobileProjectError.unsupportedExport
+        }
         guard !project.clips.isEmpty else { throw MobileProjectError.noVideo }
         let composition = AVMutableComposition()
         // A completely empty audio track makes AVAssetExportSession reject some

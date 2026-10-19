@@ -464,13 +464,20 @@ class MobileEditorCore: UIViewController, UIDocumentPickerDelegate {
     @objc func exportAction() {
         guard canEdit, prepareForCommand() else { return }
         guard !project.clips.isEmpty else { alert("No clips to export", "Import at least one video first."); return }
-        let options = UIAlertController(title: "Export movie", message: "MP4 · 16:9 · 30 fps\nAll clips are fit within the frame without cropping.", preferredStyle: .alert)
-        for (name, height) in [("720p", 720), ("1080p", 1080), ("4K", 2160)] {
-            options.addAction(UIAlertAction(title: name, style: .default) { [weak self] _ in self?.beginExport(height) })
-        }
-        options.addAction(UIAlertAction(title: "Cancel", style: .cancel)); present(options, animated: true)
+        guard presentedViewController == nil else { return }
+        let options = MovieExportSettingsViewController()
+        options.permitsExport = { [weak self] in self?.canEdit == true && !(self?.project.clips.isEmpty ?? true) }
+        options.onExport = { [weak self] height, fps in self?.beginExport(height, fps: fps) }
+        options.modalPresentationStyle = .pageSheet
+        options.preferredContentSize = CGSize(width: 520, height: 660)
+        if let sheet = options.sheetPresentationController { sheet.detents = [.large()] }
+        present(options, animated: true)
     }
-    func beginExport(_ height: Int) {
+    func beginExport(_ height: Int, fps: Int = 30) {
+        guard canEdit, prepareForCommand(), !project.clips.isEmpty, view.window != nil else { return }
+        guard [720, 1080, 2160].contains(height), [24, 25, 30, 50, 60].contains(fps) else {
+            error(MobileProjectError.unsupportedExport); return
+        }
         view.endEditing(true)
         exportGeneration += 1
         let ticket = exportGeneration
@@ -486,14 +493,14 @@ class MobileEditorCore: UIViewController, UIDocumentPickerDelegate {
         let snapshot = project
         Task {
             do {
-                let sequence = try await MobileVideoEngine.sequence(snapshot, media: media, height: height)
+                let sequence = try await MobileVideoEngine.sequence(snapshot, media: media, height: height, fps: fps)
                 guard exporting, ticket == exportGeneration else { return }
                 let output = FileManager.default.temporaryDirectory.appendingPathComponent("NetVista-Movie-\(UUID().uuidString.prefix(8)).mp4")
                 let session = try MobileVideoEngine.exporter(sequence, output: output); exportSession = session
                 progressTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
                     Task { @MainActor in
                         guard let self, let current = self.exportSession else { return }
-                        self.exportAlert?.message = "\(Int(current.progress * 100))% · \(height)p · 30 fps\nKeep NetVista open until export finishes."
+                        self.exportAlert?.message = "\(Int(current.progress * 100))% · \(height)p · \(fps) fps\nKeep NetVista open until export finishes."
                     }
                 }
                 session.exportAsynchronously { [weak self] in

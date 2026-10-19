@@ -202,7 +202,7 @@ struct MobileClip: Codable, Equatable, Identifiable {
 }
 
 enum MobileProjectError: LocalizedError {
-    case invalidClip, invalidProject, invalidAnimation, animationLimit, projectTooLarge, missingMedia(String), noVideo
+    case invalidClip, invalidProject, invalidAnimation, animationLimit, projectTooLarge, missingMedia(String), noVideo, unsupportedExport
     var errorDescription: String? {
         switch self {
         case .invalidClip: return "A clip has invalid trim, motion, colour or media settings."
@@ -212,6 +212,7 @@ enum MobileProjectError: LocalizedError {
         case .projectTooLarge: return "This project's editing metadata exceeds 8 MB. Remove unused animation keys or media-pool entries before saving. Source videos are not part of this limit. Your previous saved project is unchanged."
         case .missingMedia(let file): return "The project is missing media: \(file)"
         case .noVideo: return "This file does not contain a playable video track."
+        case .unsupportedExport: return "Choose 720p, 1080p or 4K at 24, 25, 30, 50 or 60 fps. Higher resolutions are not supported by this mobile renderer yet."
         }
     }
 }

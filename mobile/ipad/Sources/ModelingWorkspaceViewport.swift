@@ -104,12 +104,33 @@ extension ModelPoint {
     private func updateCamera() {
         SCNTransaction.begin(); SCNTransaction.disableActions = true
         cameraNode.position = (target + ModelPoint(x: sin(yaw) * cos(pitch), y: sin(pitch), z: cos(yaw) * cos(pitch)) * distance).mobileSCN
-        cameraNode.look(at: target.mobileSCN); cameraNode.camera?.zNear = max(0.001, distance / 10_000)
+        // look(at:) alone reuses the camera's previous world-up vector and
+        // gradually banks level axis views after orbiting. Keep gravity upright.
+        cameraNode.look(at: target.mobileSCN,up:SCNVector3(0,1,0),localFront:SCNVector3(0,0,-1))
+        cameraNode.camera?.zNear = max(0.001, distance / 10_000)
         cameraNode.camera?.zFar = max(100, distance * 100); SCNTransaction.commit(); SCNTransaction.flush(); setNeedsDisplay()
         overlay.points = []
     }
     func surfaceHit(_ point: CGPoint) -> SCNHitTestResult? {
-        hitTest(point, options: [.categoryBitMask: 1, .searchMode: SCNHitTestSearchMode.closest.rawValue, .backFaceCulling: false]).first { UUID(uuidString: $0.node.name ?? "") != nil }
+        // A ray exactly on a newly sculpted shared vertex can numerically miss
+        // every near triangle and hit the rear instead. Use a subpixel pick
+        // footprint and choose the nearest real mesh intersection. This stays
+        // below one display pixel on Retina screens, preserves the actual face
+        // and normal, and needs no synchronous rendered-image readback.
+        guard bounds.width > 0, bounds.height > 0, point.x.isFinite, point.y.isFinite,
+              let root = scene?.rootNode else {return nil}
+        let near = unprojectPoint(SCNVector3(Float(point.x),Float(point.y),0))
+        let origin = ModelPoint(mobile:near)
+        func distanceSquared(_ hit: SCNHitTestResult) -> Double {
+            let delta = ModelPoint(mobile:hit.worldCoordinates)-origin; return delta.dot(delta)
+        }
+        let offsets = [CGPoint.zero,CGPoint(x:0.25,y:0),CGPoint(x:-0.25,y:0),CGPoint(x:0,y:0.25),CGPoint(x:0,y:-0.25)]
+        return offsets.flatMap { offset -> [SCNHitTestResult] in
+            let x = Float(point.x+offset.x), y = Float(point.y+offset.y)
+            return root.hitTestWithSegment(from:unprojectPoint(SCNVector3(x,y,0)),to:unprojectPoint(SCNVector3(x,y,1)),options:[SCNHitTestOption.categoryBitMask.rawValue: 1, SCNHitTestOption.searchMode.rawValue: SCNHitTestSearchMode.all.rawValue, SCNHitTestOption.backFaceCulling.rawValue: false])
+        }
+            .filter { UUID(uuidString: $0.node.name ?? "") != nil && distanceSquared($0).isFinite }
+            .min { distanceSquared($0) < distanceSquared($1) }
     }
     func cursor(object: ModelingObject, center: ModelPoint, normal: ModelPoint, radius: Double) {
         let tangent = normal.cross(abs(normal.y) < 0.9 ? ModelPoint(y: 1) : ModelPoint(x: 1)).unit

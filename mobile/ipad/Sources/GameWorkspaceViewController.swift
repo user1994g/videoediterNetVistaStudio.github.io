@@ -219,7 +219,25 @@ final class GameWorkspaceViewController: UIViewController, UIDocumentPickerDeleg
     func tableView(_ tableView:UITableView,cellForRowAt indexPath:IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style:.subtitle,reuseIdentifier:nil); cell.backgroundColor = .clear; cell.textLabel?.font = .systemFont(ofSize:13); cell.textLabel?.textColor = .white; cell.detailTextLabel?.textColor = MobileTheme.secondary
         if tabs.selectedSegmentIndex == 1 { let asset = session.project.assets[indexPath.row]; cell.textLabel?.text = URL(fileURLWithPath:asset.path).lastPathComponent; cell.detailTextLabel?.text = ByteCountFormatter.string(fromByteCount:Int64(asset.data.count),countStyle:.file); cell.imageView?.image = UIImage(data:asset.data) ?? UIImage(systemName:"cube") }
-        else { let object = session.project.objects[indexPath.row]; cell.textLabel?.text = object.name; cell.detailTextLabel?.text = "\(object.kind.rawValue) · \(object.rules.count) rules"; cell.imageView?.image = UIImage(systemName:object.visible ? "cube" : "eye.slash"); cell.accessoryType = object.id == session.selectedID ? .checkmark : .none }
+        else {
+            let object = session.project.objects[indexPath.row]
+            cell.textLabel?.text = object.name; cell.detailTextLabel?.text = "\(object.kind.rawValue) · \(object.rules.count) rules"
+            cell.imageView?.image = UIImage(systemName:object.visible ? "cube" : "eye.slash")
+            // UITableView's standard checkmark inserts a private accessory
+            // button with a small hit area. Supply a real 44-point control so
+            // the visible selection affordance is as usable as the row itself.
+            let selection = UIButton(type:.system); selection.frame = CGRect(x:0,y:0,width:44,height:44)
+            selection.setImage(UIImage(systemName:object.id == session.selectedID ? "checkmark.circle.fill" : "circle"),for:.normal)
+            selection.tintColor = object.id == session.selectedID ? .systemTeal : MobileTheme.secondary
+            selection.accessibilityIdentifier = "game.object.select."+object.id.uuidString
+            selection.accessibilityLabel = "Select "+object.name
+            selection.isEnabled = editable
+            selection.addAction(UIAction { [weak self] _ in
+                guard let self,self.editable else { return }
+                self.select(object.id); self.tabs.selectedSegmentIndex = 2; self.buildPanel()
+            },for:.touchUpInside)
+            cell.accessoryType = .none; cell.accessoryView = selection
+        }
         return cell
     }
     func tableView(_ tableView:UITableView,didSelectRowAt indexPath:IndexPath) { guard editable else { return }; if tabs.selectedSegmentIndex == 1 { assetMenu(session.project.assets[indexPath.row]) } else { select(session.project.objects[indexPath.row].id); tabs.selectedSegmentIndex = 2; buildPanel() } }

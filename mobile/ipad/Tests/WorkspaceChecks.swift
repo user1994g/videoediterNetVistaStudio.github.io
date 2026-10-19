@@ -374,13 +374,59 @@ final class WorkspaceCheckDelegate: UIResponder, UIApplicationDelegate {
         require(saved == editor.project && saved.library.count == 2, "Native persistence and media pool retained")
         editor.showHome(); await settle(); control("studio.continue").sendActions(for: .touchUpInside)
         await settle(); snapshot("editor-final")
+        await checkExportSettings()
         do { try await PhotoWorkspaceChecks.run(editor: editor, documents: documents) }
         catch { fail(error.localizedDescription) }
         do { try await checkCreativeWorkspaces() }
         catch { fail(error.localizedDescription) }
         try? "PASS: actual AVPlayer frames, second-clip playback, opacity 0/50 and undo preview; native Home artwork; phone/tablet portrait/landscape and split-window layout; real animation diamonds, animated playback, Add/Remove/Previous/Next/Auto key, seekable lane, undo and saved tracks; real property controls, split/duplicate/delete/reorder callback, draft/effects/media-pool persistence; no account traffic. Simulator QA is not physical-device signing or codec coverage.\n".write(to: documents.appendingPathComponent("workspace-result.txt"), atomically: true, encoding: .utf8)
     }
+    func checkExportSettings() async {
+        let original = editor.project
+        editor.exportAction()
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        guard let settings = (editor.presentedViewController ?? host.presentedViewController) as? MovieExportSettingsViewController,
+              settings.view.window != nil else { fail("Export opens the actual combined resolution/FPS page") }
+        require(settings.height == 1080 && settings.fps == 30, "Export starts with explicit1080p/30 defaults")
+        settings.resolutions.selectedSegmentIndex = 2; settings.resolutions.sendActions(for: .valueChanged)
+        settings.frameRates.selectedSegmentIndex = 4; settings.frameRates.sendActions(for: .valueChanged)
+        require(settings.summary.text == "3840 × 2160 pixels · 60 fps", "Export summary reflects both real choices before rendering")
+        for size in [CGSize(width: 390, height: 844), CGSize(width: 844, height: 390), CGSize(width: 768, height: 1024)] {
+            settings.view.frame.size = size; settings.view.setNeedsLayout(); settings.view.layoutIfNeeded()
+            for item in [settings.resolutions, settings.frameRates, settings.exportButton, settings.cancelButton] {
+                require(item.bounds.height >= 44 && item.bounds.width <= size.width, "Export controls are usable on phone/tablet and scroll in landscape")
+            }
+        }
+        settings.cancelButton.sendActions(for: .touchUpInside)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        require(editor.project == original && !editor.exporting && editor.exportSession == nil,
+                "Cancelling export settings never renders or mutates the project")
+        // The same native Render button forwards exactly the displayed pair.
+        let recorder = MovieExportSettingsViewController(); var permitted = true; var exports: [(Int, Int)] = []
+        recorder.permitsExport = { permitted }; recorder.onExport = { exports.append(($0, $1)) }
+        host.present(recorder, animated: false)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        recorder.resolutions.selectedSegmentIndex = 0; recorder.frameRates.selectedSegmentIndex = 1
+        permitted = false; recorder.updateSummary(); recorder.exportButton.sendActions(for: .touchUpInside)
+        require(exports.isEmpty && recorder.presentingViewController != nil, "Revoked export permission cannot dismiss into a stale render")
+        permitted = true; recorder.updateSummary(); recorder.exportButton.sendActions(for: .touchUpInside)
+        recorder.exportButton.sendActions(for: .touchUpInside)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        require(exports.count == 1 && exports[0].0 == 720 && exports[0].1 == 25,
+                "Render forwards the actual chosen resolution and frame rate together exactly once")
+        require(host.presentedViewController == nil && editor.project == original, "Export settings leave the independent editing session unchanged")
+    }
     func checkCreativeWorkspaces() async throws {
+        func waitForTransition(_ description:String,_ ready:()->Bool) async {
+            // UIKit/SceneKit transitions can take longer under simulator load.
+            // Wait for the real presentation and attachment state, not a fixed
+            // animation sleep; the predicate remains a strict bounded oracle.
+            for _ in 0..<60 {
+                if ready() {return}
+                try? await Task.sleep(nanoseconds:50_000_000)
+            }
+            require(ready(),description)
+        }
         let video = editor.project
         let photo = editor.photoEditor
         editor.showHome(); await settle()
@@ -388,27 +434,46 @@ final class WorkspaceCheckDelegate: UIResponder, UIApplicationDelegate {
             require(control(id).bounds.height >= 44, "Every editor has an accessible Home launch action")
         }
         control("studio.open.game").sendActions(for: .touchUpInside)
-        try? await Task.sleep(nanoseconds: 600_000_000)
-        guard let game = editor.gameEditor, editor.presentedViewController === game else { fail("Home must open a real independent Game Maker") }
+        await waitForTransition("Game Maker finishes opening into an actual window") {
+            guard let game = editor.gameEditor else {return false}
+            return game.viewIfLoaded?.window != nil && !game.isBeingPresented &&
+                (editor.presentedViewController === game || host.presentedViewController === game)
+        }
+        guard let game = editor.gameEditor, game.viewIfLoaded?.window != nil,
+              editor.presentedViewController === game || host.presentedViewController === game else {
+            fail("Home must open a real independent Game Maker; instance=\(editor.gameEditor != nil), presenter=\(String(describing: editor.gameEditor?.presentingViewController)), window=\(editor.gameEditor?.viewIfLoaded?.window != nil)")
+        }
         try await GameWorkspaceChecks.run(controller: game, documents: documents)
         let savedGame = game.session.project
         try PhotoWorkspaceChecks.button(game.view, "game.home").sendActions(for: .touchUpInside)
-        try? await Task.sleep(nanoseconds: 600_000_000)
-        require(editor.presentedViewController == nil, "Game Home returns to the shared launcher")
+        await waitForTransition("Game Home returns to the shared launcher") {
+            editor.presentedViewController == nil && host.presentedViewController == nil && game.viewIfLoaded?.window == nil
+        }
         control("studio.open.modeling").sendActions(for: .touchUpInside)
-        try? await Task.sleep(nanoseconds: 600_000_000)
-        guard let model = editor.modelingEditor, editor.presentedViewController === model else { fail("Home must open a real independent 3D Editor") }
+        await waitForTransition("3D Editor finishes opening into an actual window") {
+            guard let model = editor.modelingEditor else {return false}
+            return model.viewIfLoaded?.window != nil && !model.isBeingPresented &&
+                (editor.presentedViewController === model || host.presentedViewController === model)
+        }
+        guard let model = editor.modelingEditor, model.viewIfLoaded?.window != nil,
+              editor.presentedViewController === model || host.presentedViewController === model else { fail("Home must open a real independent 3D Editor") }
         try await ModelingWorkspaceChecks.run(controller: model, documents: documents)
         let savedModel = model.document
         try PhotoWorkspaceChecks.button(model.view, "model.home").sendActions(for: .touchUpInside)
-        try? await Task.sleep(nanoseconds: 600_000_000)
-        require(editor.presentedViewController == nil, "3D Home returns to the shared launcher")
+        await waitForTransition("3D Home returns to the shared launcher") {
+            editor.presentedViewController == nil && host.presentedViewController == nil && model.viewIfLoaded?.window == nil
+        }
         control("studio.open.game").sendActions(for: .touchUpInside)
-        try? await Task.sleep(nanoseconds: 600_000_000)
+        await waitForTransition("Reopening Game Maker finishes without replacing its workspace") {
+            game.viewIfLoaded?.window != nil && !game.isBeingPresented &&
+                (editor.presentedViewController === game || host.presentedViewController === game)
+        }
         require(editor.gameEditor === game && game.session.project == savedGame,
                 "Switching apps retains the authored game, not a replacement session")
         try PhotoWorkspaceChecks.button(game.view, "game.home").sendActions(for: .touchUpInside)
-        try? await Task.sleep(nanoseconds: 600_000_000)
+        await waitForTransition("Reopened Game Maker returns to Home") {
+            editor.presentedViewController == nil && host.presentedViewController == nil && game.viewIfLoaded?.window == nil
+        }
         require(editor.modelingEditor === model && model.document == savedModel && editor.photoEditor === photo && editor.project == video,
                 "Each editor retains its independent project through the shared Home navigation")
     }

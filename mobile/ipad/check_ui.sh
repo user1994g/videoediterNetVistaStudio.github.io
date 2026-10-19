@@ -22,6 +22,7 @@ xcrun --sdk iphonesimulator swiftc -swift-version 5 -O -sdk "$SDK" \
   "$SOURCE_DIR/Sources/MobileProject.swift" "$SOURCE_DIR/Sources/VideoEngine.swift" \
   "$SOURCE_DIR/Sources/WorkspaceViews.swift" "$SOURCE_DIR/Sources/EditorViewController.swift" \
   "$SOURCE_DIR/Sources/StudioWorkspaceCard.swift" \
+  "$SOURCE_DIR/Sources/MovieExportSettingsViewController.swift" \
   "$REPO_DIR/GameProject.swift" "$REPO_DIR/GameGraph.swift" "$REPO_DIR/GameRuntime.swift" "$REPO_DIR/GameEditingSupport.swift" "$REPO_DIR/GameExport.swift" "$REPO_DIR/GameModelSupport.swift" \
   "$REPO_DIR/ModelingDocument.swift" "$REPO_DIR/ModelingSculpt.swift" "$REPO_DIR/ModelingGenerators.swift" "$REPO_DIR/ModelingPhysics.swift" \
   "$SOURCE_DIR"/Sources/GameWorkspace*.swift "$SOURCE_DIR"/Sources/ModelingWorkspace*.swift \

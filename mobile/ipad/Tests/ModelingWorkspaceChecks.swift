@@ -51,10 +51,16 @@ import UniformTypeIdentifiers
 
         controller.setMode(3); viewport.setDirection("Right"); await pause()
         let beforeSculpt = controller.document, beforeSculptHistory = controller.undoSteps.count
-        controller.surfaceInput(side,phase:0); controller.surfaceInput(CGPoint(x:side.x+4,y:side.y),phase:1); controller.surfaceInput(side,phase:2)
+        controller.surfaceInput(side,phase:0)
+        let afterFirstStamp = controller.document
+        guard let nearAfterUpload = viewport.surfaceHit(side) else {throw ModelingError.invalid("Near surface disappeared after the first sculpt upload")}
+        let alternate = viewport.hitTest(side,options:[.categoryBitMask:1,.searchMode:SCNHitTestSearchMode.closest.rawValue,.backFaceCulling:true])
+        try check(Double(nearAfterUpload.worldCoordinates.x) > 0.49,"Successive brush hits use the visible near side after a geometry upload: hit=\(nearAfterUpload.worldCoordinates), normal=\(nearAfterUpload.worldNormal), camera=\(String(describing:viewport.pointOfView?.worldPosition)), ray=\(viewport.unprojectPoint(SCNVector3(Float(side.x),Float(side.y),0)))→\(viewport.unprojectPoint(SCNVector3(Float(side.x),Float(side.y),1))), culled=\(alternate.map { ($0.worldCoordinates,$0.worldNormal) })")
+        controller.surfaceInput(CGPoint(x:side.x+4,y:side.y),phase:1); controller.surfaceInput(side,phase:2)
         let sculpted = controller.selectedObject!
         try check(sculpted.mesh.faces.count >= 512 && sculpted.mesh.vertices.contains(where:{$0.x > 0.501}),"Touching the middle of the right side adds working detail and raises actual mesh vertices outwards")
-        try check(sculpted.mesh.vertices.filter({$0.x < -0.49}).allSatisfy({abs($0.x+0.5)<0.001}),"Front-only sculpt does not pull the opposite side through the mesh")
+        let rear = sculpted.mesh.vertices.filter { $0.x < -0.49 }
+        try check(rear.allSatisfy({abs($0.x+0.5)<0.001}),"Front-only sculpt does not pull the opposite side through the mesh; rear bounds=\(rear.map(\.x).min() ?? 0)…\(rear.map(\.x).max() ?? 0), unexpected=\(rear.filter {abs($0.x+0.5)>=0.001}.prefix(4)), source rear=\(beforeSculpt.objects[0].mesh.vertices.filter {$0.x < -0.49}), first stamp=\(afterFirstStamp.objects[0].mesh.vertices.filter {$0.x < -0.49 && abs($0.x+0.5)>=0.001}.prefix(4))")
         try check(controller.undoSteps.count == beforeSculptHistory+1,"Whole touch sculpt and automatic detail preparation are one Undo")
         controller.undo(); try check(controller.document == beforeSculpt,"Undo restores the coarse source mesh, not just its displayed image")
         await pause(); controller.surfaceInput(side,phase:0); controller.surfaceInput(CGPoint(x:side.x+12,y:side.y),phase:1); controller.surfaceInput(side,phase:3)
@@ -94,6 +100,8 @@ import UniformTypeIdentifiers
         try check(abs(Double(previewNode.presentation.worldPosition.y)) > 0.01,"Native simulation actually moves the displayed mesh")
         controller.stopPhysics(); try check(controller.document == authored && abs(Double(previewNode.worldPosition.y)) < 0.001,"Reset restores the authored viewport pose")
         try controller.loadDocument(cube); controller.setMode(0)
+        for _ in 0..<4 {viewport.setDirection("Perspective"); viewport.setDirection("Right"); viewport.frame(objects:controller.document.objects)}
+        try check(viewport.cameraNode.worldUp.y > 0.999,"Repeated orbit/axis/frame changes keep the Right view upright instead of accumulating camera roll")
 
         for size in [CGSize(width:390,height:844),CGSize(width:844,height:390),CGSize(width:1024,height:768)] {
             controller.view.frame = CGRect(origin:.zero,size:size); controller.view.setNeedsLayout(); controller.view.layoutIfNeeded(); viewport.frame(objects:controller.document.objects); await pause()
@@ -103,20 +111,25 @@ import UniformTypeIdentifiers
             }
             let image = viewport.snapshot()
             try check(image.size.width > 100 && image.size.height > 100,"SceneKit renders native 3D pixels")
+            try image.pngData()?.write(to:documents.appendingPathComponent("model-viewport-\(Int(size.width))x\(Int(size.height)).png"))
+            let full = UIGraphicsImageRenderer(size:size).image {_ in controller.view.drawHierarchy(in:controller.view.bounds,afterScreenUpdates:true)}
+            try full.pngData()?.write(to:documents.appendingPathComponent("model-workspace-\(Int(size.width))x\(Int(size.height)).png"))
             let center = viewport.projectPoint(SCNVector3Zero)
             try check(viewport.surfaceHit(CGPoint(x:CGFloat(center.x),y:CGFloat(center.y))) != nil,"Visible model remains pickable at \(size)")
             if let cgImage = image.cgImage {
-                let context = CIContext(), raster = CIImage(cgImage:cgImage), factor = CGFloat(cgImage.width)/image.size.width
+                // SceneKit's snapshot may report raw raster pixels as UIImage
+                // points. Projected positions remain viewport points, so map
+                // with the actual viewport-to-raster dimensions, not image.size.
+                let context = CIContext(), raster = CIImage(cgImage:cgImage)
+                let scaleX = CGFloat(cgImage.width)/viewport.bounds.width, scaleY = CGFloat(cgImage.height)/viewport.bounds.height
                 func rgb(_ point:CGPoint) -> [UInt8] {
                     var pixel = [UInt8](repeating:0,count:4)
-                    context.render(raster,toBitmap:&pixel,rowBytes:4,bounds:CGRect(x:floor(point.x*factor),y:floor(CGFloat(cgImage.height)-point.y*factor-1),width:1,height:1),format:.RGBA8,colorSpace:CGColorSpace(name:CGColorSpace.sRGB))
+                    context.render(raster,toBitmap:&pixel,rowBytes:4,bounds:CGRect(x:floor(point.x*scaleX),y:floor(CGFloat(cgImage.height)-point.y*scaleY-1),width:1,height:1),format:.RGBA8,colorSpace:CGColorSpace(name:CGColorSpace.sRGB))
                     return Array(pixel.prefix(3))
                 }
                 let mesh = rgb(CGPoint(x:CGFloat(center.x),y:CGFloat(center.y))), background = rgb(CGPoint(x:5,y:5))
-                try check(zip(mesh,background).reduce(0,{ $0+abs(Int($1.0)-Int($1.1)) }) > 35,"Displayed 3D mesh has actual rendered colour, not an empty or black surface")
+                try check(zip(mesh,background).reduce(0,{ $0+abs(Int($1.0)-Int($1.1)) }) > 35,"Displayed 3D mesh has actual rendered colour, not an empty or black surface at \(size): mesh=\(mesh), background=\(background), image=\(image.size)/\(cgImage.width)x\(cgImage.height), center=\(center), viewport=\(viewport.bounds)")
             } else {throw ModelingError.invalid("Native SceneKit snapshot has no raster pixels")}
-            let full = UIGraphicsImageRenderer(size:size).image {_ in controller.view.drawHierarchy(in:controller.view.bounds,afterScreenUpdates:true)}
-            try full.pngData()?.write(to:documents.appendingPathComponent("model-workspace-\(Int(size.width))x\(Int(size.height)).png"))
         }
         // Completing background IO after Studio Home must not replace the
         // current session, open a detached system picker, or strand exports.

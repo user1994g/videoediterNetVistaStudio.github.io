@@ -89,6 +89,14 @@ import CoreImage
         controller.undo(); try require(controller.session.project.objects.contains { $0.id == copyID },"Object deletion is undoable")
         controller.redo(); controller.select(actorID)
 
+        guard let panelTabs = views(controller.view).compactMap({ $0 as? UISegmentedControl }).first else { throw GameProjectError.invalid("Missing native game panel tabs") }
+        panelTabs.selectedSegmentIndex = 0; panelTabs.sendActions(for:.valueChanged); controller.view.layoutIfNeeded()
+        let wallSelection = try button(controller.view,"object.select."+wall.id.uuidString)
+        try require(wallSelection.bounds.width >= 44 && wallSelection.bounds.height >= 44,"Object selection accessory has a real44-point hit target")
+        wallSelection.sendActions(for:.touchUpInside)
+        try require(controller.session.selectedID == wall.id && panelTabs.selectedSegmentIndex == 2,"Object accessory actually selects its object and opens its properties")
+        controller.select(actorID)
+
         for size in [CGSize(width:390,height:844),CGSize(width:844,height:390),CGSize(width:1024,height:768)] {
             controller.view.frame.size = size; controller.view.setNeedsLayout(); controller.view.layoutIfNeeded(); controller.viewport.fit()
             try require(controller.viewport.bounds.width > 150 && controller.viewport.bounds.height >= 110,"Usable game scene at \(size)")
