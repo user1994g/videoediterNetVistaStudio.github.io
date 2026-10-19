@@ -4,7 +4,6 @@ import android.graphics.SurfaceTexture;
 import android.os.Looper;
 import android.view.Surface;
 import android.view.TextureView;
-import android.annotation.Nullable;
 import androidx.media3.common.ForwardingPlayer;
 import androidx.media3.common.util.Size;
 import androidx.media3.common.util.UnstableApi;
@@ -23,16 +22,18 @@ import androidx.media3.transformer.CompositionPlayer;
 @UnstableApi
 final class CompositionTextureOutput extends ForwardingPlayer implements TextureView.SurfaceTextureListener {
     private final CompositionPlayer engine;
-    @Nullable private TextureView view;
-    @Nullable private SurfaceTexture texture;
-    @Nullable private Surface surface;
+    // Nullable references intentionally use plain Java here. The platform's
+    // android.annotation.Nullable is hidden from third-party applications.
+    private TextureView view;
+    private SurfaceTexture texture;
+    private Surface surface;
     private Size outputSize = Size.ZERO;
     private int createdSurfaces, releasedSurfaces;
 
     CompositionTextureOutput(CompositionPlayer engine) { super(engine); this.engine = engine; }
     CompositionPlayer engine() { return engine; }
-    @Nullable TextureView boundView() { return view; }
-    @Nullable Surface ownedSurface() { return surface; }
+    TextureView boundView() { return view; }
+    Surface ownedSurface() { return surface; }
     int createdSurfaceCount() { return createdSurfaces; }
     int releasedSurfaceCount() { return releasedSurfaces; }
 
@@ -42,7 +43,7 @@ final class CompositionTextureOutput extends ForwardingPlayer implements Texture
         }
     }
 
-    @Override public void setVideoTextureView(@Nullable TextureView next) {
+    @Override public void setVideoTextureView(TextureView next) {
         verifyThread();
         if (view == next) return;
         detach();
@@ -56,7 +57,7 @@ final class CompositionTextureOutput extends ForwardingPlayer implements Texture
         }
     }
 
-    @Override public void clearVideoTextureView(@Nullable TextureView obsolete) {
+    @Override public void clearVideoTextureView(TextureView obsolete) {
         verifyThread();
         // A late detach from an obsolete PlayerView must not clear a newer view.
         if (obsolete == view) detach();
