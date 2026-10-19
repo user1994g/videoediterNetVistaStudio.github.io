@@ -4,7 +4,9 @@ import android.graphics.SurfaceTexture;
 import android.os.Looper;
 import android.view.Surface;
 import android.view.TextureView;
+import androidx.annotation.OptIn;
 import androidx.media3.common.ForwardingPlayer;
+import androidx.media3.common.util.ExperimentalApi;
 import androidx.media3.common.util.Size;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.transformer.CompositionPlayer;
@@ -20,6 +22,7 @@ import androidx.media3.transformer.CompositionPlayer;
  * old clip after the newly empty window has committed its display frame.
  */
 @UnstableApi
+@OptIn(markerClass = ExperimentalApi.class)
 final class CompositionTextureOutput extends ForwardingPlayer implements TextureView.SurfaceTextureListener {
     private final CompositionPlayer engine;
     // Nullable references intentionally use plain Java here. The platform's
