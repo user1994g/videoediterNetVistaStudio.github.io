@@ -271,7 +271,7 @@ public final class MainActivity extends Activity {
         LinearLayout container = screen(); header(container);
         accountStatus = label(account.state().email, 11, MUTED, false); container.addView(accountStatus);
         ScrollView scroll = new ScrollView(this); LinearLayout content = column(); content.setPadding(dp(12), dp(16), dp(12), dp(12)); scroll.addView(content);
-        content.addView(label("Welcome to your studio.", 24, TEXT, true));
+        content.addView(heading("Welcome to your studio.", 24));
         content.addView(label("Open an editor or pick up where you left off. Each workspace keeps its own project.", 13, MUTED, false));
         boolean homeWide = getResources().getConfiguration().screenWidthDp >= 720;
         LinearLayout editors = homeWide ? row() : column();
@@ -314,7 +314,7 @@ public final class MainActivity extends Activity {
         ImageView artwork = new ImageView(this); artwork.setImageResource(image);
         artwork.setScaleType(ImageView.ScaleType.CENTER_CROP); artwork.setContentDescription(description);
         card.addView(artwork, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(160)));
-        card.addView(label(title, 19, TEXT, true)); card.addView(label(detail, 12, MUTED, false));
+        card.addView(heading(title, 19)); card.addView(label(detail, 12, MUTED, false));
         return card;
     }
     private void openPhotos() {
@@ -784,7 +784,7 @@ public final class MainActivity extends Activity {
     }
 
     private void previewReady(CompositionPlayer current) {
-        if (liveUi() && player == current && !previewPending
+        if (liveUi() && editorVisible && foreground && !operationBusy && player == current && !previewPending
                 && previewGraph != null && !project.clips.isEmpty()
                 && current.getPlaybackState() == Player.STATE_READY && current.getPlayerError() == null) {
             // READY can arrive after an unrelated Files operation completed.
@@ -1488,6 +1488,11 @@ public final class MainActivity extends Activity {
     private LinearLayout column() { LinearLayout value = new LinearLayout(this); value.setOrientation(LinearLayout.VERTICAL); return value; }
     private LinearLayout row() { LinearLayout value = new LinearLayout(this); value.setOrientation(LinearLayout.HORIZONTAL); return value; }
     private <T extends View> T weighted(T view) { view.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1)); return view; }
+    private TextView heading(String value, int size) {
+        TextView text = label(value, size, TEXT, true); text.setTag("netvista.heading");
+        if (android.os.Build.VERSION.SDK_INT >= 28) text.setAccessibilityHeading(true);
+        return text;
+    }
     private TextView label(String value, int size, int color, boolean bold) { TextView text = new TextView(this); text.setText(value); text.setTextSize(size); text.setTextColor(color); text.setPadding(0, dp(3), 0, dp(3)); if (bold) text.setTypeface(Typeface.DEFAULT, Typeface.BOLD); return text; }
     private Button button(String value, Runnable action, boolean editing) {
         Button button = new Button(this); button.setText(value); button.setAllCaps(false); button.setSingleLine(true); button.setEllipsize(TextUtils.TruncateAt.END);

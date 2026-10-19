@@ -1381,9 +1381,12 @@ public final class NativeWorkspaceUiTest {
                     }
                 } else if (view instanceof TextView) {
                     TextView text = (TextView) view; String label = text.getText().toString();
-                    boolean displayHeading = "NetVista".equals(label) || "Studio Home".equals(label)
+                    boolean displayHeading = "netvista.heading".equals(text.getTag())
+                            || (android.os.Build.VERSION.SDK_INT >= 28 && text.isAccessibilityHeading())
+                            || "NetVista".equals(label) || "Studio Home".equals(label)
                             || "Video editing workspace".equals(label) || "▣".equals(label);
-                    if (!displayHeading) assertTrue("Compact native body/property font: " + label, text.getTextSize() / scaled <= 13.1f);
+                    if (displayHeading) assertTrue("Readable native heading without oversized body controls: " + label, text.getTextSize() / scaled <= 24.1f);
+                    else assertTrue("Compact native body/property font: " + label, text.getTextSize() / scaled <= 13.1f);
                 }
             }
             if (view instanceof ViewGroup) {
