@@ -771,7 +771,7 @@ public final class MainActivity extends Activity {
             @Override public void onPlayerError(PlaybackException error) {
                 if (!liveUi() || player != created) return;
                 Log.w("NetVistaPreview", "Native preview failed: " + error.getErrorCodeName(), error);
-                message(error.errorCode == PlaybackException.ERROR_CODE_TIMEOUT
+                previewMessage(error.errorCode == PlaybackException.ERROR_CODE_TIMEOUT
                         ? "Preview update timed out. Press Play to retry the current edit; your sources and project are unchanged."
                         : "Preview unavailable: " + error.getErrorCodeName() + ". Press Play to retry; your project is unchanged.");
             }
@@ -787,7 +787,9 @@ public final class MainActivity extends Activity {
         if (liveUi() && player == current && !previewPending
                 && previewGraph != null && !project.clips.isEmpty()
                 && current.getPlaybackState() == Player.STATE_READY && current.getPlayerError() == null) {
-            message("Program monitor ready — current edit.");
+            // READY can arrive after an unrelated Files operation completed.
+            // It must not erase a save/export result or a useful edit error.
+            if (previewOwnsStatus) previewMessage("Program monitor ready — current edit.");
         }
     }
 
@@ -876,7 +878,7 @@ public final class MainActivity extends Activity {
             }
             previewGraph = nextGraph;
             player.prepare(); player.setPlayWhenReady(play); updatePlayhead(false);
-        } catch (Exception e) { Log.w("NetVistaPreview", "Native composition update failed", e); message("Preview unavailable: " + e.getMessage()); }
+        } catch (Exception e) { Log.w("NetVistaPreview", "Native composition update failed", e); previewMessage("Preview unavailable: " + e.getMessage()); }
     }
 
     private PlayerView programMonitorView(CompositionPlayer current) {
@@ -936,9 +938,11 @@ public final class MainActivity extends Activity {
         completeEmptyPreviewAfterFrame(playerView);
     }
 
-    /** Detaching a native surface and drawing the newly empty monitor are
-     * separate asynchronous operations. Do not report a completed preview
-     * before the replacement view has submitted its real display frame.
+    /** The model, UI draw, GPU submission and screen presentation are separate
+     * operations. A commit callback registered before this monitor's next draw
+     * can belong to the preceding (non-empty) window frame. Observe the new
+     * draw first, then its submission and following display pulses. In
+     * particular, do not publish completion with the old clip still on screen.
      */
     private void completeEmptyPreviewAfterFrame(PlayerView monitor) {
         Runnable complete = () -> {
@@ -948,23 +952,20 @@ public final class MainActivity extends Activity {
             }
         };
         ViewTreeObserver observer = monitor.getViewTreeObserver();
-        if (android.os.Build.VERSION.SDK_INT >= 29 && monitor.isHardwareAccelerated()) {
-            observer.registerFrameCommitCallback(() -> main.post(complete));
-        } else {
-            // Older/software-rendered windows have no frame-commit API. Observe
-            // an actual draw, then complete on its following animation frame.
-            ViewTreeObserver.OnDrawListener draw = new ViewTreeObserver.OnDrawListener() {
-                private boolean submitted;
-                @Override public void onDraw() {
-                    if (submitted) return; submitted = true;
-                    monitor.post(() -> {
-                        if (observer.isAlive()) observer.removeOnDrawListener(this);
-                        monitor.postOnAnimation(complete);
-                    });
+        Runnable afterSubmission = () -> monitor.postOnAnimation(() -> monitor.postOnAnimation(complete));
+        ViewTreeObserver.OnDrawListener draw = new ViewTreeObserver.OnDrawListener() {
+            private boolean submitted;
+            @Override public void onDraw() {
+                if (submitted) return; submitted = true;
+                if (android.os.Build.VERSION.SDK_INT >= 29 && monitor.isHardwareAccelerated()) {
+                    observer.registerFrameCommitCallback(afterSubmission);
+                } else {
+                    monitor.post(afterSubmission);
                 }
-            };
-            observer.addOnDrawListener(draw);
-        }
+                monitor.post(() -> { if (observer.isAlive()) observer.removeOnDrawListener(this); });
+            }
+        };
+        observer.addOnDrawListener(draw);
         monitor.invalidate();
     }
     private void togglePlay() {
@@ -1457,7 +1458,9 @@ public final class MainActivity extends Activity {
         }
         if (edited) { autosave(); preview(false); updateEnabled(); }
     }
-    private void message(String value) { if (!liveUi()) return; if (status != null && (editorVisible || homeVisible)) status.setText(value == null ? "Operation unavailable." : value); }
+    private boolean previewOwnsStatus;
+    private void previewMessage(String value) { message(value); previewOwnsStatus = true; }
+    private void message(String value) { previewOwnsStatus = false; if (!liveUi()) return; if (status != null && (editorVisible || homeVisible)) status.setText(value == null ? "Operation unavailable." : value); }
     @Override public void onConfigurationChanged(Configuration configuration) { super.onConfigurationChanged(configuration); if (operationBusy) pendingLayoutRebuild = true; else if (editorVisible) showEditor(); else if (homeVisible) showHome(); }
     @Override protected void onResume() { super.onResume(); foreground = true; if (account != null) { account.checkAsync(true); main.removeCallbacks(accountTimer); main.post(accountTimer); } main.removeCallbacks(playheadTimer); if (editorVisible) { main.post(playheadTimer); if (!operationBusy && player != null) preview(false); } }
     @Override protected void onStop() { foreground = false; main.removeCallbacks(accountTimer); main.removeCallbacks(playheadTimer); main.removeCallbacks(effectsPreview); flushFocusedEditor(); if (player != null) player.pause(); if (renderingFile != null) cancelRendering("Export cancelled when the app left the foreground. Keep the app open while rendering."); if (editorVisible || homeVisible) autosave(); super.onStop(); }

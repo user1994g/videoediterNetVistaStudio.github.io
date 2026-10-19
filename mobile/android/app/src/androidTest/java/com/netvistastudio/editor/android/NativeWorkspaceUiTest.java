@@ -602,6 +602,9 @@ public final class NativeWorkspaceUiTest {
             // ContentResolver/ZIP failure path without a fake archive writer.
             ui.main(() -> { restored.activity.onActivityResult(102, Activity.RESULT_OK, new Intent().setData(Uri.fromFile(scratch))); return null; });
             ui.waitForFilesOperation("Project save failed:"); assertPendingSaveRemoved(files, failed);
+            ui.waitPreview();
+            assertTrue("A later real decoder READY event must not erase the Files failure result", ui.main(() ->
+                    ((TextView) field(restored.activity, "status")).getText().toString().startsWith("Project save failed:")));
             assertEquals("Failed destination preserves the current project", laterDraft, ProjectCodec.encode(ui.project()));
             ui.requestPortableSave(); String noUri = ui.pendingSaveId(); ownedSnapshots.add(noUri);
             ui.main(() -> { restored.activity.onActivityResult(102, Activity.RESULT_OK, new Intent()); return null; });
@@ -1147,10 +1150,19 @@ public final class NativeWorkspaceUiTest {
         }
         String pendingSaveId() throws Exception { return main(() -> (String) field(activity, "pendingProjectSaveId")); }
         void waitForFilesOperation(String statusPrefix) throws Exception {
-            waitUntil("Real Files operation completes: " + statusPrefix, 15000, () -> main(() -> {
-                TextView status = (TextView) field(activity, "status");
-                return !(Boolean) field(activity, "operationBusy") && status != null && status.getText().toString().startsWith(statusPrefix);
-            }));
+            try {
+                waitUntil("Real Files operation completes: " + statusPrefix, 15000, () -> main(() -> {
+                    TextView status = (TextView) field(activity, "status");
+                    return !(Boolean) field(activity, "operationBusy") && status != null && status.getText().toString().startsWith(statusPrefix);
+                }));
+            } catch (AssertionError failure) {
+                String actual = main(() -> {
+                    TextView status = (TextView) field(activity, "status");
+                    return "busy=" + field(activity, "operationBusy") + "; pending=" + field(activity, "previewPending")
+                            + "; status=" + (status == null ? "missing" : status.getText());
+                });
+                throw new AssertionError(failure.getMessage() + "; " + actual, failure);
+            }
             drainActivityIo();
         }
         Harness recreatePreservingTestAccount() throws Exception {
