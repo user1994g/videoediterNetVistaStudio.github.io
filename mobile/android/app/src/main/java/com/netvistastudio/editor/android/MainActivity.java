@@ -246,7 +246,7 @@ public final class MainActivity extends Activity {
         LinearLayout container = screen(); header(container);
         ScrollView scroll = new ScrollView(this); LinearLayout form = column(); form.setPadding(dp(12), dp(24), dp(12), dp(16)); scroll.addView(form);
         form.addView(label("Sign in to NetVista Studio", 17, TEXT, true));
-        form.addView(label("Your existing account. Native video editing, projects and exports run on this device.", 13, MUTED, false));
+        form.addView(label("Your existing account. Native video and photo projects run on this device.", 13, MUTED, false));
         EditText email = field("Email address", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
         EditText password = field("Password", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         password.setSaveEnabled(false); password.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
@@ -258,7 +258,7 @@ public final class MainActivity extends Activity {
         }, false); form.addView(signInButton);
         form.addView(button("Create or manage account", () -> startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(StudioAccount.ACCOUNT_URL))), false));
         loginStatus = label("Checking saved sign-in…", 13, MUTED, false); form.addView(loginStatus);
-        form.addView(label("Native Video, Motion/Effects and Colour workspaces. Desktop photo, 3D, Game Maker and mods are not implemented on Android.", 12, MUTED, false));
+        form.addView(label("Video and Photos workspaces. Advanced desktop grading, 3D, Game Maker and mods are still being ported to Android.", 12, MUTED, false));
         container.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
     }
     private void showHome() {
@@ -271,24 +271,59 @@ public final class MainActivity extends Activity {
         LinearLayout container = screen(); header(container);
         accountStatus = label(account.state().email, 11, MUTED, false); container.addView(accountStatus);
         ScrollView scroll = new ScrollView(this); LinearLayout content = column(); content.setPadding(dp(12), dp(16), dp(12), dp(12)); scroll.addView(content);
-        content.addView(label("Studio Home", 20, TEXT, true));
-        content.addView(label("Create, continue or open a native video project.", 13, MUTED, false));
-        LinearLayout card = panel("VIDEO EDITOR"); card.setBackground(shape(CARD, SEPARATOR)); card.addView(label("Video editing workspace", 17, TEXT, true));
-        ImageView artwork = new ImageView(this); artwork.setImageResource(R.drawable.home_video_coast); artwork.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        artwork.setContentDescription("NetVista Video Editor coast artwork"); card.addView(artwork, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(160)));
-        card.addView(label("Media Pool · Program Monitor · Motion/Effects · Colour · Timeline", 12, MUTED, false));
+        content.addView(label("Welcome to your studio.", 24, TEXT, true));
+        content.addView(label("Open an editor or pick up where you left off. Each workspace keeps its own project.", 13, MUTED, false));
+        boolean homeWide = getResources().getConfiguration().screenWidthDp >= 720;
+        LinearLayout editors = homeWide ? row() : column();
+        LinearLayout card = homeCard("Video Editor", "Timeline, motion, colour and sound.",
+                R.drawable.home_video_coast, "NetVista Video Editor coast artwork");
         LinearLayout actions = row(); actions.addView(weighted(button("Continue edit", this::showEditor, true)));
-        actions.addView(weighted(button("New project", this::newProject, true))); actions.addView(weighted(button("Open", this::pickOpenProject, true))); card.addView(actions); content.addView(card);
+        card.addView(actions);
+        LinearLayout videoFiles = row(); videoFiles.addView(weighted(button("New project", this::newProject, true)));
+        videoFiles.addView(weighted(button("Open", this::pickOpenProject, true))); card.addView(videoFiles);
+        LinearLayout photos = homeCard("Photo Editor", "Canvas, layers, masks and image adjustments.",
+                R.drawable.home_photo_petals, "NetVista Photo Editor petals artwork");
+        Button photo = button("Photo Editor", this::openPhotos, true);
+        photo.setContentDescription("Open Photo Editor"); photos.addView(photo);
+        if (homeWide) {
+            LinearLayout.LayoutParams first = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+            first.setMargins(0, dp(12), dp(6), dp(16)); editors.addView(card, first);
+            LinearLayout.LayoutParams second = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+            second.setMargins(dp(6), dp(12), 0, dp(16)); editors.addView(photos, second);
+        } else {
+            for (LinearLayout editor : new LinearLayout[]{card, photos}) {
+                LinearLayout.LayoutParams item = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                item.setMargins(0, dp(12), 0, dp(4)); editors.addView(editor, item);
+            }
+        }
+        content.addView(editors);
         content.addView(label("CURRENT LOCAL EDIT", 11, MUTED, true));
         content.addView(label(project.title + " · " + project.clips.size() + " clips · " + project.sources().size() + " sources", 13, TEXT, true));
         content.addView(label("Private draft autosave. Save a portable project to keep a separate backup.", 12, MUTED, false));
-        content.addView(label("This Android edition implements Video, Motion/Effects and Colour. Photo, 3D, Game Maker, mods and desktop project compatibility are not included.", 12, MUTED, false));
+        content.addView(label("Native Video and Photos development preview. 3D, Game Maker, mods and the remaining Mac video tools are still being ported. Video uses Android project packages; Photos preserves the desktop layered project format.", 12, MUTED, false));
         container.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         status = label(operationBusy ? "Working with local media…" : "Private local draft · save a portable backup", 11, MUTED, false);
         status.setSingleLine(); status.setEllipsize(TextUtils.TruncateAt.END); container.addView(status);
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); progress.setIndeterminate(true);
         progress.setVisibility(operationBusy ? View.VISIBLE : View.GONE); container.addView(progress, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(5)));
         cancelExport = null; summary = status; timeline = null; inspector = null; mediaList = null; playButton = null; undoButton = null; redoButton = null; updateEnabled();
+    }
+    private LinearLayout homeCard(String title, String detail, int image, String description) {
+        LinearLayout card = column(); card.setPadding(dp(10), dp(10), dp(10), dp(10));
+        card.setBackground(shape(PANEL, SEPARATOR));
+        ImageView artwork = new ImageView(this); artwork.setImageResource(image);
+        artwork.setScaleType(ImageView.ScaleType.CENTER_CROP); artwork.setContentDescription(description);
+        card.addView(artwork, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(160)));
+        card.addView(label(title, 19, TEXT, true)); card.addView(label(detail, 12, MUTED, false));
+        return card;
+    }
+    private void openPhotos() {
+        if (!liveUi() || operationBusy || !draftReady || account == null || !account.state().canEdit) return;
+        flushFocusedEditor(); autosave();
+        // Return to the same launcher when Photos closes, including when it
+        // was opened directly from the Video Editor's menu.
+        showHome();
+        startActivity(new Intent(this, PhotoActivity.class));
     }
     private void showEditor() {
         if (!liveUi() || account == null || !account.state().canEdit) return;
@@ -1040,20 +1075,21 @@ public final class MainActivity extends Activity {
                 }).show();
     }
     private void overflow() {
-        String[] options = editorVisible ? new String[]{"Studio Home", "Import sources", "Media Pool", "Inspector", "Motion/Effects", "Colour", "Open project", "Save project", "Project settings", "Account", "Export MP4", "About & licenses"}
-                : new String[]{"Video Editor", "Open project", "Account", "About & licenses"};
+        String[] options = editorVisible ? new String[]{"Studio Home", "Import sources", "Media Pool", "Inspector", "Motion/Effects", "Colour", "Open project", "Save project", "Project settings", "Account", "Export MP4", "Photo Editor", "About & licenses"}
+                : new String[]{"Video Editor", "Photo Editor", "Open video project", "Account", "About & licenses"};
         new AlertDialog.Builder(this).setTitle("NetVista Studio").setItems(options, (dialog, index) -> {
             if (editorVisible) {
                 switch (index) {
                     case 0: showHome(); break; case 1: pickVideos(); break; case 2: switchCompactPanel(0); break;
                     case 3: switchCompactPanel(2); break; case 4: selectWorkspace(1); break; case 5: selectWorkspace(2); break;
                     case 6: pickOpenProject(); break; case 7: pickSaveProject(); break; case 8: projectMenu(); break;
-                    case 9: accountPanel(); break; case 10: exportSettings(); break; default: about(); break;
+                    case 9: accountPanel(); break; case 10: exportSettings(); break; case 11: openPhotos(); break; default: about(); break;
                 }
             } else {
                 if (index == 0 && account.state().canEdit) showEditor();
-                else if (index == 1 && account.state().canEdit) pickOpenProject();
-                else if (index == 2) accountPanel(); else about();
+                else if (index == 1) openPhotos();
+                else if (index == 2 && account.state().canEdit) pickOpenProject();
+                else if (index == 3) accountPanel(); else about();
             }
         }).show();
     }
@@ -1381,7 +1417,7 @@ public final class MainActivity extends Activity {
                 }).show();
     }
     private void about() {
-        String text = "NetVista Studio 1.4.0 · Development workspace preview\n\nNative Video, Motion/Effects and Colour workspaces: source pool, program monitor, graphical timeline, trims/split/duplicate/order, undo/redo, portable projects and H.264/AAC MP4 export. Eight clip properties support saved Linear, Hold, Ease In, Ease Out and Ease In/Out keyframes, evaluated at each video frame in both monitor and export.\n\nThis is not full desktop feature parity. No independent multitrack placement/mixing, transitions, LUTs/advanced grading, photo/3D/Game Maker, mods or desktop project compatibility. The A1 lane represents linked source audio, not a separate editable track. Opacity fades to the black canvas. Projects embed original videos; keep backups before uninstalling. Android may defer background account checks. Exports require the app to remain foreground.\n\nOpen-source notices:\n";
+        String text = "NetVista Studio 1.4.0 · Development workspace preview\n\nNative Video, Motion/Effects and Colour workspaces: source pool, program monitor, graphical timeline, trims/split/duplicate/order, undo/redo, portable projects and H.264/AAC MP4 export. Eight clip properties support saved Linear, Hold, Ease In, Ease Out and Ease In/Out keyframes, evaluated at each video frame in both monitor and export.\n\nPhotos opens its own native canvas, layered document and history without replacing the video edit. It preserves desktop .netvistaphoto project data; some advanced filters and desktop tools still require porting. Unsupported processing is reported rather than silently flattened.\n\nThis is not full desktop feature parity. No independent video multitrack placement/mixing, transitions, LUTs/advanced video grading, 3D/Game Maker, mods or desktop video project compatibility. The A1 lane represents linked source audio, not a separate editable track. Opacity fades to the black canvas. Projects embed original videos; keep backups before uninstalling. Android may defer background account checks. Exports require the app to remain foreground.\n\nOpen-source notices:\n";
         try (InputStream input = getAssets().open("THIRD_PARTY_NOTICES.txt")) {
             java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream(); ProjectFiles.copy(input, output, 128 * 1024);
             text += output.toString(StandardCharsets.UTF_8.name());

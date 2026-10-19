@@ -46,7 +46,7 @@ jobs:
           CHECKED_SHA="$(jq -r .head_sha <<< "$CHECKED_RUN")"
           [[ "$CHECKED_SHA" =~ ^[0-9a-f]{40}$ ]]
           git fetch --no-tags --depth=1 origin "$CHECKED_SHA"
-          git diff --exit-code "$CHECKED_SHA" HEAD -- mobile/android assets/NetVistaStudio.png assets/home-video-coast.png .github/workflows/build-android.yml
+          git diff --exit-code "$CHECKED_SHA" HEAD -- mobile/android assets/NetVistaStudio.png assets/home-video-coast.png assets/home-photo-petals.png .github/workflows/build-android.yml
       - uses: actions/download-artifact@v4
         with:
           name: Android-native-build-pixel_2

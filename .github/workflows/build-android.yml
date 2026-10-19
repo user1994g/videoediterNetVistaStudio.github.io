@@ -4,6 +4,9 @@ on:
   push:
     paths:
       - 'mobile/android/**'
+      - 'assets/NetVistaStudio.png'
+      - 'assets/home-video-coast.png'
+      - 'assets/home-photo-petals.png'
       - '.github/workflows/build-android.yml'
   workflow_dispatch:
 
