@@ -4,6 +4,23 @@ This work aligns the native Video Editor with the Mac design. It is not a claim
 that the whole Mac creative suite has already been ported. Published Beta 7
 downloads remain unchanged until a new, tested release is explicitly published.
 
+## Latest development evidence — 20 October 2026
+
+The new universal iPhone/iPad package is saved separately as
+`dist/NetVista-Studio-iOS-2026-10-20-Preview.ipa`. The complete combined simulator
+run now passes on both phone and tablet, including all four independent native
+workspaces and an actual controller-driven MP4 render/Files cancellation. The
+stable-SDK CI run also passes. This is stronger than the earlier settings-callback
+and isolated-workspace checks. Android has a real native Photos workspace as well
+as Video; the brush dialog/layout follow-up passes all 44 tests on both device
+profiles and produces a maintained-signature APK, saved separately as
+`dist/NetVista-Studio-Android-2026-10-20-Preview.apk`.
+
+Package identities, exact evidence and remaining gates are recorded in
+[`mobile/NATIVE_PREVIEW_2026-10-20.md`](mobile/NATIVE_PREVIEW_2026-10-20.md).
+The dated entries below describe earlier increments, not the latest package's
+complete capability list. No public release or full desktop-parity claim is made.
+
 ## Full-port work now in progress
 
 The target is the full suite, not a permanent mobile "light" edition. The gap
