@@ -72,7 +72,13 @@ waits for the actual focused dialog's committed frame plus display boundaries
 before taking every screenshot. It does not change the packaged production code
 or relax the pixel/control assertions; its renewed
 [visual-evidence run](https://github.com/user1994g/videoediterNetVistaStudio.github.io/actions/runs/39470476971)
-is separate.
+is separate. Its first phone attempt failed downloading the emulator before any
+device checks; that job has been retried. The tablet attempt was interrupted by
+an actual **Quickstep isn't responding** system-launcher dialog (confirmed in its
+failure PNG), which took window focus before the Photos checks. This additional
+visual run is not represented as passed. The 44/44 phone/tablet results and the
+install APK above remain the separately verified `62dff49` artifacts; no production
+Android source changed in the screenshot-only follow-up.
 
 ## Remaining parity work
 
