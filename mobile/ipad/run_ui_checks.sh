@@ -16,7 +16,8 @@ case "${NETVISTA_WORKSPACE_CHECK_MODE:-all}" in
   all) ;;
   photo) TEST_ARGUMENT=--photo-only ;;
   creative) TEST_ARGUMENT=--creative-only ;;
-  *) printf 'Use all, photo or creative for NETVISTA_WORKSPACE_CHECK_MODE\n' >&2; exit 1 ;;
+  export) TEST_ARGUMENT=--export-only ;;
+  *) printf 'Use all, photo, creative or export for NETVISTA_WORKSPACE_CHECK_MODE\n' >&2; exit 1 ;;
 esac
 cleanup() {
   # Only remove the exact disposable device created by this invocation.

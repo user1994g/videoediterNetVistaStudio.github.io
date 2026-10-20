@@ -12,9 +12,20 @@ import CoreImage
         guard let button = views(root).first(where: { $0.accessibilityIdentifier == id }) as? UIButton else { throw PhotoBrushError.invalid("Missing photo control: " + id) }; return button
     }
     static func pause() async { try? await Task.sleep(nanoseconds: 400_000_000) }
+    static func transition(_ message: String, _ ready: () -> Bool) async throws {
+        for _ in 0..<60 {
+            if ready() { return }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        try check(ready(), message)
+    }
     static func run(editor: EditorViewController, documents: URL) async throws {
         let video = editor.project
-        editor.showHome(); try button(editor.view, "studio.open.photo").sendActions(for: .touchUpInside); await pause()
+        editor.showHome(); try button(editor.view, "studio.open.photo").sendActions(for: .touchUpInside)
+        try await transition("Photo Editor is fully presented before tool input") {
+            guard let photo = editor.photoEditor else { return false }
+            return photo.viewIfLoaded?.window != nil && !photo.isBeingPresented
+        }
         guard let photo = editor.photoEditor else { throw PhotoBrushError.invalid("Home did not open the actual Photo workspace") }
         let context = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
         let initial = try PhotoEditingSession(size: CGSize(width: 128, height: 96), background: nil)
@@ -175,7 +186,10 @@ import CoreImage
         photo.handleInput(CGPoint(x: 20, y: 20), phase: 0); photo.handleInput(CGPoint(x: 80, y: 50), phase: 2)
         try check(photo.session.revision == lockedRevision && !canvas.isUserInteractionEnabled, "Account gate prevents authoring after invalidation")
         photo.permitsEditing = { true }; photo.refreshAccess()
-        try button(photo.view, "photo.home").sendActions(for: .touchUpInside); await pause()
+        try button(photo.view, "photo.home").sendActions(for: .touchUpInside)
+        try await transition("Photos Home completes dismissal before another editor can open") {
+            photo.viewIfLoaded?.window == nil && photo.presentingViewController == nil && !photo.isBeingDismissed
+        }
         try check(editor.project == video, "Photo document never replaces video project")
         try "PASS: real Studio Home Photo entry, blank native document, brush/eraser/selection/shape/move input, actual opacity pixels, multi-step Undo/Redo, canvas zoom/mapping, phone/tablet layouts, native layered round trip, access gate and independent video state.\n".write(to: documents.appendingPathComponent("photo-workspace-result.txt"), atomically: true, encoding: .utf8)
     }

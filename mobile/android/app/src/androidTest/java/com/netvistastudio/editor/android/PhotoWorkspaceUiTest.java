@@ -14,9 +14,11 @@ import android.os.Handler;
 import android.os.SystemClock;
 import android.util.AtomicFile;
 import android.util.Log;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Button;
 import android.widget.SeekBar;
 import androidx.annotation.OptIn;
@@ -29,6 +31,7 @@ import java.io.FileOutputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -64,6 +67,7 @@ public final class PhotoWorkspaceUiTest {
             onMain(instrumentation,()->{assertTrue(photos.getWindow().getDecorView().isAttachedToWindow());PhotoCanvasView canvas=(PhotoCanvasView)field(photos,"canvas");Rect rect=new Rect();assertTrue(canvas.getGlobalVisibleRect(rect));assertTrue("Canvas remains usable",rect.height()>80*context.getResources().getDisplayMetrics().density);assertEquals(Color.RED,canvas.displayedImage().getPixel(16,12));return null;});
             assertPhotoLayout(instrumentation,photos);
             capture(instrumentation,photos,"photos-canvas",true);
+            checkBrushSettingsWindow(instrumentation,photos);
             checkOtherOrientation(instrumentation,photos);
             click(instrumentation,photos.getWindow().getDecorView(),"Layers");View layers=onMain(instrumentation,()->panelRoot(photos));
             capture(instrumentation,photos,"photos-layers",false);
@@ -120,6 +124,7 @@ public final class PhotoWorkspaceUiTest {
         requestOrientation(i,photo,other);
         try{await("Rotated photo workspace displays its current document",10000,()->photoReady(i,photo));assertPhotoLayout(i,photo);Configuration actual=onMain(i,()->new Configuration(photo.getResources().getConfiguration()));
             capture(i,photo,actual.orientation==Configuration.ORIENTATION_LANDSCAPE?"photos-landscape":"photos-portrait",true);
+            checkBrushSettingsWindow(i,photo);
             click(i,photo.getWindow().getDecorView(),"Layers");onMain(i,()->{View root=panelRoot(photo);Button add=findButton(root,"+ Layer");assertNotNull("Layer controls remain usable after configuration changes",add);Rect rect=new Rect();assertTrue(add.getGlobalVisibleRect(rect));return null;});capture(i,photo,"photos-rotated-layers",false);closeSheet(i,photo);
             click(i,photo.getWindow().getDecorView(),"Properties");onMain(i,()->{SeekBar opacity=(SeekBar)findDescription(panelRoot(photo),"Photo Opacity");assertNotNull(opacity);Rect rect=new Rect();assertTrue("Rotated properties retain a visible opacity control",opacity.getGlobalVisibleRect(rect));return null;});capture(i,photo,"photos-rotated-properties",false);closeSheet(i,photo);
             assertEquals("Rotation and opening panels never modify authored photo content",document,onMain(i,()->((PhotoEditingSession)field(photo,"session")).encodedProject()));assertEquals(undo,(int)onMain(i,()->((PhotoEditingSession)field(photo,"session")).undoCount()));
@@ -132,8 +137,45 @@ public final class PhotoWorkspaceUiTest {
         // global emulator state. Always inspect the actual delivered window.
         while(onMain(i,()->photo.getResources().getConfiguration().orientation)!=target&&SystemClock.elapsedRealtime()<deadline)SystemClock.sleep(40);i.waitForIdleSync();
     }
+    private static void checkBrushSettingsWindow(Instrumentation i,PhotoActivity photo)throws Exception{
+        String document=onMain(i,()->((PhotoEditingSession)field(photo,"session")).encodedProject());int undo=onMain(i,()->((PhotoEditingSession)field(photo,"session")).undoCount());float density=onMain(i,()->photo.getResources().getDisplayMetrics().density);
+        click(i,photo.getWindow().getDecorView(),"Brush settings");
+        try{
+            await("Actual native brush dialog is displayed",5000,()->activeWindowHasText(i,"Round brush · same controls for eraser"));
+            capture(i,photo,"photos-brush-settings",false);
+            await("Last brush action scrolls fully on screen, including short landscape",5000,()->brushColourActionVisible(i,density));
+            capture(i,photo,"photos-brush-settings-scrolled",false);
+        }finally{i.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);i.waitForIdleSync();}
+        assertEquals("Opening and scrolling brush settings cannot edit the photo",document,onMain(i,()->((PhotoEditingSession)field(photo,"session")).encodedProject()));assertEquals(undo,(int)onMain(i,()->((PhotoEditingSession)field(photo,"session")).undoCount()));
+    }
+    private static boolean activeWindowHasText(Instrumentation i,String text){AccessibilityNodeInfo root=i.getUiAutomation().getRootInActiveWindow();if(root==null)return false;java.util.List<AccessibilityNodeInfo> matches=root.findAccessibilityNodeInfosByText(text);try{for(AccessibilityNodeInfo node:matches)if(text.contentEquals(node.getText()==null?"":node.getText())&&node.isVisibleToUser())return true;return false;}finally{for(AccessibilityNodeInfo node:matches)node.recycle();root.recycle();}}
+    private static boolean brushColourActionVisible(Instrumentation i,float density){
+        AccessibilityNodeInfo root=i.getUiAutomation().getRootInActiveWindow();if(root==null)return false;
+        java.util.List<AccessibilityNodeInfo> matches=root.findAccessibilityNodeInfosByText("Use custom colour");
+        try{for(AccessibilityNodeInfo node:matches){if(!"Use custom colour".contentEquals(node.getText()==null?"":node.getText()))continue;
+                Rect visible=new Rect();node.getBoundsInScreen(visible);AccessibilityNodeInfo ancestor=node.getParent();
+                while(ancestor!=null){Rect clip=new Rect();ancestor.getBoundsInScreen(clip);if(!visible.intersect(clip))visible.setEmpty();AccessibilityNodeInfo next=ancestor.getParent();ancestor.recycle();ancestor=next;}
+                if(node.isVisibleToUser()&&visible.height()>=44*density-1&&visible.width()>0)return true;
+                node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.getId());
+            }
+            AccessibilityNodeInfo scroll=verticalScroll(root);if(scroll!=null)try{scroll.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);}finally{scroll.recycle();}return false;
+        }finally{for(AccessibilityNodeInfo node:matches)node.recycle();root.recycle();}
+    }
+    private static AccessibilityNodeInfo verticalScroll(AccessibilityNodeInfo node){
+        if("android.widget.ScrollView".contentEquals(node.getClassName()==null?"":node.getClassName()))return AccessibilityNodeInfo.obtain(node);
+        for(int index=0;index<node.getChildCount();index++){AccessibilityNodeInfo child=node.getChild(index);if(child==null)continue;try{AccessibilityNodeInfo found=verticalScroll(child);if(found!=null)return found;}finally{child.recycle();}}return null;
+    }
     private static void capture(Instrumentation i,PhotoActivity photo,String phase,boolean redCanvasCenter)throws Exception{
-        i.waitForIdleSync();Bitmap screenshot=i.getUiAutomation().takeScreenshot();assertNotNull("Capture actual Photos device window",screenshot);
+        i.waitForIdleSync();
+        if(redCanvasCenter){
+            await("Photos owns the foreground window before capturing its canvas",5000,()->onMain(i,()->photo.getWindow().getDecorView().hasWindowFocus()));
+            // A decoded bitmap and an attached View do not prove that this new
+            // Activity's first frame reached its window surface. Wait for an
+            // actual draw submission rather than capturing the previous Home.
+            CountDownLatch committed=new CountDownLatch(1);onMain(i,()->{View decor=photo.getWindow().getDecorView();assertTrue(decor.isHardwareAccelerated());decor.getViewTreeObserver().registerFrameCommitCallback(committed::countDown);decor.postInvalidateOnAnimation();return null;});
+            assertTrue("Current Photos window commits its displayed frame",committed.await(5,TimeUnit.SECONDS));
+        }
+        Bitmap screenshot=i.getUiAutomation().takeScreenshot();assertNotNull("Capture actual Photos device window",screenshot);
         if(screenshot.getConfig()==Bitmap.Config.HARDWARE){Bitmap readable=screenshot.copy(Bitmap.Config.ARGB_8888,false);screenshot.recycle();screenshot=readable;assertNotNull(readable);}
         try{Configuration config=onMain(i,()->new Configuration(photo.getResources().getConfiguration()));String name=phase+"_"+config.screenWidthDp+"x"+config.screenHeightDp+"dp_"+screenshot.getWidth()+"x"+screenshot.getHeight()+".png";
             // Keep the exact captured window even when a pixel/layout assertion
@@ -143,7 +185,7 @@ public final class PhotoWorkspaceUiTest {
         }finally{screenshot.recycle();}
     }
     private static void assertPixel(Instrumentation i,PhotoActivity p,int x,int y,int color)throws Exception{assertEquals(color,(int)onMain(i,()->((PhotoCanvasView)field(p,"canvas")).displayedImage().getPixel(x,y)));}
-    private static boolean photoReady(Instrumentation i,PhotoActivity activity)throws Exception{return onMain(i,()->{PhotoEditingSession session=(PhotoEditingSession)field(activity,"session");return (Boolean)field(activity,"ready")&&!(Boolean)field(activity,"busy")&&session!=null&&(Long)field(activity,"renderedRevision")==session.revision()&&((PhotoCanvasView)field(activity,"canvas")).displayedImage()!=null;});}
+    private static boolean photoReady(Instrumentation i,PhotoActivity activity)throws Exception{return onMain(i,()->{PhotoEditingSession session=(PhotoEditingSession)field(activity,"session");return activity.getWindow().getDecorView().hasWindowFocus()&&(Boolean)field(activity,"ready")&&!(Boolean)field(activity,"busy")&&session!=null&&(Long)field(activity,"renderedRevision")==session.revision()&&((PhotoCanvasView)field(activity,"canvas")).displayedImage()!=null;});}
     private static View panelRoot(PhotoActivity activity)throws Exception{AlertDialog dialog=(AlertDialog)field(activity,"panelDialog");return dialog==null?activity.getWindow().getDecorView():dialog.getWindow().getDecorView();}
     private static void closeSheet(Instrumentation i,PhotoActivity activity)throws Exception{onMain(i,()->{AlertDialog dialog=(AlertDialog)field(activity,"panelDialog");if(dialog!=null)dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();return null;});i.waitForIdleSync();}
     private static void gesture(View target,float x,float y,float endX,float endY){long start=SystemClock.uptimeMillis();MotionEvent down=MotionEvent.obtain(start,start,MotionEvent.ACTION_DOWN,x,y,0),move=MotionEvent.obtain(start,start+30,MotionEvent.ACTION_MOVE,endX,endY,0),up=MotionEvent.obtain(start,start+60,MotionEvent.ACTION_UP,endX,endY,0);try{assertTrue(target.dispatchTouchEvent(down));target.dispatchTouchEvent(move);target.dispatchTouchEvent(up);}finally{down.recycle();move.recycle();up.recycle();}}

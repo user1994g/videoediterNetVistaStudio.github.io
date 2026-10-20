@@ -138,6 +138,13 @@ final class WorkspaceCheckDelegate: UIResponder, UIApplicationDelegate {
         return (Int(pointer[offset + 2]), Int(pointer[offset + 1]), Int(pointer[offset]))
     }
     func check() async {
+        if CommandLine.arguments.contains("--export-only") {
+            require(editor.account.session == nil, "Export QA must never use a real account")
+            control("studio.open.video").sendActions(for: .touchUpInside); await settle()
+            await checkExportSettings()
+            try? "PASS: actual combined settings Render callback, encoded720p/25fps MP4 pixels/duration, native Files cancellation and owned temporary cleanup; unchanged project/Undo/Redo; no account traffic.\n".write(to: documents.appendingPathComponent("workspace-result.txt"), atomically: true, encoding: .utf8)
+            return
+        }
         if CommandLine.arguments.contains("--creative-only") {
             do { try await checkCreativeWorkspaces() }
             catch { fail(error.localizedDescription) }
@@ -432,6 +439,110 @@ final class WorkspaceCheckDelegate: UIResponder, UIApplicationDelegate {
         require(exports.count == 1 && exports[0].0 == 720 && exports[0].1 == 25,
                 "Render forwards the actual chosen resolution and frame rate together exactly once; actual=\(exports)")
         require(host.presentedViewController == nil && editor.project == original, "Export settings leave the independent editing session unchanged")
+        await checkExportDelivery()
+    }
+    func checkExportDelivery() async {
+        // Unlike the callback recorder above, this is the production connection:
+        // editor Export -> actual settings button -> beginExport -> AVFoundation
+        // -> the real Files picker. No export/session/picker is substituted.
+        func state() -> String {
+            "exporting=\(editor.exporting), session=\(String(describing: editor.exportSession?.status)), editorPresented=\(String(describing: editor.presentedViewController)), hostPresented=\(String(describing: host.presentedViewController)), temporary=\(editor.pendingTemporary?.lastPathComponent ?? "nil"), status=\(editor.status.text ?? "nil")"
+        }
+        func wait(_ description: String, attempts: Int = 60, _ ready: () -> Bool) async {
+            for _ in 0..<attempts {
+                if ready() { return }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            require(ready(), "\(description); \(state())")
+        }
+        let original = editor.project, undo = editor.history.undo, redo = editor.history.redo
+        let generation = editor.exportGeneration
+        require(editor.pendingTemporary == nil && !original.clips.isEmpty, "Export starts without an old temporary file")
+        editor.exportAction()
+        await wait("Actual export settings finish opening") {
+            guard let shown = (editor.presentedViewController ?? host.presentedViewController) as? MovieExportSettingsViewController else { return false }
+            return shown.viewIfLoaded?.window != nil && !shown.isBeingPresented
+        }
+        guard let settings = (editor.presentedViewController ?? host.presentedViewController) as? MovieExportSettingsViewController else {
+            fail("Actual editor must present settings for end-to-end export; \(state())")
+        }
+        settings.resolutions.selectedSegmentIndex = 0; settings.resolutions.sendActions(for: .valueChanged)
+        settings.frameRates.selectedSegmentIndex = 1; settings.frameRates.sendActions(for: .valueChanged)
+        require(settings.summary.text == "1280 × 720 pixels · 25 fps", "Real editor export shows both chosen delivery settings")
+        settings.exportButton.sendActions(for: .touchUpInside)
+        settings.exportButton.sendActions(for: .touchUpInside)
+        await wait("Actual movie render completes into Files", attempts: 1_800) {
+            guard let picker = (editor.presentedViewController ?? host.presentedViewController) as? UIDocumentPickerViewController else { return false }
+            return picker.viewIfLoaded?.window != nil && !picker.isBeingPresented && !editor.exporting &&
+                editor.exportSession == nil && editor.pendingTemporary != nil
+        }
+        guard let picker = (editor.presentedViewController ?? host.presentedViewController) as? UIDocumentPickerViewController,
+              let output = editor.pendingTemporary else { fail("Completed render must own a real Files output; \(state())") }
+        require(editor.exportGeneration == generation + 1 && editor.pickerMode == "export" && picker.delegate === editor,
+                "Repeated real Render taps start exactly one production export and use its actual Files delegate")
+        let manager = FileManager.default
+        require(output.pathExtension == "mp4" && manager.fileExists(atPath: output.path), "Files picker must have a real encoded MP4")
+        var encodedReport = ""
+        do {
+            let bytes = try output.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            require(bytes > 1_024, "Completed MP4 contains encoded movie data, not an empty placeholder")
+            let asset = AVURLAsset(url: output)
+            let duration = try await asset.load(.duration)
+            let tracks = try await asset.loadTracks(withMediaType: .video)
+            guard let track = tracks.first else { fail("Completed MP4 has no video track") }
+            let size = try await track.load(.naturalSize), fps = try await track.load(.nominalFrameRate)
+            require(tracks.count == 1 && size == CGSize(width: 1280, height: 720), "Actual settings selection produces encoded1280x720 video, not the default1080p")
+            require(abs(fps - 25) < 0.01, "Actual settings selection produces encoded25fps video, not the default30fps: \(fps)")
+            require(abs(duration.seconds - original.totalDuration) < 0.1, "Actual controller export preserves the complete edited sequence duration: \(duration.seconds)/\(original.totalDuration)")
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+            let time = CMTime(seconds: min(0.2, original.clips[0].length / 2), preferredTimescale: 600)
+            // Await a decoded movie frame, with bounded cancellation of the
+            // actual generator. A nonnil output URL or thumbnail is not proof.
+            let image: CGImage = try await withThrowingTaskGroup(of: CGImage.self) { group in
+                group.addTask { try await generator.image(at: time).image }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 15_000_000_000)
+                    throw NSError(domain: "NetVista.ExportChecks", code: 1,
+                                  userInfo: [NSLocalizedDescriptionKey: "Encoded movie frame decoding exceeded15 seconds"])
+                }
+                defer { generator.cancelAllCGImageGeneration(); group.cancelAll() }
+                guard let image = try await group.next() else { throw MobileProjectError.noVideo }
+                return image
+            }
+            require(image.width == 1280 && image.height == 720, "Decoded MP4 frame has the chosen delivery resolution")
+            guard let centre = image.cropping(to: CGRect(x: image.width / 2, y: image.height / 2, width: 1, height: 1)) else {
+                fail("Decoded MP4 frame must contain an actual centre pixel")
+            }
+            var pixel = [UInt8](repeating: 0, count: 4)
+            guard let context = CGContext(data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+                fail("Cannot inspect decoded MP4 pixels")
+            }
+            context.draw(centre, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            require(max(pixel[0], pixel[1], pixel[2]) > 60 && pixel[3] > 240,
+                    "Production controller export must contain visible opaque source video, not a black fallback: \(pixel)")
+            encodedReport = "PASS: actual controller Render -> encodedMP4 -> native Files; \(Int(size.width))x\(Int(size.height)) at\(fps)fps; duration=\(duration.seconds); bytes=\(bytes); decodedRGBA=\(pixel); Cancel delegate cleans temporary and retains project/Undo/Redo/media\n"
+        } catch { fail("End-to-end encoded movie inspection: \(error.localizedDescription); \(state())") }
+        require(editor.project == original && editor.history.undo == undo && editor.history.redo == redo,
+                "Actual movie rendering never mutates the project or either Undo/Redo stack")
+        // UIKit owns dismissing its Files UI; drive the real Cancel delegate,
+        // then finish that UI transition without saving outside the QA sandbox.
+        editor.documentPickerWasCancelled(picker)
+        require(editor.pendingTemporary == nil && !manager.fileExists(atPath: output.path),
+                "Real Files Cancel delegate removes only its owned movie temporary")
+        picker.dismiss(animated: false)
+        await wait("Cancelled real Files picker finishes dismissing") {
+            picker.viewIfLoaded?.window == nil && editor.presentedViewController == nil && host.presentedViewController == nil
+        }
+        require(editor.project == original && editor.history.undo == undo && editor.history.redo == redo &&
+                !editor.exporting && editor.exportSession == nil && editor.progressTimer == nil,
+                "Files cancellation leaves the live project/history intact and releases render state")
+        require(Set((original.clips + original.library).map(\.file)).allSatisfy { manager.fileExists(atPath: editor.media.appendingPathComponent($0).path) },
+                "Cancelling the exported movie never removes original source media")
+        do { try encodedReport.write(to: documents.appendingPathComponent("movie-export-result.txt"), atomically: true, encoding: .utf8) }
+        catch { fail("Writing actual export QA result: \(error.localizedDescription)") }
     }
     func checkCreativeWorkspaces() async throws {
         func waitForTransition(_ description:String,_ ready:()->Bool) async {
