@@ -45,7 +45,11 @@ Native UIKit + AVFoundation editor. Runs on the device itself; it does not conne
   Files. Linked-image v1 files report missing sources rather than losing layers.
   Documents share the desktop limits of 16,000 pixels per side / 64 megapixels.
 - Automatic local working-project recovery. Save/Open `.netvistamobile` project packages in Files containing `project.json`, effects, the source pool and deduplicated media. Deleting a timeline instance retains its source. Older version-1 projects migrate with neutral effects. This format is mobile-specific, **not** the desktop `.netvistastudio` format and is **not** interchangeable with Android projects.
-- MP4 exports at 720p, 1080p or 4K, 16:9, 30fps, with a cancellable progress dialog and Files destination picker.
+- MP4 exports at 720p, 1080p or 4K, 16:9, and 24/25/30/50/60 fps. Resolution and
+  frame rate are chosen together on a single native settings page before rendering;
+  a cancellable progress dialog precedes the Files destination picker. Higher
+  frame rates do not invent new captured motion in a lower-frame-rate source.
+  8K/16K mobile delivery is not supported yet.
 - Original NetVista logo and adaptive dark phone/tablet workspace with portrait, landscape and split-window layouts.
 
 ## Remaining full-port work

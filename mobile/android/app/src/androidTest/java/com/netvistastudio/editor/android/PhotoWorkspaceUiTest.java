@@ -5,12 +5,15 @@ import android.app.AlertDialog;
 import android.app.Instrumentation;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.os.Handler;
 import android.os.SystemClock;
 import android.util.AtomicFile;
+import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -44,7 +47,7 @@ public final class PhotoWorkspaceUiTest {
         Instrumentation instrumentation=InstrumentationRegistry.getInstrumentation();Context context=instrumentation.getTargetContext();
         assumeTrue("Use a clean emulator without a real saved login",!context.getSharedPreferences("encrypted_account",Context.MODE_PRIVATE).contains("ciphertext"));
         AtomicFile draft=new AtomicFile(new File(context.getFilesDir(),"photos/draft.netvistaphoto"));byte[] prior=draft.getBaseFile().exists()?draft.readFully():null;
-        MainActivity video=null;PhotoActivity photo=null;StudioAccount account=null;StudioAccount.Snapshot originalAccount=null;
+        MainActivity video=null;PhotoActivity photo=null;StudioAccount account=null;StudioAccount.Snapshot originalAccount=null;int originalPhotoOrientation=ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
         Instrumentation.ActivityMonitor monitor=new Instrumentation.ActivityMonitor(PhotoActivity.class.getName(),null,false);instrumentation.addMonitor(monitor);
         try{
             PhotoEditingSession source=new PhotoEditingSession(PhotoDocument.blank(32,24,72,PhotoBitmapEngine.blank(32,24,Color.WHITE),"Background"));
@@ -56,10 +59,14 @@ public final class PhotoWorkspaceUiTest {
             onMain(instrumentation,()->{StudioAccount.Snapshot verified=new StudioAccount.Snapshot(true,false,"photos-ui@example.invalid","Native UI QA only");setField(sharedAccount,"snapshot",verified);((Handler)field(videoActivity,"main")).removeCallbacks((Runnable)field(videoActivity,"accountTimer"));invoke(videoActivity,"accountChanged",new Class[]{StudioAccount.Snapshot.class},verified);return null;});
             String videoBefore=onMain(instrumentation,()->ProjectCodec.encode((StudioProject)field(videoActivity,"project")));
             click(instrumentation,video.getWindow().getDecorView(),"Photo Editor");
-            photo=(PhotoActivity)instrumentation.waitForMonitorWithTimeout(monitor,15000);assertNotNull("Actual Home button launches native PhotoActivity",photo);PhotoActivity photos=photo;
+            photo=(PhotoActivity)instrumentation.waitForMonitorWithTimeout(monitor,15000);assertNotNull("Actual Home button launches native PhotoActivity",photo);PhotoActivity photos=photo;originalPhotoOrientation=onMain(instrumentation,photos::getRequestedOrientation);
             await("Photo draft rendered at its current revision",15000,()->photoReady(instrumentation,photos));
             onMain(instrumentation,()->{assertTrue(photos.getWindow().getDecorView().isAttachedToWindow());PhotoCanvasView canvas=(PhotoCanvasView)field(photos,"canvas");Rect rect=new Rect();assertTrue(canvas.getGlobalVisibleRect(rect));assertTrue("Canvas remains usable",rect.height()>80*context.getResources().getDisplayMetrics().density);assertEquals(Color.RED,canvas.displayedImage().getPixel(16,12));return null;});
+            assertPhotoLayout(instrumentation,photos);
+            capture(instrumentation,photos,"photos-canvas",true);
+            checkOtherOrientation(instrumentation,photos);
             click(instrumentation,photos.getWindow().getDecorView(),"Layers");View layers=onMain(instrumentation,()->panelRoot(photos));
+            capture(instrumentation,photos,"photos-layers",false);
             Button hide=onMain(instrumentation,()->(Button)findDescription(layers,"Hide Red square"));assertNotNull("Real layer eye control",hide);onMain(instrumentation,()->{assertTrue(hide.performClick());return null;});closeSheet(instrumentation,photos);
             await("Visibility edits update displayed pixels",10000,()->photoReady(instrumentation,photos));assertPixel(instrumentation,photos,16,12,Color.WHITE);
             click(instrumentation,photos.getWindow().getDecorView(),"Undo");await("Undo restores visible source pixels",10000,()->photoReady(instrumentation,photos));assertPixel(instrumentation,photos,16,12,Color.RED);
@@ -71,6 +78,7 @@ public final class PhotoWorkspaceUiTest {
             await("Cancelled touch drag restores the displayed original frame",10000,()->photoReady(instrumentation,photos));assertPixel(instrumentation,photos,22,12,Color.RED);
             onMain(instrumentation,()->{PhotoEditingSession session=(PhotoEditingSession)field(photos,"session");assertEquals(6,session.selectedLayer().positionX,.15);assertEquals("Cancellation creates no phantom history entry",beforeMove+1,session.undoCount());return null;});
             click(instrumentation,photos.getWindow().getDecorView(),"Properties");View properties=onMain(instrumentation,()->panelRoot(photos));SeekBar opacity=onMain(instrumentation,()->(SeekBar)findDescription(properties,"Photo Opacity"));assertNotNull(opacity);int beforeSlider=onMain(instrumentation,()->((PhotoEditingSession)field(photos,"session")).undoCount());
+            capture(instrumentation,photos,"photos-properties",false);
             onMain(instrumentation,()->{opacity.requestRectangleOnScreen(new Rect(0,0,opacity.getWidth(),opacity.getHeight()),true);return null;});instrumentation.waitForIdleSync();
             onMain(instrumentation,()->{gesture(opacity,opacity.getWidth()*.7f,opacity.getHeight()/2f,opacity.getWidth()*.3f,opacity.getHeight()/2f);return null;});closeSheet(instrumentation,photos);await("Native opacity slider changes the current bitmap",10000,()->photoReady(instrumentation,photos));
             onMain(instrumentation,()->{PhotoEditingSession session=(PhotoEditingSession)field(photos,"session");assertTrue(session.selectedLayer().opacity<.5);assertEquals(beforeSlider+1,session.undoCount());int pixel=((PhotoCanvasView)field(photos,"canvas")).displayedImage().getPixel(22,12);assertEquals(255,Color.red(pixel));assertTrue("White behind red contributes real green after opacity",Color.green(pixel)>120);return null;});
@@ -82,8 +90,8 @@ public final class PhotoWorkspaceUiTest {
             assertEquals("Photo edits cannot change the Video document",videoBefore,onMain(instrumentation,()->ProjectCodec.encode((StudioProject)field(videoActivity,"project"))));
             ((ExecutorService)staticField(PhotoActivity.class,"IO")).submit(()->{}).get(20,TimeUnit.SECONDS);assertEquals(photoBefore,new PhotoWorkspaceFiles(context).readDraft());
         }finally{
-            instrumentation.removeMonitor(monitor);PhotoActivity photos=photo;MainActivity videos=video;StudioAccount shared=account;StudioAccount.Snapshot original=originalAccount;
-            onMain(instrumentation,()->{if(photos!=null&&!photos.isFinishing())photos.finish();if(videos!=null&&!videos.isFinishing())videos.finish();return null;});instrumentation.waitForIdleSync();
+            instrumentation.removeMonitor(monitor);PhotoActivity photos=photo;MainActivity videos=video;StudioAccount shared=account;StudioAccount.Snapshot original=originalAccount;int restoreOrientation=originalPhotoOrientation;
+            onMain(instrumentation,()->{if(photos!=null&&!photos.isFinishing()){photos.setRequestedOrientation(restoreOrientation);photos.finish();}if(videos!=null&&!videos.isFinishing())videos.finish();return null;});instrumentation.waitForIdleSync();
             ((ExecutorService)staticField(PhotoActivity.class,"IO")).submit(()->{}).get(25,TimeUnit.SECONDS);
             if(shared!=null&&original!=null)onMain(instrumentation,()->{setField(shared,"snapshot",original);return null;});
             if(prior==null)draft.delete();else{FileOutputStream output=draft.startWrite();output.write(prior);draft.finishWrite(output);}
@@ -96,6 +104,43 @@ public final class PhotoWorkspaceUiTest {
             try{files.deliver(id,false,android.net.Uri.fromFile(destination));String saved;try(java.io.InputStream input=new java.io.FileInputStream(destination)){saved=new String(PhotoWorkspaceFiles.read(input,100000),java.nio.charset.StandardCharsets.UTF_8);}assertEquals("Captured save keeps its own layer metadata",initial.encode(),saved);assertNotEquals(session.encodedProject(),saved);}finally{assertTrue(destination.delete());}
         }finally{files.deletePending(id,false);}assertFalse(files.pendingExists(id,false));
         for(String invalid:new String[]{"../draft", "", "../../"})assertFalse(files.pendingExists(invalid,false));
+    }
+    private static void assertPhotoLayout(Instrumentation i,PhotoActivity photo)throws Exception{
+        onMain(i,()->{PhotoCanvasView canvas=(PhotoCanvasView)field(photo,"canvas");Rect bounds=new Rect();float density=photo.getResources().getDisplayMetrics().density;
+            assertTrue("Photo canvas is attached to the actual activity window",canvas.isAttachedToWindow());assertTrue(canvas.getGlobalVisibleRect(bounds));
+            assertTrue("Photo canvas keeps usable height, including short landscape; actual="+bounds.height()/density+"dp",bounds.height()>80*density);
+            assertTrue("Photo canvas is not clipped vertically by its panels",bounds.height()>=canvas.getHeight()-1);assertTrue("Photo canvas is not clipped horizontally",bounds.width()>=canvas.getWidth()-1);
+            for(String name:new String[]{"Studio Home","Files","New","Import layer","Undo","Redo","Save","Export PNG","Move","Hand","Brush","Eraser","Brush settings"}){Button control=findButton(photo.getWindow().getDecorView(),name);assertNotNull("Real photo control: "+name,control);assertTrue("44dp native touch target: "+name,control.getHeight()>=44*density-1);}
+            if((Boolean)field(photo,"wideLayout")){View panel=(View)field(photo,"panel");Rect visible=new Rect();assertTrue("Tablet panel remains reachable alongside canvas",panel.getGlobalVisibleRect(visible));assertTrue(visible.width()>=panel.getWidth()-1);}return null;});
+    }
+    private static void checkOtherOrientation(Instrumentation i,PhotoActivity photo)throws Exception{
+        Configuration initial=onMain(i,()->new Configuration(photo.getResources().getConfiguration()));
+        String document=onMain(i,()->((PhotoEditingSession)field(photo,"session")).encodedProject());int undo=onMain(i,()->((PhotoEditingSession)field(photo,"session")).undoCount());
+        int other=initial.orientation==Configuration.ORIENTATION_LANDSCAPE?Configuration.ORIENTATION_PORTRAIT:Configuration.ORIENTATION_LANDSCAPE;
+        requestOrientation(i,photo,other);
+        try{await("Rotated photo workspace displays its current document",10000,()->photoReady(i,photo));assertPhotoLayout(i,photo);Configuration actual=onMain(i,()->new Configuration(photo.getResources().getConfiguration()));
+            capture(i,photo,actual.orientation==Configuration.ORIENTATION_LANDSCAPE?"photos-landscape":"photos-portrait",true);
+            click(i,photo.getWindow().getDecorView(),"Layers");onMain(i,()->{View root=panelRoot(photo);Button add=findButton(root,"+ Layer");assertNotNull("Layer controls remain usable after configuration changes",add);Rect rect=new Rect();assertTrue(add.getGlobalVisibleRect(rect));return null;});capture(i,photo,"photos-rotated-layers",false);closeSheet(i,photo);
+            click(i,photo.getWindow().getDecorView(),"Properties");onMain(i,()->{SeekBar opacity=(SeekBar)findDescription(panelRoot(photo),"Photo Opacity");assertNotNull(opacity);Rect rect=new Rect();assertTrue("Rotated properties retain a visible opacity control",opacity.getGlobalVisibleRect(rect));return null;});capture(i,photo,"photos-rotated-properties",false);closeSheet(i,photo);
+            assertEquals("Rotation and opening panels never modify authored photo content",document,onMain(i,()->((PhotoEditingSession)field(photo,"session")).encodedProject()));assertEquals(undo,(int)onMain(i,()->((PhotoEditingSession)field(photo,"session")).undoCount()));
+            Log.i("NetVistaNativeUiChecks","Photos actual window "+actual.screenWidthDp+"x"+actual.screenHeightDp+"dp; orientation request "+(actual.orientation==other?"honored":"ignored by platform"));
+        }finally{closeSheet(i,photo);requestOrientation(i,photo,initial.orientation);await("Photo canvas survives restoring its initial orientation",10000,()->photoReady(i,photo));assertPhotoLayout(i,photo);}
+    }
+    private static void requestOrientation(Instrumentation i,PhotoActivity photo,int target)throws Exception{
+        onMain(i,()->{photo.setRequestedOrientation(target==Configuration.ORIENTATION_LANDSCAPE?ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE:ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);return null;});long deadline=SystemClock.elapsedRealtime()+4000;
+        // Respect Android's large-window orientation policy rather than forcing
+        // global emulator state. Always inspect the actual delivered window.
+        while(onMain(i,()->photo.getResources().getConfiguration().orientation)!=target&&SystemClock.elapsedRealtime()<deadline)SystemClock.sleep(40);i.waitForIdleSync();
+    }
+    private static void capture(Instrumentation i,PhotoActivity photo,String phase,boolean redCanvasCenter)throws Exception{
+        i.waitForIdleSync();Bitmap screenshot=i.getUiAutomation().takeScreenshot();assertNotNull("Capture actual Photos device window",screenshot);
+        if(screenshot.getConfig()==Bitmap.Config.HARDWARE){Bitmap readable=screenshot.copy(Bitmap.Config.ARGB_8888,false);screenshot.recycle();screenshot=readable;assertNotNull(readable);}
+        try{Configuration config=onMain(i,()->new Configuration(photo.getResources().getConfiguration()));String name=phase+"_"+config.screenWidthDp+"x"+config.screenHeightDp+"dp_"+screenshot.getWidth()+"x"+screenshot.getHeight()+".png";
+            // Keep the exact captured window even when a pixel/layout assertion
+            // fails. This is not a drawHierarchy reconstruction of the canvas.
+            QaEvidence.savePng(photo,name,screenshot);
+            if(redCanvasCenter){Rect bounds=onMain(i,()->{Rect value=new Rect();assertTrue(((View)field(photo,"canvas")).getGlobalVisibleRect(value));return value;});int pixel=screenshot.getPixel(bounds.centerX(),bounds.centerY());assertTrue("Real native canvas red center is on screen: "+Integer.toHexString(pixel),Color.red(pixel)>180&&Color.green(pixel)<80&&Color.blue(pixel)<80);}
+        }finally{screenshot.recycle();}
     }
     private static void assertPixel(Instrumentation i,PhotoActivity p,int x,int y,int color)throws Exception{assertEquals(color,(int)onMain(i,()->((PhotoCanvasView)field(p,"canvas")).displayedImage().getPixel(x,y)));}
     private static boolean photoReady(Instrumentation i,PhotoActivity activity)throws Exception{return onMain(i,()->{PhotoEditingSession session=(PhotoEditingSession)field(activity,"session");return (Boolean)field(activity,"ready")&&!(Boolean)field(activity,"busy")&&session!=null&&(Long)field(activity,"renderedRevision")==session.revision()&&((PhotoCanvasView)field(activity,"canvas")).displayedImage()!=null;});}

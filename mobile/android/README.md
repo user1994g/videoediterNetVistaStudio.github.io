@@ -13,7 +13,10 @@ the Mac LAN companion, or the full desktop editor. Package identifier:
 - Import one or several local videos through Android's native document picker.
   Each selected video is copied into app-private storage; editing does not depend
   on a persistent external file-picker permission.
-- Native Studio Home uses the original shared coast artwork. The Video workspace
+- Native Studio Home uses the original shared coast and petals artwork, with
+  separate Video and Photo editor cards. Each retains an independent draft and
+  history; closing Photos returns to Studio Home without replacing the Video edit.
+  The Video workspace
   uses the Mac-family palette/brand, compact toolbar, Media Pool, Program Monitor,
   Inspector and graphical timeline. Wide tablets keep three panels; phones and
   smaller windows use compact panel navigation/native dialogs, not a shrunk desktop.
@@ -58,12 +61,33 @@ the Mac LAN companion, or the full desktop editor. Package identifier:
 
 ## Honest limits
 
-### Layered photo engine in development
+### Native Photos workspace in development
 
-The Android photo backend can open and preserve the Mac/iPad embedded v2
-`.netvistaphoto` format. This engine is not yet a completed, navigable Android
-Photo Editor workspace. Metadata/history retains the original PNGs, masks,
-folders and unrecognised fields instead of flattening them.
+Studio Home opens an independent native `PhotoActivity`, not a WebView or a remote
+Mac session. Start transparent/white HD, square, portrait, A4 or custom canvases;
+import images as new layers; zoom/pan and move layers on the actual canvas. Native
+Layers and Properties panels expose visibility, folders, ordering, duplication,
+deletion, renaming, locking, opacity, eight blend modes, transforms and primary
+adjustments. Phones use a panel sheet instead of shrinking the canvas to make a
+desktop sidebar fit. Round brush/eraser size, hardness, opacity and flow operate
+on the authored pixels; masks can be painted, revealed, hidden and inverted.
+Each complete slider/drag/stroke is one Undo step, with bounded history.
+
+Phone-photo imports retain full resolution and apply all eight EXIF orientation
+and mirror cases. Native image decoding uses software sRGB pixels; images that
+exceed the safe working-memory budget are rejected rather than silently reduced
+to a thumbnail.
+
+The workspace preserves the Mac/iPad embedded v2 `.netvistaphoto` format. Private
+atomic drafts, layered project Open/Save and full-resolution PNG export use
+immutable captured saves and native Files providers. Metadata/history retains
+the original PNGs, masks, folders and unrecognised fields instead of flattening
+them. Rendering runs on a bounded serial worker and cannot publish an obsolete
+document over a newer edit. Source `c25c70c` passed 44 native instrumentation
+checks on both phone and tablet, including Photos controls/pixels, orientation
+decoding and captured Files saves, in [run 39315946584](https://github.com/user1994g/videoediterNetVistaStudio.github.io/actions/runs/39315946584).
+The follow-up adds actual-window Photo screenshots and rotation/layout checks.
+Physical-device acceptance and remaining desktop tools still need work.
 
 Native compositing now supports isolated one-level layer folders, folder
 visibility/opacity, image and adjustment layers, document-space adjustment masks,
@@ -84,7 +108,9 @@ exposure, unchanged save bytes and explicit memory/unsupported-operation failure
 These new device tests require passing phone/tablet CI before this increment is
 represented as a verified development package.
 
-Not yet implemented in this renderer: 16-bit PNG processing, Core Image-specific
+Not yet implemented in this workspace: Adobe ABR import, lasso/wand selections,
+clone/heal, crop, editable text/shapes and adjustment curves. Not yet implemented
+in this renderer: 16-bit PNG processing, Core Image-specific
 vibrance/highlight-shadow/temperature kernels, hue/curves, noise, sharpen, blur,
 sepia and vignette. Such non-default settings fail with a precise compatibility
 message and leave the saved document intact. Android Canvas edge resampling and
@@ -94,8 +120,9 @@ replacements. Full-suite/mobile UI parity remains work in progress.
 This is a sequential/ripple native mobile video editor, not full Mac feature
 parity: no layered/independent multitrack placement, independent audio import/mixing,
 transitions, titles, full ordered effect stacks/all Mac animated properties,
-LUTs/advanced grading, photo editor, 3D/Game Maker,
-mods, AI tools, or desktop/iPad project compatibility. The A1 lane represents linked
+LUTs/advanced video grading, 3D/Game Maker, mods, AI tools, or desktop/iPad video
+project compatibility. Photos does preserve the shared embedded layered format.
+The A1 lane represents linked
 source audio; it is not a separate editable track or a decoded waveform. Opacity
 flattens the single picture over the black canvas rather than revealing another
 video layer. There is no cloud upload of videos/projects. An account is required,

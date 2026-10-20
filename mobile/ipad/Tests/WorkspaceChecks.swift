@@ -382,9 +382,19 @@ final class WorkspaceCheckDelegate: UIResponder, UIApplicationDelegate {
         try? "PASS: actual AVPlayer frames, second-clip playback, opacity 0/50 and undo preview; native Home artwork; phone/tablet portrait/landscape and split-window layout; real animation diamonds, animated playback, Add/Remove/Previous/Next/Auto key, seekable lane, undo and saved tracks; real property controls, split/duplicate/delete/reorder callback, draft/effects/media-pool persistence; no account traffic. Simulator QA is not physical-device signing or codec coverage.\n".write(to: documents.appendingPathComponent("workspace-result.txt"), atomically: true, encoding: .utf8)
     }
     func checkExportSettings() async {
+        func transition(_ message: String, _ ready: () -> Bool) async {
+            for _ in 0..<60 {
+                if ready() { return }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            require(ready(), message)
+        }
         let original = editor.project
         editor.exportAction()
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        await transition("Export settings finish opening in a real window") {
+            guard let shown = (editor.presentedViewController ?? host.presentedViewController) as? MovieExportSettingsViewController else { return false }
+            return shown.viewIfLoaded?.window != nil && !shown.isBeingPresented
+        }
         guard let settings = (editor.presentedViewController ?? host.presentedViewController) as? MovieExportSettingsViewController,
               settings.view.window != nil else { fail("Export opens the actual combined resolution/FPS page") }
         require(settings.height == 1080 && settings.fps == 30, "Export starts with explicit1080p/30 defaults")
@@ -398,22 +408,29 @@ final class WorkspaceCheckDelegate: UIResponder, UIApplicationDelegate {
             }
         }
         settings.cancelButton.sendActions(for: .touchUpInside)
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        await transition("Cancelled export settings finish dismissing without a render") {
+            settings.viewIfLoaded?.window == nil && editor.presentedViewController == nil && host.presentedViewController == nil
+        }
         require(editor.project == original && !editor.exporting && editor.exportSession == nil,
                 "Cancelling export settings never renders or mutates the project")
         // The same native Render button forwards exactly the displayed pair.
         let recorder = MovieExportSettingsViewController(); var permitted = true; var exports: [(Int, Int)] = []
         recorder.permitsExport = { permitted }; recorder.onExport = { exports.append(($0, $1)) }
+        recorder.modalPresentationStyle = .pageSheet
         host.present(recorder, animated: false)
-        try? await Task.sleep(nanoseconds: 200_000_000)
+        await transition("Export recorder is fully presented before button input") {
+            recorder.viewIfLoaded?.window != nil && !recorder.isBeingPresented && recorder.presentingViewController === host
+        }
         recorder.resolutions.selectedSegmentIndex = 0; recorder.frameRates.selectedSegmentIndex = 1
         permitted = false; recorder.updateSummary(); recorder.exportButton.sendActions(for: .touchUpInside)
         require(exports.isEmpty && recorder.presentingViewController != nil, "Revoked export permission cannot dismiss into a stale render")
         permitted = true; recorder.updateSummary(); recorder.exportButton.sendActions(for: .touchUpInside)
         recorder.exportButton.sendActions(for: .touchUpInside)
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        await transition("Render callback follows the completed dismissal; actual exports=\(exports)") {
+            !exports.isEmpty && recorder.viewIfLoaded?.window == nil && host.presentedViewController == nil
+        }
         require(exports.count == 1 && exports[0].0 == 720 && exports[0].1 == 25,
-                "Render forwards the actual chosen resolution and frame rate together exactly once")
+                "Render forwards the actual chosen resolution and frame rate together exactly once; actual=\(exports)")
         require(host.presentedViewController == nil && editor.project == original, "Export settings leave the independent editing session unchanged")
     }
     func checkCreativeWorkspaces() async throws {

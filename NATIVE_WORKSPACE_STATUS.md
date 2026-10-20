@@ -24,7 +24,8 @@ keyframe controls pass locally. The same Mac brush/ABR, grade/LUT/keyer, modelli
 commands and game-logic implementations also execute in isolated UIKit checks.
 That proves shared engines, not completed Photo/Game/3D mobile workspaces.
 Full Mac product typechecking and its existing brush-pixel regressions pass after
-the portability changes. New Android compilation/device checks are still required.
+the portability changes. See the newer Android verification increment below;
+passing native checks does not close the remaining full-suite feature gaps.
 
 ### Photo authoring increment — 11 October 2026
 
@@ -67,6 +68,31 @@ investigated/verified; do not infer a passing device suite from source changes.
 These are development changes, not a finished full-suite port or new public beta.
 Android Game/3D authoring, advanced mobile video grading/effect stacks/multitrack
 placement, mobile modeling AI and several desktop interaction details remain.
+
+### Native authoring and export follow-up — 19 October 2026
+
+The Apple Video export UI now puts resolution (720p/1080p/4K) and frame rate
+(24/25/30/50/60 fps) together before rendering begins. The actual compositor
+receives the selected frame rate, not a display-only label. Local encoded-file
+checks verify 25fps and 60fps metadata, visible source pixels and retained audio;
+unsupported/invalid settings are rejected before allocating a composition.
+The new sheet is being checked with real modal transition state, rather than
+fixed animation sleeps. The Game Maker and 3D workspace checks pass on both phone
+and tablet at exact production source `5fd34c2`, including actual rendered mesh
+pixels, topology, sculpting, physics, runtime rules and independent Home switching.
+The complete combined run is still a separate gate. No public download has been replaced.
+
+Android now has a separate native Photo workspace under development, using the
+existing immutable layered document, command history and compositor. Studio Home
+keeps Video and Photos independent and reuses the original coast/petals artwork.
+Source `c25c70c` passes all 44 native tests on both phone and tablet in
+[run 39315946584](https://github.com/user1994g/videoediterNetVistaStudio.github.io/actions/runs/39315946584),
+including nine Mac-reference compositor cases, native Photo authoring, eight-way
+camera-photo orientation, immutable Files saves and video preview/export.
+The Video texture-output adapter's compilation, release lifecycle and empty-frame
+checks pass. Late playback callbacks no longer overwrite Files results/errors.
+The maintained-signature development APK is available from that successful run;
+additional actual-window Photos screenshots and rotation checks are being added.
 
 ## Desktop work implemented and checked
 

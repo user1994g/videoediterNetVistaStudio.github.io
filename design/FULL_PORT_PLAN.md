@@ -17,7 +17,7 @@ a missing navigation button. Adding a decorative page does not close a gap.
 | Animated effect controls and editable keyframe lanes | Implemented | 8 motion/primary controls; remaining Mac properties missing | 8 motion/primary controls; remaining Mac properties missing | Missing |
 | Ordered effect stacks, chroma key and optional local AI matte | Implemented | Missing | Missing | Partial static effects |
 | Wheels, curves, qualifiers, nodes, LUT authoring, scopes | Implemented | Missing UI/engine integration | Missing | Missing |
-| Photo layers, masks, ABR brushes, selections and retouching | Implemented | Native workspace in development; shared Mac compositor, session and brush engine | Document/session/bitmap foundation in development; no workspace yet | Missing |
+| Photo layers, masks, ABR brushes, selections and retouching | Implemented | Native workspace in development; shared Mac compositor, session and brush engine | Native layer/canvas/mask/round-brush workspace in development; ABR/selections/retouching missing | Missing |
 | Mesh modelling, face editing, sculpting and physics | Implemented | Native shared-engine workspace in development; touch sculpt/topology/physics checks | Missing | References only |
 | Game authoring, node logic, play and source export | Implemented | Native shared-engine workspace in development; empty 2D/3D scenes, connected logic and play | Missing | Missing |
 | Mods and native extension/theme adapters | Implemented | Missing | Missing | Limited discovery |
@@ -94,8 +94,12 @@ remain visible on every platform until they are actually resolved.
    - Android now has isolated `PhotoDocument`, `PhotoEditingSession` and
      `PhotoBitmapEngine` foundations preserving the v2 JSON and embedded pixels.
      Unsupported saved processing must be explicitly rejected by rendering,
-     never silently dropped. A native authoring workspace and full renderer
-     coverage are still required. Passing codec checks alone is not a Photo port.
+     never silently dropped. A native authoring workspace now exposes blank
+     canvases, layers/folders, masks, transforms, round brushes and primary
+     adjustments with an independent draft and history. Native Files operations
+     retain the shared layered schema. Phone/tablet authoring checks and full
+     renderer/tool coverage are still required. Passing codec checks alone is
+     not a Photo port; Android ABR, selections, retouching and several tools remain.
 4. **Modelling and game workspaces:** shared geometry/command/runtime models on
    Apple, equivalent contract implementations on Android/Qt. Real mesh hit tests,
    sculpt/deform/topology changes, save/export, undo, node execution and playback.
