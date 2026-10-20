@@ -19,6 +19,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.inspector.WindowInspector;
 import android.widget.Button;
 import android.widget.SeekBar;
 import androidx.annotation.OptIn;
@@ -167,14 +168,15 @@ public final class PhotoWorkspaceUiTest {
     }
     private static void capture(Instrumentation i,PhotoActivity photo,String phase,boolean redCanvasCenter)throws Exception{
         i.waitForIdleSync();
-        if(redCanvasCenter){
-            await("Photos owns the foreground window before capturing its canvas",5000,()->onMain(i,()->photo.getWindow().getDecorView().hasWindowFocus()));
-            // A decoded bitmap and an attached View do not prove that this new
-            // Activity's first frame reached its window surface. Wait for an
-            // actual draw submission rather than capturing the previous Home.
-            CountDownLatch committed=new CountDownLatch(1);onMain(i,()->{View decor=photo.getWindow().getDecorView();assertTrue(decor.isHardwareAccelerated());decor.getViewTreeObserver().registerFrameCommitCallback(committed::countDown);decor.postInvalidateOnAnimation();return null;});
-            assertTrue("Current Photos window commits its displayed frame",committed.await(5,TimeUnit.SECONDS));
-        }
+        // Use the real in-process Window decor, including native dialogs. A
+        // control can already exist in the View tree before the new tab/dialog
+        // frame reaches its window surface; idle alone does not prove that draw.
+        View window=onMain(i,()->{View expected=panelRoot(photo);for(View candidate:WindowInspector.getGlobalWindowViews())if(candidate!=photo.getWindow().getDecorView()&&candidate.isAttachedToWindow()&&candidate.isShown()&&candidate.hasWindowFocus()&&findButton(candidate,"Use custom colour")!=null)return candidate;return expected;});
+        await("Requested Photos window owns focus before capturing "+phase,5000,()->onMain(i,()->{for(View candidate:WindowInspector.getGlobalWindowViews())if(candidate==window&&candidate.isAttachedToWindow()&&candidate.isShown()&&candidate.hasWindowFocus())return true;return false;}));
+        // Commit means submitted, not displayed. Cross two real display-frame
+        // boundaries before full-display capture, as the monitor lifecycle does.
+        CountDownLatch committed=new CountDownLatch(1);onMain(i,()->{assertTrue(window.isHardwareAccelerated());window.getViewTreeObserver().registerFrameCommitCallback(()->window.postOnAnimation(()->window.postOnAnimation(committed::countDown)));window.postInvalidateOnAnimation();return null;});
+        assertTrue("Current Photos window commits its displayed frame for "+phase,committed.await(5,TimeUnit.SECONDS));
         Bitmap screenshot=i.getUiAutomation().takeScreenshot();assertNotNull("Capture actual Photos device window",screenshot);
         if(screenshot.getConfig()==Bitmap.Config.HARDWARE){Bitmap readable=screenshot.copy(Bitmap.Config.ARGB_8888,false);screenshot.recycle();screenshot=readable;assertNotNull(readable);}
         try{Configuration config=onMain(i,()->new Configuration(photo.getResources().getConfiguration()));String name=phase+"_"+config.screenWidthDp+"x"+config.screenHeightDp+"dp_"+screenshot.getWidth()+"x"+screenshot.getHeight()+".png";
